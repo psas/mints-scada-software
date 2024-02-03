@@ -1,4 +1,5 @@
 import can
+import time
 
 # ID bits
 # [10]  reply 0=to id, 1=from id
@@ -33,6 +34,7 @@ class DataPacket():
 
     def __init__(self, id: int, data: bytearray = None, reply: bool = False, err: bool = False, res: bool = False):
         ''' Creates a new DataPacket from either an arbitration ID & data array or a can message '''
+        self.time = time.time()
         if isinstance(id, int):
             # If we have an arbitration ID & data array
             self._prepare(id, data, reply, err, res)
@@ -50,6 +52,12 @@ class DataPacket():
         self.res =   res   or (aid >> 8)  & 1 == 1 if aid is not None else False
         self.id = aid & 0xFF if aid is not None else 0
         self.data = data or [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0]
+        # Make sure the data is the right length
+        while len(self.data) < 8:
+            self.data.append(0x00)
+        if len(self.data) > 8:
+            self.data = self.data[0:7]
+
 
     def print(self):
         ''' Prints a message to the terminal '''
