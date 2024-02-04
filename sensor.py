@@ -2,13 +2,14 @@ import can
 import struct
 import threading
 from datapacket import DataPacket
+from busrider import BusRider
 
-class Sensor():
-    def __init__(self, id: int, canbus: can.ThreadSafeBus = None):
+class Sensor(BusRider):
+    def __init__(self, id: int):
         # id of the remote sensor
-        self.id = id
+        self._id = id
         # the canbus the sensor is on
-        self._canbus = canbus
+        self._canbus = None
         # the value of the sensor, or None if there was an error
         self.value = None
         self.aux = None
@@ -17,24 +18,25 @@ class Sensor():
         # An event that is triggered when a new packet comes in for this sensor
         self._event = threading.Event()
 
-    def onPacket(self, packet: DataPacket):
+    def _decodePacket(self, packet: DataPacket):
+        ''' Decodes the data portion of a packet '''
+        if not packet.err:
+            self.value = struct.unpack("<i", packet.data[0:4])[0]
+            self.aux = struct.unpack("<i", packet.data[4:8])[0]
+        else:
+            print("Something bad :(")
+            self.value = None
+
+    def _onPacket(self, packet: DataPacket):
         ''' Call this for every packet that comes in '''
-        if packet is not None and packet.id == self.id and packet.reply == True:
+        if packet is not None and packet.id == self._id and packet.reply == True:
             # Set the last updated time
             self.time = packet.time
             # Set the value
             print("New value!")
-            if not packet.err:
-                self.value = struct.unpack("<i", packet.data[0:4])[0]
-                self.aux = struct.unpack("<i", packet.data[4:8])[0]
-            else:
-                print("Something bad :(")
-                self.value = None
+            self._decodePacket(packet)
             # Trigger anything waiting for this sensor
             self._event.set()
-
-    def setBus(self, canbus):
-        self._canbus = canbus
 
     def poll(self):
         ''' Ask for the sensor to take a reading. Use self.value() to get the reading, but note that it may take a moment to come in '''
@@ -43,7 +45,7 @@ class Sensor():
             raise RuntimeError("Please initialize the canbus before trying to poll the sensor")
         self._event.clear()
         # Ask the sensor to read
-        p = DataPacket(id=self.id, data=[0x80])
+        p = DataPacket(id=self._id, data=[0x80])
         p.send(self._canbus)
         p.print()
 
