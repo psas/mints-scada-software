@@ -2,17 +2,20 @@ import can
 import threading
 from busrider import BusRider
 from datapacket import DataPacket
+import dbgutils
 
 class SensorBus():
-    def __init__(self, channel, bitrate, bustype='slcan'):
+    def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False):
         # If the bus is running. The bus starts when it is created, and can not be restarted once it stops
         self.__running = True
         # Everyone on the bus
         self.__riders = []
+        self._print = dbgprint
         # Event to watch for the listener starting
         self.__startedEvent = threading.Event()
         # The underlying CAN bus
         self.__canbus = can.ThreadSafeBus(bustype=bustype, channel=channel, bitrate=bitrate)
+        print(self.__canbus.state)
         # The thread that handles incoming DataPackets
         self.__receiverThread = threading.Thread(target=self.__receive, args=(self.__canbus,), name="CAN-receiver")
         # Start the bus
@@ -43,8 +46,9 @@ class SensorBus():
             # Process the incoming DataPacket
             if bm is not None:
                 p = DataPacket(bm)
-                print("Got packet")
-                p.print()
+                if(self._print):
+                    print("Got packet")
+                    p.print()
                 for l in self.__riders:
                     l._onPacket(p)
         # When the thread stops
@@ -52,6 +56,8 @@ class SensorBus():
 
     def stop(self):
         ''' Stops the sensor bus cleanly and releases all resources. The bus can not be restarted '''
+        print("Someone told me to stop")
+        dbgutils.printStackTrace()
         # Mark that the bus is no longer running
         self.__running = False
         # Wait for the listener to cleanly exit
@@ -65,7 +71,7 @@ class SensorBus():
         if not self.__running:
             raise RuntimeError("The SensorBus has been stopped")
         # Add the rider
-        rider._setBus(self.__canbus)
+        rider._connectBus(self.__canbus)
         self.__riders.append(rider)
 
     def removeRider(self, rider: BusRider):

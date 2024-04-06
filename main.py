@@ -6,9 +6,12 @@ from mainwindow import MainWindow
 from PyQt5.QtWidgets import QApplication, QHBoxLayout, QPushButton, QLabel
 
 class SensorRow(QHBoxLayout):
-    def __init__(self, sensor):
+    def __init__(self, sensor: Sensor):
         super(SensorRow, self).__init__()
         self.sensor = sensor
+        def onSensorChange(sensor):
+            self.valueLabel.setText(f"Value: {sensor.value or 'error'}")
+        self.sensor.addListener(onSensorChange)
 
         self.updateButton = QPushButton("Button!")
         self.updateButton.clicked.connect(self.buttonClick)
@@ -18,22 +21,22 @@ class SensorRow(QHBoxLayout):
         self.addWidget(self.valueLabel) 
 
     def buttonClick(self):
-        self.sensor.readValue(timeout=1)
-        self.valueLabel.setText(f"Value: {self.sensor.value or 'error'}")
+        self.valueLabel.setText(f"Value: reading")
+        self.sensor.poll()
 
-with SensorBus(settings.sender, settings.bitrate) as bus:
+with SensorBus(settings.sender, settings.bitrate, dbgprint=True) as bus:
     tc = Sensor(0x64)
     bus.addRider(tc)
+    tc2 = Sensor(0x65)
+    bus.addRider(tc2)
     app = QApplication(sys.argv)
     tcr = SensorRow(tc)
+    tcr2 = SensorRow(tc2)
 
-    print("z")
-    print("a")
     window = MainWindow()
-    print("b")
 
     window.mainLayout.addLayout(tcr)
-    print("b")
+    window.mainLayout.addLayout(tcr2)
 
     window.show()
     sys.exit(app.exec())
