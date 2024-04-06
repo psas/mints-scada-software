@@ -1,10 +1,8 @@
 import can
 import threading
-from busrider import BusRider
-from datapacket import DataPacket
-import dbgutils
+from nexus import BusRider, DataPacket, dbgutils
 
-class SensorBus():
+class Bus():
     def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False):
         # If the bus is running. The bus starts when it is created, and can not be restarted once it stops
         self.__running = True

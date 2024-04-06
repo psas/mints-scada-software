@@ -1,11 +1,9 @@
 from typing import Callable
-import can
 import struct
 import random
-from datapacket import DataPacket
-from busrider import BusRider
+from nexus import DataPacket, BusRider
 
-class Sensor(BusRider):
+class GenericSensor(BusRider):
     def __init__(self, id: int, simulated: bool = False, genVal: Callable = None):
         super().__init__(id, simulated)
         # The serial number of the sensor

@@ -1,2 +1,0 @@
-Fix simulator
-Add packet sequence numbers?

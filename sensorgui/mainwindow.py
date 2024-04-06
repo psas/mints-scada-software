@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt
 
-from sensor import Sensor
+from nexus.genericsensor import GenericSensor
 
 class MainWindow(QDialog):
     def __init__(self, parent=None):
@@ -37,7 +37,7 @@ class MainWindow(QDialog):
 
         self.setLayout(self.mainLayout)
 
-        self.tc = Sensor(0x64)
+        self.tc = GenericSensor(0x64)
 
     def update(self):
         pass

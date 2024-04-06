@@ -1,5 +1,5 @@
 import can
-from datapacket import DataPacket
+from nexus import DataPacket
 import threading
 
 # Message send format
