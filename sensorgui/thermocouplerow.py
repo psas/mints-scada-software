@@ -1,5 +1,3 @@
-from PyQt5.QtWidgets import QHBoxLayout, QPushButton, QLabel
-from nexus import GenericSensor
 from sensorgui import SensorRow
 from sensors import Thermocouple
 

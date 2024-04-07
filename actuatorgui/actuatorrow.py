@@ -31,7 +31,6 @@ class ActuatorRow(QHBoxLayout):
     def onValueChange(self, actor):
         self.valueLabel.setText(f"Value: {self.actor.value if self.actor.value is not None else 'error'}")
         
-
     def buttonClick(self):
         self.valueLabel.setText(f"Value: reading")
         self.actor.poll()
