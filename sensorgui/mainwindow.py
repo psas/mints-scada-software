@@ -37,7 +37,5 @@ class MainWindow(QDialog):
 
         self.setLayout(self.mainLayout)
 
-        self.tc = GenericSensor(0x64)
-
     def update(self):
         pass

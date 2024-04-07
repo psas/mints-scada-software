@@ -13,7 +13,6 @@ class Bus():
         self.__startedEvent = threading.Event()
         # The underlying CAN bus
         self.__canbus = can.ThreadSafeBus(bustype=bustype, channel=channel, bitrate=bitrate)
-        print(self.__canbus.state)
         # The thread that handles incoming DataPackets
         self.__receiverThread = threading.Thread(target=self.__receive, args=(self.__canbus,), name="CAN-receiver")
         # Start the bus
@@ -54,8 +53,6 @@ class Bus():
 
     def stop(self):
         ''' Stops the sensor bus cleanly and releases all resources. The bus can not be restarted '''
-        print("Someone told me to stop")
-        dbgutils.printStackTrace()
         # Mark that the bus is no longer running
         self.__running = False
         # Wait for the listener to cleanly exit

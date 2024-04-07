@@ -36,7 +36,7 @@ class BusRider():
         self._canbus = canbus
         if self._canbus is not None and not self._simulated:
             # Get the ID of the sensor
-            request = DataPacket(id=self._id, data=[0x00])
+            request = DataPacket(id=self._id, cmd=0x00)
             request.send(canbus)
 
     def _onPacket(self, packet: DataPacket):

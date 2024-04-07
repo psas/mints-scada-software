@@ -8,6 +8,7 @@ class Thermocouple(GenericSensor):
         if self._type == 'k':
             self._no = 3
 
-    def _decodePacket(self, packet: DataPacket):
-        super()._decodePacket(packet)
-        print("I was called!")
+    @property
+    def c(self):
+        # TODO put in the correct equations here
+        return self.value * 28.4 if self.value is not None else -999
