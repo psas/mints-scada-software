@@ -4,7 +4,7 @@ import random
 from nexus import DataPacket, BusRider, BusCommands
 
 class GenericSensor(BusRider):
-    def __init__(self, id: int, simulated: bool = False, genVal: Callable = None):
+    def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
         super().__init__(id, simulated)
         # The serial number of the sensor
         self._serial = None
@@ -12,6 +12,8 @@ class GenericSensor(BusRider):
         self._canbus = None
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
         self.value = None
+        # The name of the sensor
+        self.name = name
         # An auxiliary output from the sensor. Must be an unsigned 2 byte int.
         self.aux = None
         if genVal != None:
@@ -70,7 +72,7 @@ class GenericSensor(BusRider):
                 elif packet.cmd == BusCommands.READ_VALUE:
                     self.readSensor()
                     if self.value is not None:
-                        reply.data = struct.pack(">IH", self.value, self.aux or 0)
+                        reply.data = self._packValue()
                     else:
                         reply.err = True
                 else:
@@ -78,8 +80,16 @@ class GenericSensor(BusRider):
                 reply.send(self._canbus)
                 print("Sent reply")
                 reply.print()
-            for listener in self._updateListeners:
-                listener()
+            self.updateListeners()
+    
+    def updateListeners(self):
+        ''' Let anyone who cares know that the value of this just changed '''
+        for listener in self._updateListeners:
+            listener(self)
+
+    def _packValue(self) -> bytearray:
+        ''' Gets the value of the sensor as a bytearray ready to be sent on the bus '''
+        return struct.pack(">IH", self.value, self.aux or 0)
 
     def addListener(self, packetListener: Callable):
         self._updateListeners.append(packetListener)

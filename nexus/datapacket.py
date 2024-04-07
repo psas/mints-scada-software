@@ -58,6 +58,7 @@ class DataPacket():
 
     def _prepare(self, aid: int = None, seq: int = None, cmd: int = None, data: bytearray = None, timestamp: float = None, reply: bool = None, err: bool = None, rsvd: bool = None):
         ''' Prepares a message. Used in init '''
+        # TODO: This might break if values are 0, so change these "or"s to something better
         self.reply = reply or (aid >> 10) & 1 == 1 if aid is not None else False
         self.err =   err   or (aid >> 9)  & 1 == 1 if aid is not None else False
         self.rsvd =   rsvd   or (aid >> 8)  & 1 == 1 if aid is not None else False

@@ -8,15 +8,20 @@ class SensorRow(QHBoxLayout):
         self.sensor.poll()
         self.sensor.addListener(self.onValueChange)
 
-        self.updateButton = QPushButton("Update")
-        self.updateButton.clicked.connect(self.buttonClick)
-        self.addWidget(self.updateButton)
+        self.nameLabel = QLabel(self.sensor.name)
+        self.addWidget(self.nameLabel)
 
         self.valueLabel = QLabel("label")
         self.addWidget(self.valueLabel)
 
-    def onValueChange(self):
-        self.valueLabel.setText(f"Value: {self.sensor.value or 'error'}")
+        self.addStretch()
+
+        self.updateButton = QPushButton("Update")
+        self.updateButton.clicked.connect(self.buttonClick)
+        self.addWidget(self.updateButton)
+
+    def onValueChange(self, sensor):
+        self.valueLabel.setText(f"Value: {self.sensor.value if self.sensor.value is not None else 'error'}")
 
     def buttonClick(self):
         self.valueLabel.setText(f"Value: reading")
