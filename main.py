@@ -1,53 +1,63 @@
 import sys
 from PyQt5.QtWidgets import QApplication
+import importlib
 
-from nexus import Bus, GenericSensor, GenericActuator
-from sensors import Thermocouple
-from sensorgui import MainWindow, SensorRow, ThermocoupleRow
-from actuators import Solenoid
-from actuatorgui import ActuatorRow, SolenoidRow
+from nexus import Bus, BusRider, GenericSensor, GenericActuator
+from gui import MainWindow, ThingRow
 
 import settings
 
 baseaddr = 0x64
 
-things = (
-    {'name': 'Generic Sensor 1',   'class': 'GenericSensor',   'address': baseaddr  },
-    {'name': 'Thermocouple 1',     'class': 'Thermocouple',    'address': baseaddr+1},
-    {'name': 'Generic Actuator 1', 'class': 'GenericActuator', 'address': baseaddr+2},
-    {'name': 'Solenoid 1',         'class': 'Solenoid',        'address': baseaddr+3},
-)
-
 # Should be compatable with any slcan CANBus interface on Linux
-with Bus(settings.sender, settings.bitrate, dbgprint=True) as bus:
+with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    for thingDesc in things:
-        thing = globals()[thingDesc["class"]]
-        print(thing)
+    for thingDesc in settings.things:
+        # We don't know what type the thing is, so try a bunch of things and see if we can find it
+        thingClass = None
+        thingPrefix = None
+        for prefix in ["sensors", "actuators", "nexus"]:
+            try:
+                m = importlib.import_module(prefix)
+                thingClass = getattr(m,  thingDesc["class"])
+                break
+            except Exception as e:
+                continue
+        # Check if we found the class
+        if thingClass is None:
+            raise ImportError(f"Cannot find a thing of type {thingDesc['class']} to add")
+        # Make sure the class is an allowable class
+        if not issubclass(thingClass, BusRider):
+            raise ValueError(f"Thing {thingClass.__name__} must extend BusRider")
+        # Initialize the thing
+        thing = thingClass(thingDesc["address"], thingDesc["name"])
+        bus.addRider(thing)
+        
+        # Find the display for the thing
+        if thingDesc["display"] is not None and thingDesc["display"] != 'None':
+            thingDisplayClass = None
+            # Search for the class
+            print("Looking for", thingDesc["display"])
+            for prefix in ["sensorgui", "actuatorgui"]:
+                print("Trying " + prefix)
+                try:
+                    m = importlib.import_module(prefix)
+                    print(m)
+                    thingDisplayClass = getattr(m, thingDesc["display"])
+                except Exception as e:
+                    print(e)
+                    continue
+            # Check if we actually found a class
+            if thingDisplayClass is None:
+                raise ImportError(f"Cannot find a display of type {thingDesc['display']} to add")
+            # Make sure the class is an allowable class
+            if not issubclass(thingDisplayClass, ThingRow):
+                raise ValueError(f"Thing {thingDisplayClass.__name__} must extend ThingRow")
+            display = thingDisplayClass(thing)
+            window.mainLayout.addLayout(display)
 
-    tc = GenericSensor(baseaddr)
-    print(tc)
-    bus.addRider(tc)
-    tcr = SensorRow(tc)
-    window.mainLayout.addLayout(tcr)
-
-    tc2 = Thermocouple(baseaddr+1)
-    bus.addRider(tc2)
-    tcr2 = ThermocoupleRow(tc2)
-    window.mainLayout.addLayout(tcr2)
-
-    ac = GenericActuator(baseaddr+2)
-    bus.addRider(ac)
-    act = ActuatorRow(ac)
-    window.mainLayout.addLayout(act)
-
-    ac2 = Solenoid(baseaddr+3)
-    bus.addRider(ac2)
-    ac2t = SolenoidRow(ac2)
-    window.mainLayout.addLayout(ac2t)
-    
     window.mainLayout.addStretch()
 
     window.show()

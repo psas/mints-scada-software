@@ -5,13 +5,9 @@ from nexus import DataPacket, BusRider, BusCommands
 
 class GenericSensor(BusRider):
     def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
-        super().__init__(id, simulated)
-        # The serial number of the sensor
-        self._serialnum = None
+        super().__init__(id, name=name, simulated=simulated)
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
         self.value = None
-        # The name of the sensor
-        self.name = name
         # An auxiliary output from the sensor. Must be an unsigned 2 byte int.
         self.aux = None
         if genVal != None:
@@ -77,7 +73,7 @@ class GenericSensor(BusRider):
                 else:
                     reply.err=True
                 reply.send(self._bus)
-                self._bus.printDbgPacket(reply, "reply")
+                self._bus.printDbgPacket(reply, "Sent reply")
             self.updateListeners()
     
     def updateListeners(self):
@@ -104,7 +100,7 @@ class GenericSensor(BusRider):
         # Ask the sensor to read
         p = DataPacket(id=self._id, cmd=BusCommands.READ_VALUE)
         p.send(self._bus)
-        self._bus.printDbgPacket(p, "poll")
+        self._bus.printDbgPacket(p, "Sent poll")
 
     def readValue(self, timeout: float = None, onFail: Callable[..., None] = None):
         ''' Reads a value from the sensor, and waits for the reply before returning the current value. Returns None if the wait timed out '''

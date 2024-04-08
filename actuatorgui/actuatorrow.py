@@ -1,9 +1,10 @@
-from PyQt5.QtWidgets import QHBoxLayout, QPushButton, QLabel
+from PyQt5.QtWidgets import QPushButton, QLabel
 from nexus import GenericActuator
+from gui import ThingRow
 
-class ActuatorRow(QHBoxLayout):
+class ActuatorRow(ThingRow):
     def __init__(self, actor: GenericActuator):
-        super().__init__()
+        super().__init__(actor)
         self.actor = actor
         self.actor.poll()
         self.actor.addListener(self.onValueChange)

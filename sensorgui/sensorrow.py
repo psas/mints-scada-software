@@ -1,9 +1,10 @@
-from PyQt5.QtWidgets import QHBoxLayout, QPushButton, QLabel
+from PyQt5.QtWidgets import QPushButton, QLabel
 from nexus import GenericSensor
+from gui import ThingRow
 
-class SensorRow(QHBoxLayout):
+class SensorRow(ThingRow):
     def __init__(self, sensor: GenericSensor):
-        super(SensorRow, self).__init__()
+        super(SensorRow, self).__init__(sensor)
         self.sensor = sensor
         self.sensor.poll()
         self.sensor.addListener(self.onValueChange)

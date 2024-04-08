@@ -43,7 +43,7 @@ class Bus():
             # Process the incoming DataPacket
             if bm is not None:
                 p = DataPacket(bm)
-                self.printDbgPacket(p, "packet")
+                self.printDbgPacket(p, "Got packet")
                 for l in self.__riders:
                     l._onPacket(p)
         # When the thread stops
@@ -80,7 +80,7 @@ class Bus():
     def send(self, message):
         self.__canbus.send(message)
 
-    def printDbgPacket(self, packet, ptype):
+    def printDbgPacket(self, packet, msg):
         if self._print:
-            print(f"Got {ptype:6s} ", end='')
+            print(f"{msg:10s} ", end='')
             packet.print()

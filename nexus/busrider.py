@@ -15,11 +15,19 @@ import threading
 # NEVER change if a device is simulated.
 
 class BusRider():
-    def __init__(self, id: int, simulated: bool = False):
+    def __init__(self, id: int, name = "BusRider", simulated: bool = False):
         # ID of the remote device
         self._id = id
+        
+        # The serial number of the sensor
+        # TODO check this to help ensure that the correct sensor is at this address
         self._serial = None
+
+        # The bus the rider rides on
         self._bus = None
+
+        # The name of the rider
+        self.name = name
 
         self._simulated = simulated
         ''' If the sensor is simulated. DO NOT CHANGE THIS '''

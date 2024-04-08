@@ -34,7 +34,7 @@ class GenericActuator(GenericSensor):
                     # Must be repacked to ensure any unpacking errors are included.
                     reply = packet.getReply(self._packValue())
                     reply.send(self._bus)
-                    self._bus.printDbgPacket(reply, "reply")
+                    self._bus.printDbgPacket(reply, "Sent reply")
                     # Notify anyone who cares, then don't go to the parent's onPacket
                     self.updateListeners()
                     return
