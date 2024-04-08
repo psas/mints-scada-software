@@ -18,7 +18,6 @@ class GenericActuator(GenericSensor):
             # Set value command
             if packet.cmd == BusCommands.WRITE_VALUE:
                 self.value, self.aux = struct.unpack(">IH", packet.data)
-                print(f"I just set it to {self.value}!")
                 return
         super()._decodePacket(packet=packet)
 

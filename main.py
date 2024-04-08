@@ -39,15 +39,11 @@ with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
         if thingDesc["display"] is not None and thingDesc["display"] != 'None':
             thingDisplayClass = None
             # Search for the class
-            print("Looking for", thingDesc["display"])
             for prefix in ["sensorgui", "actuatorgui"]:
-                print("Trying " + prefix)
                 try:
                     m = importlib.import_module(prefix)
-                    print(m)
                     thingDisplayClass = getattr(m, thingDesc["display"])
                 except Exception as e:
-                    print(e)
                     continue
             # Check if we actually found a class
             if thingDisplayClass is None:
