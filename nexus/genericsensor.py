@@ -7,9 +7,7 @@ class GenericSensor(BusRider):
     def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
         super().__init__(id, simulated)
         # The serial number of the sensor
-        self._serial = None
-        # the canbus the sensor is on
-        self._canbus = None
+        self._serialnum = None
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
         self.value = None
         # The name of the sensor
@@ -32,6 +30,7 @@ class GenericSensor(BusRider):
     def _decodePacket(self, packet: DataPacket):
         ''' Decodes the data portion of a packet '''
         if not packet.err:
+            # TODO ID parsing should be done at the BusRider level, not here
             if packet.cmd == BusCommands.READ_ID_LOW:
                 # TODO make the sent data actually useful
                 pass
@@ -77,9 +76,8 @@ class GenericSensor(BusRider):
                         reply.err = True
                 else:
                     reply.err=True
-                reply.send(self._canbus)
-                print("Sent reply")
-                reply.print()
+                reply.send(self._bus)
+                self._bus.printDbgPacket(reply, "reply")
             self.updateListeners()
     
     def updateListeners(self):
@@ -100,13 +98,13 @@ class GenericSensor(BusRider):
         if self._simulated:
             return
         # Check if the canbus was initialized
-        if self._canbus is None:
-            raise RuntimeError("Please initialize the canbus before trying to poll the sensor")
+        if self._bus is None:
+            raise RuntimeError("Please initialize the bus before trying to poll the sensor")
         self._event.clear()
         # Ask the sensor to read
         p = DataPacket(id=self._id, cmd=BusCommands.READ_VALUE)
-        p.send(self._canbus)
-        p.print()
+        p.send(self._bus)
+        self._bus.printDbgPacket(p, "poll")
 
     def readValue(self, timeout: float = None, onFail: Callable[..., None] = None):
         ''' Reads a value from the sensor, and waits for the reply before returning the current value. Returns None if the wait timed out '''
@@ -114,7 +112,7 @@ class GenericSensor(BusRider):
         if self._simulated:
             return self.value
         # Check if the canbus was initialized
-        if self._canbus is None:
+        if self._bus is None:
             raise RuntimeError("Please initialize the canbus before trying to poll the sensor")
         # Ask the sensor to read
         self.poll()

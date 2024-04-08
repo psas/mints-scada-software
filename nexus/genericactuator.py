@@ -10,11 +10,10 @@ class GenericActuator(GenericSensor):
         # Update the state
         self.value = state
         # Send the command to change
-        DataPacket(self._id, cmd=BusCommands.WRITE_VALUE, data=self._packValue()).send(self._canbus)
+        DataPacket(self._id, cmd=BusCommands.WRITE_VALUE, data=self._packValue()).send(self._bus)
 
     def _decodePacket(self, packet: DataPacket):
         ''' Decodes the data portion of a packet '''
-        print("MEEEEE")
         if not packet.err:
             # Set value command
             if packet.cmd == BusCommands.WRITE_VALUE:
@@ -34,9 +33,8 @@ class GenericActuator(GenericSensor):
                     # Send a reply with the current value of the actuator.
                     # Must be repacked to ensure any unpacking errors are included.
                     reply = packet.getReply(self._packValue())
-                    reply.send(self._canbus)
-                    print("Sent reply")
-                    reply.print()
+                    reply.send(self._bus)
+                    self._bus.printDbgPacket(reply, "reply")
                     # Notify anyone who cares, then don't go to the parent's onPacket
                     self.updateListeners()
                     return

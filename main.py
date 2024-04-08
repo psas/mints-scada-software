@@ -11,12 +11,24 @@ import settings
 
 baseaddr = 0x64
 
+things = (
+    {'name': 'Generic Sensor 1',   'class': 'GenericSensor',   'address': baseaddr  },
+    {'name': 'Thermocouple 1',     'class': 'Thermocouple',    'address': baseaddr+1},
+    {'name': 'Generic Actuator 1', 'class': 'GenericActuator', 'address': baseaddr+2},
+    {'name': 'Solenoid 1',         'class': 'Solenoid',        'address': baseaddr+3},
+)
+
 # Should be compatable with any slcan CANBus interface on Linux
 with Bus(settings.sender, settings.bitrate, dbgprint=True) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 
+    for thingDesc in things:
+        thing = globals()[thingDesc["class"]]
+        print(thing)
+
     tc = GenericSensor(baseaddr)
+    print(tc)
     bus.addRider(tc)
     tcr = SensorRow(tc)
     window.mainLayout.addLayout(tcr)

@@ -1,6 +1,6 @@
 import can
 import threading
-from nexus import BusRider, DataPacket, dbgutils
+from nexus import DataPacket, dbgutils
 
 class Bus():
     def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False):
@@ -43,9 +43,7 @@ class Bus():
             # Process the incoming DataPacket
             if bm is not None:
                 p = DataPacket(bm)
-                if(self._print):
-                    print("Got packet")
-                    p.print()
+                self.printDbgPacket(p, "packet")
                 for l in self.__riders:
                     l._onPacket(p)
         # When the thread stops
@@ -60,16 +58,16 @@ class Bus():
         # Cleanly shut down the underlying CAN bus
         self.__canbus.shutdown()
 
-    def addRider(self, rider: BusRider):
+    def addRider(self, rider):
         ''' Adds a new rider to the bus. The rider is given a reference to the underlying CAN bus and will be alerted any time a DataPacket arrives '''
         # Check if the bus is running
         if not self.__running:
             raise RuntimeError("The SensorBus has been stopped")
         # Add the rider
-        rider._connectBus(self.__canbus)
+        rider._connectBus(self)
         self.__riders.append(rider)
 
-    def removeRider(self, rider: BusRider):
+    def removeRider(self, rider):
         ''' Removes a new rider from the bus. The rider's reference to the underlying CAN bus is removed and will be no longer be alerted any time a DataPacket arrives '''
         # Checks if the bus is running
         if not self.__running:
@@ -78,3 +76,11 @@ class Bus():
         if rider in self.__riders:
             self.__riders.remove(rider)
             rider._setBus(None)
+
+    def send(self, message):
+        self.__canbus.send(message)
+
+    def printDbgPacket(self, packet, ptype):
+        if self._print:
+            print(f"Got {ptype:6s} ", end='')
+            packet.print()

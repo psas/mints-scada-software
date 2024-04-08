@@ -1,5 +1,4 @@
-import can
-from nexus import DataPacket
+from nexus import DataPacket, Bus, BusCommands
 import threading
 
 # Message send format
@@ -20,7 +19,7 @@ class BusRider():
         # ID of the remote device
         self._id = id
         self._serial = None
-        self._canbus = None
+        self._bus = None
 
         self._simulated = simulated
         ''' If the sensor is simulated. DO NOT CHANGE THIS '''
@@ -32,18 +31,18 @@ class BusRider():
         self._event = threading.Event()
         self._nextSequenceID = 0
 
-    def _connectBus(self, canbus: can.ThreadSafeBus):
-        self._canbus = canbus
-        if self._canbus is not None and not self._simulated:
+    def _connectBus(self, bus: Bus):
+        self._bus = bus
+        if self._bus is not None and not self._simulated:
             # Get the ID of the sensor
-            request = DataPacket(id=self._id, cmd=0x00)
-            request.send(canbus)
+            request = DataPacket(id=self._id, cmd=BusCommands.READ_ID_LOW)
+            request.send(bus)
 
     def _onPacket(self, packet: DataPacket):
         ''' Call this for every packet that comes in '''
         if packet is not None and packet.id == self._id:
             if packet.reply:
-                if packet.data[0] == 0x00:
+                if packet.cmd == BusCommands.READ_ID_LOW:
                     self._serial = packet.data
                 else:
                     # Set the last updated time
