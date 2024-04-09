@@ -61,4 +61,9 @@ class BusRider():
                     self._event.set()
     
     def _decodePacket(self):
+        ''' Implement this in child classes '''
+        pass
+
+    def poll():
+        ''' Implement this in child classes '''
         pass

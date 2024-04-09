@@ -1,13 +1,13 @@
 import can
 import threading
-from nexus import DataPacket, dbgutils
+from nexus import DataPacket
 
 class Bus():
     def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False):
         # If the bus is running. The bus starts when it is created, and can not be restarted once it stops
         self.__running = True
         # Everyone on the bus
-        self.__riders = []
+        self._riders = []
         self._print = dbgprint
         # Event to watch for the listener starting
         self.__startedEvent = threading.Event()
@@ -15,13 +15,13 @@ class Bus():
         self.__canbus = can.ThreadSafeBus(bustype=bustype, channel=channel, bitrate=bitrate)
         # The thread that handles incoming DataPackets
         self.__receiverThread = threading.Thread(target=self.__receive, args=(self.__canbus,), name="CAN-receiver")
+
+    def __enter__(self):
+        ''' Enter a with block '''
         # Start the bus
         self.__receiverThread.start()
         # Wait for it to warm up
         self.__startedEvent.wait()
-        
-    def __enter__(self):
-        ''' Enter a with block '''
         return self
 
     def __exit__(self, *exec_info):
@@ -44,7 +44,7 @@ class Bus():
             if bm is not None:
                 p = DataPacket(bm)
                 self.printDbgPacket(p, "Got packet")
-                for l in self.__riders:
+                for l in self._riders:
                     l._onPacket(p)
         # When the thread stops
         print("Receiver stopped")
@@ -65,7 +65,7 @@ class Bus():
             raise RuntimeError("The SensorBus has been stopped")
         # Add the rider
         rider._connectBus(self)
-        self.__riders.append(rider)
+        self._riders.append(rider)
 
     def removeRider(self, rider):
         ''' Removes a new rider from the bus. The rider's reference to the underlying CAN bus is removed and will be no longer be alerted any time a DataPacket arrives '''
@@ -73,8 +73,8 @@ class Bus():
         if not self.__running:
             raise RuntimeError("The SensorBus has been stopped")
         # Removes the rider only if it exists
-        if rider in self.__riders:
-            self.__riders.remove(rider)
+        if rider in self._riders:
+            self._riders.remove(rider)
             rider._setBus(None)
 
     def send(self, message):

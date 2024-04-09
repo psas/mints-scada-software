@@ -1,2 +1,2 @@
 from .mainwindow import MainWindow
-from .thingrow import ThingRow
+from .devicerow import DeviceRow

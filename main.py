@@ -3,7 +3,9 @@ from PyQt5.QtWidgets import QApplication
 import importlib
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
-from gui import MainWindow, ThingRow
+from gui import MainWindow, DeviceRow
+
+from autopoller import AutoPoller
 
 import settings
 
@@ -14,47 +16,49 @@ with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    for thingDesc in settings.things:
-        # We don't know what type the thing is, so try a bunch of things and see if we can find it
-        thingClass = None
-        thingPrefix = None
+    for deviceDesc in settings.devices:
+        # We don't know what type the device is, so try a bunch of devices and see if we can find it
+        deviceClass = None
+        devicePrefix = None
         for prefix in ["sensors", "actuators", "nexus"]:
             try:
                 m = importlib.import_module(prefix)
-                thingClass = getattr(m,  thingDesc["class"])
+                deviceClass = getattr(m,  deviceDesc["class"])
                 break
             except Exception as e:
                 continue
         # Check if we found the class
-        if thingClass is None:
-            raise ImportError(f"Cannot find a thing of type {thingDesc['class']} to add")
+        if deviceClass is None:
+            raise ImportError(f"Cannot find a device of type {deviceDesc['class']} to add")
         # Make sure the class is an allowable class
-        if not issubclass(thingClass, BusRider):
-            raise ValueError(f"Thing {thingClass.__name__} must extend BusRider")
-        # Initialize the thing
-        thing = thingClass(thingDesc["address"], thingDesc["name"])
-        bus.addRider(thing)
+        if not issubclass(deviceClass, BusRider):
+            raise ValueError(f"Device {deviceClass.__name__} must extend BusRider")
+        # Initialize the device
+        device = deviceClass(deviceDesc["address"], deviceDesc["name"])
+        bus.addRider(device)
         
-        # Find the display for the thing
-        if thingDesc["display"] is not None and thingDesc["display"] != 'None':
-            thingDisplayClass = None
+        # Find the display for the device
+        if deviceDesc["display"] is not None and deviceDesc["display"] != 'None':
+            deviceDisplayClass = None
             # Search for the class
             for prefix in ["sensorgui", "actuatorgui"]:
                 try:
                     m = importlib.import_module(prefix)
-                    thingDisplayClass = getattr(m, thingDesc["display"])
+                    deviceDisplayClass = getattr(m, deviceDesc["display"])
                 except Exception as e:
                     continue
             # Check if we actually found a class
-            if thingDisplayClass is None:
-                raise ImportError(f"Cannot find a display of type {thingDesc['display']} to add")
+            if deviceDisplayClass is None:
+                raise ImportError(f"Cannot find a display of type {deviceDesc['display']} to add")
             # Make sure the class is an allowable class
-            if not issubclass(thingDisplayClass, ThingRow):
-                raise ValueError(f"Thing {thingDisplayClass.__name__} must extend ThingRow")
-            display = thingDisplayClass(thing)
+            if not issubclass(deviceDisplayClass, DeviceRow):
+                raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
+            display = deviceDisplayClass(device)
             window.mainLayout.addLayout(display)
 
     window.mainLayout.addStretch()
 
-    window.show()
-    sys.exit(app.exec())
+    with AutoPoller(bus=bus, interval=0.5) as ap:
+
+        window.show()
+        sys.exit(app.exec())

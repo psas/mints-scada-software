@@ -1,8 +1,8 @@
 from PyQt5.QtWidgets import QPushButton, QLabel
 from nexus import GenericActuator
-from gui import ThingRow
+from gui import DeviceRow
 
-class ActuatorRow(ThingRow):
+class ActuatorRow(DeviceRow):
     def __init__(self, actor: GenericActuator):
         super().__init__(actor)
         self.actor = actor

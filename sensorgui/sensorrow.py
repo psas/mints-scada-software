@@ -1,8 +1,8 @@
 from PyQt5.QtWidgets import QPushButton, QLabel
 from nexus import GenericSensor
-from gui import ThingRow
+from gui import DeviceRow
 
-class SensorRow(ThingRow):
+class SensorRow(DeviceRow):
     def __init__(self, sensor: GenericSensor):
         super(SensorRow, self).__init__(sensor)
         self.sensor = sensor
