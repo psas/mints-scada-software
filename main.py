@@ -62,10 +62,6 @@ with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
 
         apr = AutoPollerRow(ap)
         window.mainLayout.addLayout(apr)
-        # def stopAPROnBusException(bus, e, f):
-        #     print("apbeh!")
-        #     ap.stop()
-        # bus.addExceptionHandler(stopAPROnBusException)
 
         window.show()
-        sys.exit(app.exec())
+        app.exec()
