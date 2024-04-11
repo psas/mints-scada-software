@@ -19,7 +19,7 @@ class AutoPollerRow(QHBoxLayout):
 
         self.valueLabel = QLabel(self.STOPPED_TEXT if not self.poller.running else self.RUNNING_TEXT)
         self.addWidget(self.valueLabel)
-        
+
         self.addStretch()
 
         self.intervalLabel = QLabel("Interval:")
@@ -27,14 +27,21 @@ class AutoPollerRow(QHBoxLayout):
         self.intervalbox = DecadeSpinBox()
         self.intervalbox.setFixedWidth(80)
         def onSpinBoxChange():
-            self.poller._interval = self.intervalbox.value()
+            self.poller.interval = self.intervalbox.value()
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
         # self.intervalbox.setDecimals(3)
-        self.intervalbox.setValue(self.poller._interval)
+        self.intervalbox.setValue(self.poller.interval)
+        # self.intervalbox.setValue(0.004)
         self.intervalbox.setMinimum(0.001)
         self.intervalbox.setMaximum(10)
         self.addWidget(self.intervalbox)
         self.intervalbox.setSuffix("s")
+
+        self.measuredLabel = QLabel("")
+        self.addWidget(self.measuredLabel)
+        def updateAverage(poller):
+            self.measuredLabel.setText(f"avg: {poller.getAveragePollTime():-0.6f}s")
+        poller.onPoll.append(updateAverage)
 
         self.addStretch()
 
