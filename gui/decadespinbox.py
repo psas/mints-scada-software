@@ -10,6 +10,7 @@ class DecadeSpinBox(QDoubleSpinBox):
         self._steps = [1, 2, 5]
         self.__bigPre = "kMgt"
         self.__smallPre = "munpfa"
+        self.setDecimals(18)
 
     def stepBy(self, count):
         omag = math.floor(math.log10(self.value())) if self.value() != 0 else 0
@@ -65,6 +66,8 @@ class DecadeSpinBox(QDoubleSpinBox):
                     break
             text = text[:-1]
         num = float(text) * factor
+        if num == 0:
+            return num
         exp = math.log10(num)
         siz = math.trunc(exp)
         sig = round(10 ** (exp - siz), 2)
