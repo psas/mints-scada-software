@@ -15,6 +15,29 @@ class Bus():
         self.__canbus = can.ThreadSafeBus(bustype=bustype, channel=channel, bitrate=bitrate)
         # The thread that handles incoming DataPackets
         self.__receiverThread = threading.Thread(target=self.__receive, args=(self.__canbus,), name="CAN-receiver")
+        # Set up exception handeling
+        self._exceptionHandlers = []
+        self._doDefaultExcpetionHandler = True
+
+    def addExceptionHandler(self, exceptionHandler):
+        self._exceptionHandlers.append(exceptionHandler)
+
+    def removeExceptionHandler(self, exceptionHandler):
+        self._exceptionHandlers.remove(exceptionHandler)
+
+    def _defaultExceptionHandler(self, exception: Exception, fatal: bool):
+        if fatal:
+            raise exception
+        else:
+            print("Bus has encountered a non-fatal exception!")
+            print(exception.__cause__)
+
+    def handleException(self, exception: Exception, fatal: bool):
+        for eh in self._exceptionHandlers:
+            print(eh)
+            eh(self, exception, fatal)
+        if self._doDefaultExcpetionHandler:
+            self._defaultExceptionHandler(exception, fatal)
 
     def __enter__(self):
         ''' Enter a with block '''
@@ -78,7 +101,15 @@ class Bus():
             rider._setBus(None)
 
     def send(self, message):
-        self.__canbus.send(message)
+        if self.__running:
+            try:
+                self.__canbus.send(message)
+            except Exception as e:
+                # TODO make this resilient
+                self.handleException(e, True)
+        else:
+            e = Exception("Bus is not running.")
+            self.handleException(e, True)
 
     def printDbgPacket(self, packet, msg):
         if self._print:
