@@ -1,7 +1,7 @@
 from PyQt5 import QtWidgets
 # from PyQt5.QtWidgets import QApplication, QMainWindow, QDialog, QHBoxLayout, QPushButton, QLabel
 from PyQt5.QtWidgets import *
-from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 
 from nexus.genericsensor import GenericSensor
@@ -11,7 +11,7 @@ class MainWindow(QDialog):
         super(MainWindow, self).__init__(parent)
 
         self.setWindowTitle("CAN bus sensor demo")
-        self.setGeometry(0, 0, 640, 480)
+        self.setGeometry(0, 0, 960, 540)
 
         # Force the style to be the same on all OSs:
         QApplication.setStyle("Fusion")
@@ -32,6 +32,10 @@ class MainWindow(QDialog):
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, Qt.black)
         QApplication.setPalette(palette)
+
+        font = QFont("Monospace")
+        # font.setStyleHint(QFont.Monospace)
+        self.setFont(font)
 
         self.mainLayout = QVBoxLayout()
 

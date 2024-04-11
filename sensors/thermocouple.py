@@ -12,4 +12,5 @@ class Thermocouple(GenericSensor):
     @property
     def c(self):
         # TODO put in the correct equations here
-        return self.value * 28.4 if self.value is not None else -999
+        # return self.value * 28.4 if self.value is not None else -999
+        return self.value if self.value is not None else -999

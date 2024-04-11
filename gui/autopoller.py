@@ -6,14 +6,16 @@ import numpy as np
 class AutoPoller():
     def __init__(self, bus: Bus, interval: float = 1, autoStart: bool = False):
         ''' Actual interval will be just slightly longer than given interval, and may not be perfectly conscistant '''
+        self._minInterval = 0.001
         self.running: bool = False
         self._bus: Bus = bus
-        self.interval: float = interval # in seconds
+        self.__interval: float = interval if interval >= self._minInterval else 1  # in seconds
 
         # self.__flag = Event()
         self.__timer: Timer = None
         # self.__lastStep = 0
 
+        self._nextPoll = 0
         self.statusListeners = {"start": None, "stop": None}
         self.onPoll = []
 
@@ -22,23 +24,28 @@ class AutoPoller():
                 self.stop()
         bus.addExceptionHandler(onBusException)
 
+        self._lastPoll = 0
+        self._avgBuffSize = 128
+        ''' Changes only take effect after restarting the poller '''
+        self._avgBuffIndex = 0
+        self._avgBuffFilled = False
+        self._avgTimeBuff = None
+        self._avgProcBuff = None
+
         if(autoStart):
             self.start()
 
-        self._lastPoll = 0
-        self._statAverage = 16
-        ''' Changes only take effect after restarting the poller '''
-        self._buffavg = None
-        self._buffindex = 0
+        print("Done set up")
 
-    @property
-    def interval(self):
+    def getInterval(self):
         return self.__interval
 
-    @interval.setter
-    def interval(self, new):
-        if new > 0.001: # max rate 1kHz
+    def setInterval(self, new):
+        if new >= self._minInterval: # max rate 1kHz
             self.__interval = new
+            self.resetStats()
+        else:
+            raise ValueError("Interval too small")
 
     def __enter__(self):
         ''' Enter a with block '''
@@ -52,8 +59,9 @@ class AutoPoller():
     def start(self):
         self.running = True
         # Set up statistics
-        self._buffavg = np.zeros(self._statAverage)
-        self._buffindex = 0
+        # self._buffavg = np.zeros(self._buffSize)
+        self.resetStats()
+        self._nextPoll = time.monotonic()
         # Notify anyone who cares we're about to start
         if self.statusListeners["start"] is not None:
             self.statusListeners["start"]()
@@ -68,20 +76,37 @@ class AutoPoller():
             self.statusListeners["stop"]()
         print("Autopoller stopped")
 
+    def resetStats(self):
+        self._avgTimeBuff = np.zeros(self._avgBuffSize)
+        self._avgProcBuff = np.zeros(self._avgBuffSize)
+        self._avgBuffIndex = 0
+        self._avgBuffFilled = False
+        self._lastPoll = time.monotonic() - self.__interval
+
     def __runStep(self):
         if self.running:
             # Schedule the next execution
-            self.__timer = Timer(self.__interval, self.__runStep)
+            now = time.monotonic()
+            self._nextPoll += self.__interval
+            st = self._nextPoll - now
+            if st < 0:
+                st += 0
+            self.__timer = Timer(st, self.__runStep)
             self.__timer.start()
             # Gather data for statistics
-            now = time.monotonic()
             # Poll everyone
-            self.__poll()
+            # self.__poll()
+
             # Calculate statistics
+            proc = time.monotonic() - now
             pt = now - self._lastPoll
             self._lastPoll = now
-            self._buffindex = ((self._buffindex + 1) % self._statAverage)
-            self._buffavg[self._buffindex] = pt
+            self._avgTimeBuff[self._avgBuffIndex] = pt
+            self._avgProcBuff[self._avgBuffIndex] = proc
+            self._avgBuffIndex += 1
+            if self._avgBuffIndex >= self._avgBuffSize:
+                self._avgBuffFilled = True
+                self._avgBuffIndex = 0
             for f in self.onPoll:
                 f(self)
 
@@ -90,4 +115,7 @@ class AutoPoller():
             d.poll()
 
     def getAveragePollTime(self):
-        return np.average(self._buffavg)
+        return np.average(self._avgTimeBuff)
+    
+    def getAvgProcTime(self):
+        return np.average(self._avgProcBuff)

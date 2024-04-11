@@ -27,10 +27,10 @@ class AutoPollerRow(QHBoxLayout):
         self.intervalbox = DecadeSpinBox()
         self.intervalbox.setFixedWidth(80)
         def onSpinBoxChange():
-            self.poller.interval = self.intervalbox.value()
+            self.poller.setInterval(self.intervalbox.value())
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
         # self.intervalbox.setDecimals(3)
-        self.intervalbox.setValue(self.poller.interval)
+        self.intervalbox.setValue(self.poller.getInterval())
         # self.intervalbox.setValue(0.004)
         self.intervalbox.setMinimum(0.001)
         self.intervalbox.setMaximum(10)
@@ -39,8 +39,16 @@ class AutoPollerRow(QHBoxLayout):
 
         self.measuredLabel = QLabel("")
         self.addWidget(self.measuredLabel)
-        def updateAverage(poller):
-            self.measuredLabel.setText(f"avg: {poller.getAveragePollTime():-0.6f}s")
+        def updateAverage(poller: AutoPoller):
+            self.measuredLabel.setText(f"avg: {f'{poller.getAveragePollTime():0.6f}s' if poller._avgBuffFilled else f'calc {poller._avgBuffIndex}/{poller._avgBuffSize}'}")
+            # self.measuredLabel.setText(f"avg: {f'{poller._processingDelay:-0.6f}s' if poller._avgBuffFilled else f'calc {poller._avgBuffIndex}/{poller._avgBuffSize}'}")
+        poller.onPoll.append(updateAverage)
+
+        self.errLabel = QLabel("")
+        self.addWidget(self.errLabel)
+        def updateAverage(poller: AutoPoller):
+            # self.errLabel.setText(f"err: {f'{poller.getAveragePollTime():-0.6f}s' if poller._avgBuffFilled else f'calc {poller._avgBuffIndex}/{poller._avgBuffSize}'}")
+            self.errLabel.setText(f"proc:{f'{poller.getAvgProcTime():0.6f}s' if poller._avgBuffFilled else f'calc {poller._avgBuffIndex}/{poller._avgBuffSize}'}")
         poller.onPoll.append(updateAverage)
 
         self.addStretch()
