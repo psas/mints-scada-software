@@ -13,6 +13,13 @@ class AutoPoller():
         self.__timer: Timer = None
         # self.__lastStep = 0
 
+        self.statusListeners = {"start": None, "stop": None}
+
+        def onBusException(bus, e, f):
+            if f:
+                self.stop()
+        bus.addExceptionHandler(onBusException)
+
         if(autoStart):
             self.start()
 
@@ -27,11 +34,17 @@ class AutoPoller():
 
     def start(self):
         self.running = True
+        if self.statusListeners["start"] is not None:
+            self.statusListeners["start"]()
         self.__runStep()
+        print("Autopoller started")
 
     def stop(self):
         self.__timer.cancel()
         self.running = False
+        if self.statusListeners["stop"] is not None:
+            self.statusListeners["stop"]()
+        print("Autopoller stopped")
 
     def __runStep(self):
         if self.running:

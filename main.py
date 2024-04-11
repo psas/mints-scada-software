@@ -3,15 +3,15 @@ from PyQt5.QtWidgets import QApplication
 import importlib
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
-from gui import MainWindow, DeviceRow
-
-from autopoller import AutoPoller
+from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow
 
 import settings
 
 baseaddr = 0x64
 
 # Should be compatable with any slcan CANBus interface on Linux
+
+# Set up all the things
 with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
@@ -55,10 +55,17 @@ with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
                 raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
             display = deviceDisplayClass(device)
             window.mainLayout.addLayout(display)
-
+    
     window.mainLayout.addStretch()
-
+    
     with AutoPoller(bus=bus, interval=0.5) as ap:
+
+        apr = AutoPollerRow(ap)
+        window.mainLayout.addLayout(apr)
+        # def stopAPROnBusException(bus, e, f):
+        #     print("apbeh!")
+        #     ap.stop()
+        # bus.addExceptionHandler(stopAPROnBusException)
 
         window.show()
         sys.exit(app.exec())
