@@ -51,6 +51,8 @@ class DataPacket():
             self._prepare(aid=id, seq=seq, cmd=cmd, data=data, reply=reply, err=err, rsvd=rsvd)
         elif isinstance(id, can.Message):
             # If we have a can message
+            if len(id.data) < 2:
+                raise ValueError("Invalid packet length")
             self._prepare(aid=id.arbitration_id, seq=id.data[0], cmd=id.data[1], data=id.data[2:] if len(id.data) > 2 else [])
         else:
             # If we have neither, create a blank message
