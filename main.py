@@ -12,7 +12,7 @@ baseaddr = 0x64
 # Should be compatable with any slcan CANBus interface on Linux
 
 # Set up all the things
-with Bus(settings.sender, settings.bitrate, dbgprint=False) as bus:
+with Bus(settings.sender, settings.bitrate, dbgprint=True) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 

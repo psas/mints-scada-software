@@ -10,14 +10,16 @@ class GenericActuator(GenericSensor):
         # Update the state
         self.value = state
         # Send the command to change
-        DataPacket(self._id, cmd=BusCommands.WRITE_VALUE, data=self._packValue()).send(self._bus)
+        p = DataPacket(self._id, cmd=BusCommands.WRITE_VALUE, data=self._packValue())
+        p.send(self._bus)
+        p.print()
 
     def _decodePacket(self, packet: DataPacket):
         ''' Decodes the data portion of a packet '''
         if not packet.err:
             # Set value command
             if packet.cmd == BusCommands.WRITE_VALUE:
-                self.value, self.aux = struct.unpack(">IH", packet.data)
+                self.value, self.aux = struct.unpack(self.STRUCT_FORMAT, packet.data)
                 return
         super()._decodePacket(packet=packet)
 
@@ -28,7 +30,7 @@ class GenericActuator(GenericSensor):
             if not packet.reply and self._simulated:
                 if packet.cmd == BusCommands.WRITE_VALUE:
                     # Actually update the values
-                    self.value, self.aux = struct.unpack(">IH", packet.data)
+                    self.value, self.aux = struct.unpack(self.STRUCT_FORMAT, packet.data)
                     # Send a reply with the current value of the actuator.
                     # Must be repacked to ensure any unpacking errors are included.
                     reply = packet.getReply(self._packValue())

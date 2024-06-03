@@ -4,6 +4,7 @@ import random
 from nexus import DataPacket, BusRider, BusCommands
 
 class GenericSensor(BusRider):
+    STRUCT_FORMAT = "<IH"
     def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
         super().__init__(id, name=name, simulated=simulated)
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
@@ -35,7 +36,7 @@ class GenericSensor(BusRider):
                 pass
             # Get value command
             elif packet.cmd == BusCommands.READ_VALUE:
-                self.value, self.aux = struct.unpack(">IH", packet.data)
+                self.value, self.aux = struct.unpack(self.STRUCT_FORMAT, packet.data)
             else:
                 # TODO figure out what should happen here
                 pass 
@@ -47,12 +48,16 @@ class GenericSensor(BusRider):
         ''' Call this for every packet that comes in '''
         if packet is not None and packet.id == self._id:
             if packet.reply:
-                # Set the last updated time
-                self.time = packet.time
-                # Set the value
-                self._decodePacket(packet)
-                # Trigger anything waiting for this sensor
-                self._event.set()
+                # Check if this was a failed ID claim and error if it was
+                if packet.cmd == BusCommands.CLAIM_ID and packet.err:
+                    print("Nooooo something is wrong! A device reported this ID as taken!")
+                else:
+                    # Set the last updated time
+                    self.time = packet.time
+                    # Set the value
+                    self._decodePacket(packet)
+                    # Trigger anything waiting for this sensor
+                    self._event.set()
             else:
                 # print("Packet~!", f"{packet.id:02X}", f"{self._id:02X}")
                 reply = packet.getReply()
@@ -70,10 +75,14 @@ class GenericSensor(BusRider):
                         reply.data = self._packValue()
                     else:
                         reply.err = True
+                elif packet.cmd == BusCommands.CLAIM_ID:
+                    # Someone wanted this ID, that's fine. Don't need to say anything.
+                    reply = None
                 else:
                     reply.err=True
-                reply.send(self._bus)
-                self._bus.printDbgPacket(reply, "Sent reply")
+                if reply is not None:
+                    reply.send(self._bus)
+                    self._bus.printDbgPacket(reply, "Sent reply")
             self.updateListeners()
     
     def updateListeners(self):
@@ -83,7 +92,7 @@ class GenericSensor(BusRider):
 
     def _packValue(self) -> bytearray:
         ''' Gets the value of the sensor as a bytearray ready to be sent on the bus '''
-        return struct.pack(">IH", self.value, self.aux or 0)
+        return struct.pack(self.STRUCT_FORMAT, self.value, self.aux or 0)
 
     def addListener(self, packetListener: Callable):
         self._updateListeners.append(packetListener)
