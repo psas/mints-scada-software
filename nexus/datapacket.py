@@ -70,8 +70,8 @@ class DataPacket():
         self.data = data or [0x0, 0x0, 0x0, 0x0, 0x0, 0x0]
         self.timestamp = timestamp or time.time()
         # Make sure the data is the right length
-        while len(self.data) < 6:
-            self.data.append(0x00)
+        # while len(self.data) < 6:
+        #     self.data.append(0x00)
         if len(self.data) > 6:
             self.data = self.data[0:5]
 
