@@ -55,14 +55,14 @@ with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=True) as bus:
             if not issubclass(deviceDisplayClass, DeviceRow):
                 raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
             display = deviceDisplayClass(device)
-            window.mainLayout.addLayout(display)
+            window.listtab.layout.addLayout(display)
     
-    window.mainLayout.addStretch()
+    window.listtab.layout.addStretch()
     
-    with AutoPoller(bus=bus, interval=0.5) as ap:
+    with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
 
         apr = AutoPollerRow(ap)
-        window.mainLayout.addLayout(apr)
+        window.mainlayout.addLayout(apr)
 
         window.show()
         app.exec()

@@ -4,7 +4,7 @@ import time
 import numpy as np
 
 class AutoPoller():
-    def __init__(self, bus: Bus, interval: float = 1):
+    def __init__(self, bus: Bus, interval: float = 1, autostart = True):
         ''' Actual interval will be just slightly longer than given interval, and may not be perfectly conscistant '''
         self._minInterval: float = 0.001
         ''' The minimum interval between polls. This should be 0.001 on most systems, and is assumed to be so in the docs. '''
@@ -14,6 +14,8 @@ class AutoPoller():
         ''' The bus that has the riders to poll '''
         self.__interval: float = interval if interval >= self._minInterval else 1  # in seconds
         ''' (internal) The time between polls '''
+        self.__autostart = autostart
+        ''' If the poller should automatically start when created '''
 
         self.__pollingThread: Thread = None
         ''' The thread that does the polling '''
@@ -70,7 +72,8 @@ class AutoPoller():
 
     def __enter__(self):
         ''' Enter a with block '''
-        self.start()
+        if self.__autostart:
+            self.start()
         return self
 
     def __exit__(self, *exec_info):
