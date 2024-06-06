@@ -77,9 +77,15 @@ class DataPacket():
 
     def print(self):
         ''' Prints a message to the terminal '''
-        print(f"{'E' if self.err == 1 else '.'}{self.rsvd:01b} {'<' if self.reply else '>'}{self.id:02X} #{self.seq:02X} !{self.cmd:02x}: {' '.join([f'{b:02X}' for b in self.data])}")
+        print(str(self))
 
-    def send(self, bus):
+    def __str__(self):
+        return f"{'E' if self.err == 1 else '.'}{self.rsvd:01b} {'<' if self.reply else '>'}{self.id:02X} #{self.seq:02X} !{self.cmd:02x}: {' '.join([f'{b:02X}' for b in self.data])}"
+
+    def getLogString(self):
+        return f"{time.strftime('%H:%M:%S', time.gmtime(self.timestamp))}.{int(((time.time()%1) * 1e6)):06d} {self}\n"
+
+    def genCanMessage(self):
         ''' Sends the message on the given can bus '''
         # Validate (and fix if needed) the data before actually sending
         self.data = self.data or []
@@ -90,7 +96,8 @@ class DataPacket():
         # Put header and data in payload
         snddta = struct.pack("BB6B", self.seq, self.cmd, *self.data)
         msg = can.Message(arbitration_id= (self.reply&1) << 10 | (self.err&1) << 9 | (self.rsvd&1) << 8 | (self.id & 0xFF), data=snddta, is_extended_id=False)
-        bus.send(msg)
+        return msg
+        # bus.send(msg, self)
 
     def getReply(self, data: bytearray = None, err: bool = False) -> DataPacket:
         ''' Creates a datapacket that is a reply to this packet '''

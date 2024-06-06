@@ -44,7 +44,7 @@ class BusRider():
         if self._bus is not None and not self._simulated:
             # Get the ID of the sensor
             request = DataPacket(id=self._id, cmd=BusCommands.READ_ID_LOW)
-            request.send(bus)
+            bus.send(request)
 
     def _onPacket(self, packet: DataPacket):
         ''' Call this for every packet that comes in '''

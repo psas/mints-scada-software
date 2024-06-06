@@ -12,10 +12,11 @@ baseaddr = 0x64
 # Should be compatable with any slcan CANBus interface on Linux
 
 # Set up all the things
-with Bus(settings.sender, settings.bitrate, dbgprint=True) as bus:
+with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=True) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 
+    # Load all devices from settings
     for deviceDesc in settings.devices:
         # We don't know what type the device is, so try a bunch of devices and see if we can find it
         deviceClass = None

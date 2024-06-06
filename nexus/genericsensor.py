@@ -81,7 +81,7 @@ class GenericSensor(BusRider):
                 else:
                     reply.err=True
                 if reply is not None:
-                    reply.send(self._bus)
+                    self._bus.send(reply)
                     self._bus.printDbgPacket(reply, "Sent reply")
             self.updateListeners()
     
@@ -108,7 +108,7 @@ class GenericSensor(BusRider):
         self._event.clear()
         # Ask the sensor to read
         p = DataPacket(id=self._id, cmd=BusCommands.READ_VALUE)
-        p.send(self._bus)
+        self._bus.send(p)
         self._bus.printDbgPacket(p, "Sent poll")
 
     def readValue(self, timeout: float = None, onFail: Callable[..., None] = None):

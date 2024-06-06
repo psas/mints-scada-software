@@ -1,9 +1,11 @@
 import can
 import threading
 from nexus import DataPacket
+import os.path as path
+import time
 
 class Bus():
-    def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False):
+    def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False, logging: bool = False):
         # If the bus is running. The bus starts when it is created, and can not be restarted once it stops
         self.__running = True
         # Everyone on the bus
@@ -18,6 +20,19 @@ class Bus():
         # Set up exception handeling
         self._exceptionHandlers = []
         self._doDefaultExcpetionHandler = True
+        # The file to log all CAN messages to
+        self._logfile = None
+        # Generate filename if we're logging
+        if logging:
+            self._logfile = f"./log/{time.strftime('%Y%m%d_%H:%M:%S', time.gmtime(time.time()))}"
+            # Update file numbers if one already exists
+            n = 2
+            while path.exists(self._logfile):
+                self._logfile = self._logfile + f".{n:d}"
+                n += 1
+            self._logfile += ".log"
+        # The open file to write to for a log
+        self._log = None
 
     def addExceptionHandler(self, exceptionHandler):
         self._exceptionHandlers.append(exceptionHandler)
@@ -41,6 +56,10 @@ class Bus():
 
     def __enter__(self):
         ''' Enter a with block '''
+        # Start logging if needed
+        if self._logfile is not None:
+            # Open the log file
+            self._log = open(self._logfile, "w")
         # Start the bus
         self.__receiverThread.start()
         # Wait for it to warm up
@@ -50,6 +69,9 @@ class Bus():
     def __exit__(self, *exec_info):
         ''' Exit a with block '''
         self.stop()
+        # Close the log cleanly
+        if self._log is not None:
+            self._log.close()
 
     def __receive(self, canbus: can.ThreadSafeBus):
         ''' incoming DataPacket processing thread '''
@@ -69,6 +91,9 @@ class Bus():
                 self.printDbgPacket(p, "Got packet")
                 for l in self._riders:
                     l._onPacket(p)
+                if self._log:
+                    self._log.write(p.getLogString())
+                    self._log.flush()
         # When the thread stops
         print("Receiver stopped")
 
@@ -100,10 +125,13 @@ class Bus():
             self._riders.remove(rider)
             rider._setBus(None)
 
-    def send(self, message):
+    def send(self, message: DataPacket):
         if self.__running:
             try:
-                self.__canbus.send(message)
+                self.__canbus.send(message.genCanMessage())
+                if self._log:
+                    self._log.write(message.getLogString())
+                    self._log.flush()
             except Exception as e:
                 # TODO make this resilient
                 self.handleException(e, True)
