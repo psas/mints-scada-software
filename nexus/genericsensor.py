@@ -2,9 +2,11 @@ from typing import Callable
 import struct
 import random
 from nexus import DataPacket, BusRider, BusCommands
+import numpy as np
 
 class GenericSensor(BusRider):
     STRUCT_FORMAT = "<IH"
+    BASE_HISTORY_SIZE = 1000
     def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
         super().__init__(id, name=name, simulated=simulated)
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
@@ -19,6 +21,8 @@ class GenericSensor(BusRider):
         # These are called after the packet is processed and values or errors have been parsed.
         # The updated sensor is passed as the first argument.
         self._updateListeners = []
+        self.history = np.zeros((2,self.BASE_HISTORY_SIZE))
+        self.historyIndex = 0
 
     def genVal(self):
         return random.randint(0, (2**32)-1)
@@ -36,7 +40,14 @@ class GenericSensor(BusRider):
                 pass
             # Get value command
             elif packet.cmd == BusCommands.READ_VALUE:
+                # Read the actual value
                 self.value, self.aux = struct.unpack(self.STRUCT_FORMAT, packet.data)
+                # Expand history if needed
+                if self.historyIndex == np.shape(self.history)[1]:
+                    self.history = np.append(self.history, np.zeros((2, self.BASE_HISTORY_SIZE)), 1)
+                # Add it to the history
+                self.history[:,self.historyIndex] = (self.time, self.logValue())
+                self.historyIndex += 1
             else:
                 # TODO figure out what should happen here
                 pass 
@@ -136,3 +147,6 @@ class GenericSensor(BusRider):
         if self._simulated:
             self.value = self.genVal()
             print("My value is", self.value)
+
+    def logValue(self):
+        return self.value

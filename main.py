@@ -7,12 +7,10 @@ from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow
 
 import settings
 
-baseaddr = 0x64
-
 # Should be compatable with any slcan CANBus interface on Linux
 
 # Set up all the things
-with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=True) as bus:
+with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=False) as bus:
     app = QApplication(sys.argv)
     window = MainWindow()
 
@@ -50,12 +48,13 @@ with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=True) as bus:
                     continue
             # Check if we actually found a class
             if deviceDisplayClass is None:
-                raise ImportError(f"Cannot find a display of type {deviceDesc['display']} to add")
+                raise ImportError(f"Cannotbaseaddr find a display of type {deviceDesc['display']} to add")
             # Make sure the class is an allowable class
             if not issubclass(deviceDisplayClass, DeviceRow):
                 raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
             display = deviceDisplayClass(device)
             window.listtab.layout.addLayout(display)
+            window.graphtab.addSensor(device)
     
     window.listtab.layout.addStretch()
     

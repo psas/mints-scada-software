@@ -5,7 +5,7 @@ from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 
 from nexus.genericsensor import GenericSensor
-from gui import ListTab
+from gui import ListTab, GraphTab
 
 class MainWindow(QDialog):
     def __init__(self, parent=None):
@@ -42,7 +42,7 @@ class MainWindow(QDialog):
 
         self.tabs = QTabWidget()
 
-        self.graphtab = ListTab()
+        self.graphtab = GraphTab()
         self.tabs.addTab(self.graphtab, "Graph")
 
         self.listtab = ListTab()
