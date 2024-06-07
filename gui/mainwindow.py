@@ -11,7 +11,7 @@ class MainWindow(QDialog):
     def __init__(self, parent=None, loghandler=None):
         super(MainWindow, self).__init__(parent)
 
-        self.setWindowTitle("CAN bus sensor demo")
+        self.setWindowTitle("minTS Controller")
         self.setGeometry(0, 0, 960, 540)
 
         # Force the style to be the same on all OSs:
@@ -40,21 +40,25 @@ class MainWindow(QDialog):
 
         self.mainlayout = QVBoxLayout(self)
 
-        self.tabs = QTabWidget()
-
         self.graph = GraphTab()
-        self.tabs.addTab(self.graph, "Graph")
-
         self.listtab = ListTab()
-        self.tabs.addTab(self.listtab, "List")
-
-        # self.exporter = ExportTab()
-        # self.tabs.addTab(self.exporter, "Export")
-
         self.console = ConsoleTab(loghandler)
-        self.tabs.addTab(self.console, "Console")
+        self.exporter = ExportTab()
 
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.graph, "Graph")
+        self.tabs.addTab(self.listtab, "List")
+        # self.tabs.addTab(self.exporter, "Export")
+        self.tabs.addTab(self.console, "Console")
         self.mainlayout.addWidget(self.tabs)
+
+        # If you don't like tabs, everything can be side by side
+        # self.container = QHBoxLayout()
+        # self.container.addWidget(self.graph)
+        # self.container.addWidget(self.listtab)
+        # self.container.addWidget(self.console)
+        # self.mainlayout.addLayout(self.container)
+
         self.setLayout(self.mainlayout)
 
     def update(self):
