@@ -57,6 +57,7 @@ if __name__ == '__main__':
             
             # Find the display for the device
             isVisibleOnList = deviceDesc["display"] is not None and deviceDesc["display"] != 'None'
+            display = None
             if isVisibleOnList:
                 deviceDisplayClass = None
                 # Search for the class
@@ -73,8 +74,7 @@ if __name__ == '__main__':
                 if not issubclass(deviceDisplayClass, DeviceRow):
                     raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
                 display = deviceDisplayClass(device)
-                window.listtab.layout.addLayout(display)
-            window.graph.addSensor(device, isVisibleOnList)
+            window.addDevice(device, display)
         
         window.listtab.layout.addStretch()
         

@@ -12,7 +12,7 @@ import logging
 
 log = logging.getLogger("Graph")
 
-class GraphTab(QWidget):
+class GraphView(QWidget):
     FOREGROUND_COLOR = "#f4f4f4"
     BACKGROUND_COLOR = "#434343"
     LEGEND_COLOR = "#353535"

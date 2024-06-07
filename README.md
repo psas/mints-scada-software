@@ -24,3 +24,6 @@ Each line in the log file represents a single DataPacket. Both incoming and outg
 | 26                | Sequence number. Hex encoded
 | 80                | Command. Hex encoded
 | 00 00 00 00 00 00 | Packet data as 6 hex encoded bytes
+
+### User-Provided scripts
+This program allows the user to run scripts. This is intended for allowing the automation of tests. These scripts are run as-is, and not sandboxed in any way. This is a security vulnerability, so only run scripts that you trust to not break things. The program is written in this way since it is much easier than trying to properly sandbox the executed code while still giving it access to the required resources to be useful. It may be worth redoing this in the future to be more secure, but for the moment it is fine. Also, the risk isn't much higher than running the base code since it all runs locally on the machine. You have been warned.

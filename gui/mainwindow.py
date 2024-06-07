@@ -1,15 +1,20 @@
-from PyQt5 import QtWidgets
-# from PyQt5.QtWidgets import QApplication, QMainWindow, QDialog, QHBoxLayout, QPushButton, QLabel
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 
-from nexus.genericsensor import GenericSensor
-from gui import ListTab, GraphTab, ExportTab, ConsoleTab
+from gui import ListView, GraphView, ExportView, ConsoleView, ScriptView, MintsScriptAPI
+
+from nexus import BusRider
+
+import logging
 
 class MainWindow(QDialog):
     def __init__(self, parent=None, loghandler=None):
         super(MainWindow, self).__init__(parent)
+
+        self.log = logging.getLogger("mainwindow")
+
+        self.devices: map[BusRider] = {}
 
         self.setWindowTitle("minTS Controller")
         self.setGeometry(0, 0, 960, 540)
@@ -40,15 +45,17 @@ class MainWindow(QDialog):
 
         self.mainlayout = QVBoxLayout(self)
 
-        self.graph = GraphTab()
-        self.listtab = ListTab()
-        self.console = ConsoleTab(loghandler)
-        self.exporter = ExportTab()
+        self.graph = GraphView()
+        self.listtab = ListView()
+        self.console = ConsoleView(loghandler)
+        self.exporter = ExportView()
+        self.scripter = ScriptView(MintsScriptAPI(devices=self.devices, graph=self.graph, exporter=self.exporter, abort=self.abort))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.graph, "Graph")
         self.tabs.addTab(self.listtab, "List")
         # self.tabs.addTab(self.exporter, "Export")
+        self.tabs.addTab(self.scripter, "Script")
         self.tabs.addTab(self.console, "Console")
         self.mainlayout.addWidget(self.tabs)
 
@@ -61,5 +68,14 @@ class MainWindow(QDialog):
 
         self.setLayout(self.mainlayout)
 
+    def addDevice(self, device: BusRider, display: QWidget = None):
+        self.devices[device.name] = device
+        if display is not None:
+            self.listtab.layout.addLayout(display)
+        self.graph.addSensor(device, display is not None)
+
     def update(self):
         pass
+
+    def abort(self):
+        self.log.fatal("Nooooo I don't know how to abort! This is bad! Slap the big red button NOWWWWW!!!!")
