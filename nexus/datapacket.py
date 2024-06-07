@@ -75,10 +75,6 @@ class DataPacket():
         if len(self.data) > 6:
             self.data = self.data[0:5]
 
-    def print(self):
-        ''' Prints a message to the terminal '''
-        print(str(self))
-
     def __str__(self):
         return f"{'E' if self.err == 1 else '.'}{self.rsvd:01b} {'<' if self.reply else '>'}{self.id:02X} #{self.seq:02X} !{self.cmd:02x}: {' '.join([f'{b:02X}' for b in self.data])}"
 

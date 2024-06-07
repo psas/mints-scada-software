@@ -10,7 +10,7 @@ def s2v():
     count += 1
     return count
 
-with Bus(channel=settings.receiver, bitrate=settings.bitrate, dbgprint=True) as sb:
+with Bus(channel=settings.receiver, bitrate=settings.bitrate, packetprinting=True) as sb:
     tc = GenericSensor(myid, simulated=True)
     sb.addRider(tc)
     

@@ -3,6 +3,9 @@ from threading import Event, Thread
 import time
 import numpy as np
 
+import logging
+log = logging.getLogger("autopoller")
+
 class AutoPoller():
     def __init__(self, bus: Bus, interval: float = 1, autostart = True):
         ''' Actual interval will be just slightly longer than given interval, and may not be perfectly conscistant '''
@@ -94,7 +97,7 @@ class AutoPoller():
         self.__stopEvent.clear()
         self.__pollingThread = Thread(target=self.__pollingWorker)
         self.__pollingThread.start()
-        print("Autopoller started")
+        log.info("Autopoller started")
 
     def stop(self):
         ''' Stops the autopoller. It can later be restarted, and you can still manually poll devices '''
@@ -104,7 +107,7 @@ class AutoPoller():
         # Let anyone who cares know we've just stopped
         if self.statusListeners["stop"] is not None:
             self.statusListeners["stop"]()
-        print("Autopoller stopped")
+        log.info("Autopoller stopped")
 
     def resetStats(self):
         ''' Resets all statistics gathered about the polling process '''
@@ -138,7 +141,7 @@ class AutoPoller():
             self._nextPoll += self.__interval
             st = self._nextPoll - now
             if st < 0:
-                print(f"Poller can't keep up! Running {-st}s behind. Consider picking a lower polling rate ")
+                log.warn(f"Poller can't keep up! Running {-st}s behind. Consider picking a lower polling rate ")
                 st = 0
             self.__stopEvent.wait(timeout=st)
 

@@ -1,6 +1,8 @@
 from nexus import DataPacket, BusCommands, GenericSensor
 import struct
 
+
+
 class GenericActuator(GenericSensor):
     def __init__(self, id: int, name: str = "GenericActuator", simulated: bool = False):
         super().__init__(id=id, name=name, simulated=simulated)
@@ -12,7 +14,6 @@ class GenericActuator(GenericSensor):
         # Send the command to change
         p = DataPacket(self._id, cmd=BusCommands.WRITE_VALUE, data=self._packValue())
         self._bus.send(p)
-        p.print()
 
     def _decodePacket(self, packet: DataPacket):
         ''' Decodes the data portion of a packet '''

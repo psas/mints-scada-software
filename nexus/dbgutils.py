@@ -1,8 +1,8 @@
 import inspect
 
-def printStackTrace():
+def getStackTrace():
     stack = inspect.stack()
-    print("Call stack:")
+    str = "Call stack:\n"
     lines = []
     parts = []
     for frame in stack[::-1]:
@@ -19,6 +19,7 @@ def printStackTrace():
             start = i
             break
     for line in lines:
-        print(f"\t{'/'.join(line[start:])}")
+        str += f"\t{'/'.join(line[start:])}\n"
+    return str
 
     

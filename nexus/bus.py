@@ -3,14 +3,16 @@ import threading
 from nexus import DataPacket
 import os.path as path
 import time
+import logging
 
 class Bus():
-    def __init__(self, channel, bitrate, bustype='slcan', dbgprint: bool = False, logging: bool = False):
+    def __init__(self, channel, bitrate, bustype='slcan', packetprinting: bool = False, packetlogging: bool = False):
+        self.log = logging.getLogger("bus")
         # If the bus is running. The bus starts when it is created, and can not be restarted once it stops
         self.__running = True
         # Everyone on the bus
         self._riders = []
-        self._print = dbgprint
+        self._packetprint = packetprinting
         # Event to watch for the listener starting
         self.__startedEvent = threading.Event()
         # The underlying CAN bus
@@ -23,7 +25,7 @@ class Bus():
         # The file to log all CAN messages to
         self._logfile = None
         # Generate filename if we're logging
-        if logging:
+        if packetlogging:
             self._logfile = f"./log/{time.strftime('%Y%m%d_%H:%M:%S', time.gmtime(time.time()))}"
             # Update file numbers if one already exists
             n = 2
@@ -44,12 +46,11 @@ class Bus():
         if fatal:
             raise exception
         else:
-            print("Bus has encountered a non-fatal exception!")
-            print(exception.__cause__)
+            self.log.warn("Bus has encountered a non-fatal exception!")
+            self.log.warn(exception.__cause__)
 
     def handleException(self, exception: Exception, fatal: bool):
         for eh in self._exceptionHandlers:
-            print(eh)
             eh(self, exception, fatal)
         if self._doDefaultExcpetionHandler:
             self._defaultExceptionHandler(exception, fatal)
@@ -75,7 +76,7 @@ class Bus():
 
     def __receive(self, canbus: can.ThreadSafeBus):
         ''' incoming DataPacket processing thread '''
-        print("Receiver running")
+        self.log.info("Receiver running")
         # Let the starting thread know this thread is actually running
         self.__startedEvent.set()
         # As long as this thread is supposed to be running
@@ -95,7 +96,7 @@ class Bus():
                     self._log.write(p.getLogString())
                     self._log.flush()
         # When the thread stops
-        print("Receiver stopped")
+        self.log.info("Receiver stopped")
 
     def stop(self):
         ''' Stops the sensor bus cleanly and releases all resources. The bus can not be restarted '''
@@ -140,6 +141,6 @@ class Bus():
             self.handleException(e, True)
 
     def printDbgPacket(self, packet, msg):
-        if self._print:
+        if self._packetprint:
             print(f"{msg:10s} ", end='')
-            packet.print()
+            print(packet)

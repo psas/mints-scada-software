@@ -3,12 +3,14 @@ import struct
 import random
 from nexus import DataPacket, BusRider, BusCommands
 import numpy as np
+import logging
 
 class GenericSensor(BusRider):
     STRUCT_FORMAT = "<IH"
     BASE_HISTORY_SIZE = 1000
     def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
         super().__init__(id, name=name, simulated=simulated)
+        self.log = logging.getLogger("genericsensor")
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
         self.value = None
         # An auxiliary output from the sensor. Must be an unsigned 2 byte int.
@@ -52,7 +54,7 @@ class GenericSensor(BusRider):
                 # TODO figure out what should happen here
                 pass 
         else:
-            print("Something bad :(")
+            self.log.error("Something bad :( The packet was an error")
             self.value = None
 
     def _onPacket(self, packet: DataPacket):
@@ -61,7 +63,7 @@ class GenericSensor(BusRider):
             if packet.reply:
                 # Check if this was a failed ID claim and error if it was
                 if packet.cmd == BusCommands.CLAIM_ID and packet.err:
-                    print("Nooooo something is wrong! A device reported this ID as taken!")
+                    self.log.fatal(f"Nooooo something is wrong! A device reported this ID {self._id:02X} as taken!")
                 else:
                     # Set the last updated time
                     self.time = packet.time
@@ -70,7 +72,6 @@ class GenericSensor(BusRider):
                     # Trigger anything waiting for this sensor
                     self._event.set()
             else:
-                # print("Packet~!", f"{packet.id:02X}", f"{self._id:02X}")
                 reply = packet.getReply()
                 # Get ID command
                 if packet.cmd == BusCommands.READ_ID_LOW:
@@ -146,7 +147,7 @@ class GenericSensor(BusRider):
         ''' Reads a local sensor. Usually this would be done in preperation to answer a poll request. '''
         if self._simulated:
             self.value = self.genVal()
-            print("My value is", self.value)
+            self.log.info("My value is", self.value)
 
     def logValue(self):
         return self.value

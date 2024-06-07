@@ -8,6 +8,9 @@ from PyQt5.QtCore import Qt, QTimer
 import time
 import numpy as np
 from nexus import GenericSensor
+import logging
+
+log = logging.getLogger("Graph")
 
 class GraphTab(QWidget):
     FOREGROUND_COLOR = "#f4f4f4"
@@ -24,6 +27,8 @@ class GraphTab(QWidget):
         self.y = [0]
         
         self.sensors: list[GenericSensor]= []
+
+        logging.getLogger("matplotlib").setLevel(logging.INFO)
 
         self.fig = Figure(figsize=(5, 4), dpi=100)
         self.axes = self.fig.add_subplot(111)
@@ -80,7 +85,6 @@ class GraphTab(QWidget):
 
     def _updateSpin(self):
         self.duration = self.spin_box.value()
-        print(self.duration)
         self._update()
 
     def _update(self):
