@@ -7,3 +7,11 @@ class Solenoid(GenericActuator):
 
     def setOpen(self, state: bool):
         self.set(state=state if self.openPos else not state)
+
+    def open(self):
+        ''' Opens the solenoid value '''
+        self.setOpen(True)
+
+    def close(self):
+        ''' Closes the solenoid value '''
+        self.setOpen(False)

@@ -35,7 +35,6 @@ class AutoPollerRow(QHBoxLayout):
         def onSpinBoxChange():
             self.poller.setInterval(self.intervalbox.value())
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
-        self.intervalbox.setValue(self.poller.getInterval())
         self.intervalbox.setMinimum(0.001)
         self.intervalbox.setMaximum(10)
         self.intervalbox.setSuffix("s")
@@ -63,6 +62,8 @@ class AutoPollerRow(QHBoxLayout):
         self.startStopButton.clicked.connect(self.buttonClick)
         self.addWidget(self.startStopButton)
 
+        self.poller.setIntervalChangeListener(self.onChangeListener)
+
     def onStart(self):
         ''' Called when the autopoller starts '''
         self.valueLabel.setText(self.RUNNING_TEXT)
@@ -79,3 +80,6 @@ class AutoPollerRow(QHBoxLayout):
             self.poller.stop()
         else:
             self.poller.start()
+
+    def onChangeListener(self):
+        self.intervalbox.setValue(self.poller.getInterval())

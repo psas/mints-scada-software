@@ -81,6 +81,7 @@ if __name__ == '__main__':
         with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
 
             apr = AutoPollerRow(ap)
+
             window.mainlayout.addLayout(apr)
 
             window.show()

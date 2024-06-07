@@ -48,10 +48,20 @@ class ScriptView(QWidget):
         self.statusLayout.addWidget(self.savebutton)
 
         self.scripteditor = QTextEdit()
-        self.scripteditor.insertPlainText('import time;print("hi1");time.sleep(3);print("hi2")')
+        # self.scripteditor.insertPlainText('import time;print("hi1");time.sleep(3);print("hi2")')
+        # self.scripteditor.insertPlainText('print(mints.devices["Generic Sensor 1"].value)')
+        self.scripteditor.insertPlainText('''
+import time
+mints.autopoller.setInterval(0.05)
+mints.autopoller.start()
+slnd = mints.devices["Generic Sensor 1"]
+slnd
+mints
+''')
+        
         self.layout.addWidget(self.scripteditor)
 
-        self.mints = mintsapi
+        self.mints: MintsScriptAPI = mintsapi
 
     def _done(self):
         self.running.clear()
@@ -67,10 +77,14 @@ class ScriptView(QWidget):
             script = self.scripteditor.toPlainText()
             def runthread(script, doneSignal):
                 log = logging.getLogger("script.exec")
-                exec(script, {
-                    "print": log.info,
-                    "mints": MintsScriptAPI()
-                })
+                try:
+                    exec(script, {
+                        "print": log.info,
+                        "mints": self.mints
+                    })
+                except Exception as e:
+                    self.log.error(repr(e))
+                    self.mints.abort()
                 doneSignal.emit()
 
             self.runner = threading.Thread(target=runthread, args=(script, self.doneSignal))

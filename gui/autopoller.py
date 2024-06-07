@@ -7,6 +7,10 @@ import logging
 log = logging.getLogger("autopoller")
 
 class AutoPoller():
+    CHANGE_INTERVAL_EVENT = "change_interval"
+    START_EVENT = "start"
+    STOP_EVENT = "stop"
+
     def __init__(self, bus: Bus, interval: float = 1, autostart = True):
         ''' Actual interval will be just slightly longer than given interval, and may not be perfectly conscistant '''
         self._minInterval: float = 0.001
@@ -27,7 +31,7 @@ class AutoPoller():
 
         self._nextPoll = 0
         ''' The time that the next poll should happen at '''
-        self.statusListeners = {"start": None, "stop": None}
+        self.statusListeners = {self.START_EVENT: None, self.STOP_EVENT: None, self.CHANGE_INTERVAL_EVENT: None}
         ''' Listeners when the status of the autopoller changes '''
 
         # Stop the autopoller if there is an error on the bus
@@ -70,8 +74,15 @@ class AutoPoller():
         if s >= self._minInterval: # max rate 1kHz
             self.__interval = s
             self.resetStats()
+            if self.statusListeners[self.CHANGE_INTERVAL_EVENT] is not None:
+                self.statusListeners[self.CHANGE_INTERVAL_EVENT]()
         else:
             raise ValueError("Interval too small")
+
+    def setIntervalChangeListener(self, listener: callable):
+        self.statusListeners[AutoPoller.CHANGE_INTERVAL_EVENT] = callable
+        if self.statusListeners[self.CHANGE_INTERVAL_EVENT] is not None:
+            self.statusListeners[self.CHANGE_INTERVAL_EVENT]()
 
     def __enter__(self):
         ''' Enter a with block '''
@@ -84,30 +95,32 @@ class AutoPoller():
         self.stop()
 
     def start(self):
-        ''' Starts the autopoller '''
-        # Reset statistics
-        self.resetStats()
-        # Set the desired time for the next poll 
-        self._nextPoll = time.monotonic()
-        # Notify anyone who cares we're about to start
-        if self.statusListeners["start"] is not None:
-            self.statusListeners["start"]()
-        # Actually start
-        self.__running = True
-        self.__stopEvent.clear()
-        self.__pollingThread = Thread(target=self.__pollingWorker)
-        self.__pollingThread.start()
-        log.info("Autopoller started")
+        ''' Starts the autopoller if it wasn't already started '''
+        if not self.__running:
+            # Reset statistics
+            self.resetStats()
+            # Set the desired time for the next poll 
+            self._nextPoll = time.monotonic()
+            # Notify anyone who cares we're about to start
+            if self.statusListeners[self.START_EVENT] is not None:
+                self.statusListeners[self.START_EVENT]()
+            # Actually start
+            self.__running = True
+            self.__stopEvent.clear()
+            self.__pollingThread = Thread(target=self.__pollingWorker)
+            self.__pollingThread.start()
+            log.info("Autopoller started")
 
     def stop(self):
-        ''' Stops the autopoller. It can later be restarted, and you can still manually poll devices '''
+        ''' Stops the autopoller if it was running. It can later be restarted, and you can still manually poll devices '''
         # Send the signal to stop running
-        self.__running = False
-        self.__stopEvent.set()
-        # Let anyone who cares know we've just stopped
-        if self.statusListeners["stop"] is not None:
-            self.statusListeners["stop"]()
-        log.info("Autopoller stopped")
+        if self.__running:
+            self.__running = False
+            self.__stopEvent.set()
+            # Let anyone who cares know we've just stopped
+            if self.statusListeners[self.STOP_EVENT] is not None:
+                self.statusListeners[self.STOP_EVENT]()
+            log.info("Autopoller stopped")
 
     def resetStats(self):
         ''' Resets all statistics gathered about the polling process '''
@@ -141,7 +154,7 @@ class AutoPoller():
             self._nextPoll += self.__interval
             st = self._nextPoll - now
             if st < 0:
-                log.warn(f"Poller can't keep up! Running {-st}s behind. Consider picking a lower polling rate ")
+                log.warn(f"Poller can't keep up! Running {-st*1000:.1f}ms behind. Consider picking a lower polling rate ")
                 st = 0
             self.__stopEvent.wait(timeout=st)
 
