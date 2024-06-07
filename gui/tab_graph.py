@@ -133,3 +133,15 @@ class GraphTab(QWidget):
         ''' Sets the duration of the graph '''
         self.duration = duration
         self._update()
+
+    def enableChannel(self, channel: str, state: bool = True) -> bool:
+        ''' Set if a channel is enabled in the graph.
+        
+        * channel is the string name of the channel
+        * state is a boolean if the channel should be enabled or not, defaults to true
+        * Returns if the channel was changed '''
+        for i in range(len(self.sensors)):
+            if self.sensors[i].name == channel:
+                self.checkboxes[i].setChecked(state)
+                return True
+        return False
