@@ -55,7 +55,7 @@ with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=False) as bus
                 raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
             display = deviceDisplayClass(device)
             window.listtab.layout.addLayout(display)
-        window.graphtab.addSensor(device, isVisibleOnList)
+        window.graph.addSensor(device, isVisibleOnList)
     
     window.listtab.layout.addStretch()
     
