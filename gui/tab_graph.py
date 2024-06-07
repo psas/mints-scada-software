@@ -93,6 +93,7 @@ class GraphTab(QWidget):
 
         start = time.time()
         thresh = start - self.duration
+        count = 0
         for i in range(len(self.sensors)):
             if self.checkboxes[i].isChecked():
                 hist = self.sensors[i].history
@@ -106,6 +107,7 @@ class GraphTab(QWidget):
                     ymax = max(np.max(vals[1]), ymax)
                     self.axes.draw_artist(self.lines[i])
                     self.lines[i].set_label(self.sensors[i].name)
+                    count += 1
                     continue
             self.lines[i].set_xdata([None])
             self.lines[i].set_ydata([None])
@@ -115,11 +117,12 @@ class GraphTab(QWidget):
         self.axes.set_ylim(ymin-0.1, ymax+0.1)
         self.axes.set_xlim(-self.duration, 0)
         # self.axes.legend(loc='upper left')
-        self.legend = self.axes.legend(loc='upper left')
-        self.legend.get_frame().set_facecolor(self.LEGEND_COLOR)
-        self.legend.get_frame().set_edgecolor(self.FOREGROUND_COLOR)
-        for text in self.legend.get_texts():
-            text.set_color(self.FOREGROUND_COLOR)
+        if count > 0:
+            self.legend = self.axes.legend(loc='upper left')
+            self.legend.get_frame().set_facecolor(self.LEGEND_COLOR)
+            self.legend.get_frame().set_edgecolor(self.FOREGROUND_COLOR)
+            for text in self.legend.get_texts():
+                text.set_color(self.FOREGROUND_COLOR)
 
         self.canvas.draw_idle()
         # print(f"{(time.time() - start)*1000:.2f}")

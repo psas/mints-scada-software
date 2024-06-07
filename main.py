@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import QApplication
 import importlib
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
-from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow
+from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler
 
 import settings
 
@@ -13,12 +13,16 @@ import logging
 log = logging.getLogger(__name__)
 
 if __name__ == '__main__':
+    formatstr = "%(asctime)s [%(name)-12.12s] [%(levelname)-5.5s]  %(message)s"
+    consolehandler = QLoggingHandler()
+    consolehandler.setFormatter(logging.Formatter(formatstr))
     logging.basicConfig(
         level=logging.DEBUG,
-        format="%(asctime)s [%(name)-12.12s] [%(levelname)-5.5s]  %(message)s",
+        format=formatstr,
         handlers=[
             logging.FileHandler("log/debug.log"),
-            logging.StreamHandler()
+            logging.StreamHandler(),
+            consolehandler
         ]
     )
     log.debug("Hi!")
@@ -27,7 +31,7 @@ if __name__ == '__main__':
     # Set up all the things
     with Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False) as bus:
         app = QApplication(sys.argv)
-        window = MainWindow()
+        window = MainWindow(loghandler=consolehandler)
 
         # Load all devices from settings
         for deviceDesc in settings.devices:

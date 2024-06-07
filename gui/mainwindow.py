@@ -5,10 +5,10 @@ from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 
 from nexus.genericsensor import GenericSensor
-from gui import ListTab, GraphTab, ExportTab
+from gui import ListTab, GraphTab, ExportTab, ConsoleTab
 
 class MainWindow(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, loghandler=None):
         super(MainWindow, self).__init__(parent)
 
         self.setWindowTitle("CAN bus sensor demo")
@@ -48,8 +48,11 @@ class MainWindow(QDialog):
         self.listtab = ListTab()
         self.tabs.addTab(self.listtab, "List")
 
-        self.exporter = ExportTab()
-        self.tabs.addTab(self.exporter, "Export")
+        # self.exporter = ExportTab()
+        # self.tabs.addTab(self.exporter, "Export")
+
+        self.console = ConsoleTab(loghandler)
+        self.tabs.addTab(self.console, "Console")
 
         self.mainlayout.addWidget(self.tabs)
         self.setLayout(self.mainlayout)
