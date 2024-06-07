@@ -1,14 +1,18 @@
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPushButton
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QCheckBox, QSpinBox, QLabel
 import matplotlib
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+import matplotlib.lines
+import matplotlib.pyplot
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg # type: ignore
 from matplotlib.figure import Figure
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 import time
 import numpy as np
-from matplotlib.animation import FuncAnimation
 from nexus import GenericSensor
 
 class GraphTab(QWidget):
+    FOREGROUND_COLOR = "#f4f4f4"
+    BACKGROUND_COLOR = "#434343"
+    LEGEND_COLOR = "#353535"
     def __init__(self):
         super().__init__()
         self.layout = QHBoxLayout()
@@ -25,58 +29,107 @@ class GraphTab(QWidget):
         self.axes = self.fig.add_subplot(111)
         self.canvas = FigureCanvasQTAgg(self.fig)
 
-        col = 0x43/256
-        bkg = (col, col, col)
-        fgc = "#f4f4f4"
-        self.fig.set_facecolor(bkg)
-        self.axes.set_facecolor(bkg)
-        self.axes.spines['bottom'].set_color(fgc)
-        self.axes.spines['top'].set_color(fgc) 
-        self.axes.spines['right'].set_color(fgc)
-        self.axes.spines['left'].set_color(fgc)
-        self.axes.tick_params(axis='x', colors=fgc)
-        self.axes.tick_params(axis='y', colors=fgc)
-        self.axes.yaxis.label.set_color(fgc)
-        self.axes.xaxis.label.set_color(fgc)
-        self.axes.title.set_color(fgc)
+        self.fig.set_facecolor(self.BACKGROUND_COLOR)
+        self.axes.set_facecolor(self.BACKGROUND_COLOR)
+        self.axes.spines['bottom'].set_color(self.FOREGROUND_COLOR)
+        self.axes.spines['top'].set_color(self.FOREGROUND_COLOR) 
+        self.axes.spines['right'].set_color(self.FOREGROUND_COLOR)
+        self.axes.spines['left'].set_color(self.FOREGROUND_COLOR)
+        self.axes.tick_params(axis='x', colors=self.FOREGROUND_COLOR)
+        self.axes.tick_params(axis='y', colors=self.FOREGROUND_COLOR)
+        self.axes.yaxis.label.set_color(self.FOREGROUND_COLOR)
+        self.axes.xaxis.label.set_color(self.FOREGROUND_COLOR)
+        self.axes.title.set_color(self.FOREGROUND_COLOR)
+        self.axes.grid("both", "major")
 
-        self.lines = []
+        self.fig.tight_layout(pad=2)
+
+        self.lines: list[matplotlib.lines.Line2D] = []
 
         self.axes.set_xlim(0, 100)
         self.axes.set_ylim(0, 2)
 
-        self.layout.addWidget(self.canvas)
+        self.layout.addWidget(self.canvas, 999)
 
         self.timer = QTimer(self)
         self.timer.setInterval(250)
-        self.timer.timeout.connect(self.update)
+        self.timer.timeout.connect(self._update)
         self.timer.start()
 
-    def update(self):
+        self.controlLayout = QVBoxLayout()
+        self.layout.addLayout(self.controlLayout, 0)
+        self.controlLayout.setAlignment(Qt.AlignTop)
+
+        self.durlayout = QHBoxLayout()
+
+        self.durlabel = QLabel("Graph Duration:")
+        self.durlayout.addWidget(self.durlabel)
+
+        # Create spin box
+        self.spin_box = QSpinBox()
+        self.spin_box.setValue(self.duration)
+        self.spin_box.setRange(1, 9999)
+        self.spin_box.setSuffix("s")
+        self.spin_box.valueChanged.connect(self._updateSpin)  # Connect valueChanged signal to function
+
+        # Add spin box to layout
+        self.durlayout.addWidget(self.spin_box)
+        self.controlLayout.addLayout(self.durlayout)
+
+        self.checkboxes: list[QCheckBox] = []
+
+    def _updateSpin(self):
+        self.duration = self.spin_box.value()
+        print(self.duration)
+        self._update()
+
+    def _update(self):
         ymin = 0
         ymax = 0
 
         start = time.time()
         thresh = start - self.duration
         for i in range(len(self.sensors)):
-            hist = self.sensors[i].history
-            vals = hist[:,hist[0]>thresh]
-            x = vals[0]-start
-            y = vals[1]
-            if len(y) > 0:
-                self.lines[i].set_xdata(x)
-                self.lines[i].set_ydata(y)
-                ymin = min(np.min(vals[1]), ymin)
-                ymax = max(np.max(vals[1]), ymax)
-                self.axes.draw_artist(self.lines[i])
+            if self.checkboxes[i].isChecked():
+                hist = self.sensors[i].history
+                vals = hist[:,hist[0]>thresh]
+                x = vals[0]-start
+                y = vals[1]
+                if len(y) > 0:
+                    self.lines[i].set_xdata(x)
+                    self.lines[i].set_ydata(y)
+                    ymin = min(np.min(vals[1]), ymin)
+                    ymax = max(np.max(vals[1]), ymax)
+                    self.axes.draw_artist(self.lines[i])
+                    self.lines[i].set_label(self.sensors[i].name)
+                    continue
+            self.lines[i].set_xdata([None])
+            self.lines[i].set_ydata([None])
+            self.lines[i].set_label(None)
+
         
         self.axes.set_ylim(ymin-0.1, ymax+0.1)
-        self.axes.set_xlim(-60, 0)
+        self.axes.set_xlim(-self.duration, 0)
+        # self.axes.legend(loc='upper left')
+        self.legend = self.axes.legend(loc='upper left')
+        self.legend.get_frame().set_facecolor(self.LEGEND_COLOR)
+        self.legend.get_frame().set_edgecolor(self.FOREGROUND_COLOR)
+        for text in self.legend.get_texts():
+            text.set_color(self.FOREGROUND_COLOR)
 
         self.canvas.draw_idle()
-        print(f"{(time.time() - start)*1000:.2f}")
+        # print(f"{(time.time() - start)*1000:.2f}")
 
-    def addSensor(self, sensor: GenericSensor):
+    def addSensor(self, sensor: GenericSensor, graphed = True):
         self.sensors.append(sensor)
-        self.lines.append(self.axes.plot([None], [None])[0])
+        self.lines.append(self.axes.plot([None], [None], label=sensor.name)[0])
+        cb = QCheckBox(sensor.name)
+        self.controlLayout.addWidget(cb)
+        self.checkboxes.append(cb)
+        cb.setChecked(graphed)
 
+    # Functions for use in scripts
+    def setDuration(self, duration: int):
+        ''' Sets the duration of the graph '''
+        self.duration = duration
+        self._update()

@@ -37,7 +37,8 @@ with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=False) as bus
         bus.addRider(device)
         
         # Find the display for the device
-        if deviceDesc["display"] is not None and deviceDesc["display"] != 'None':
+        isVisibleOnList = deviceDesc["display"] is not None and deviceDesc["display"] != 'None'
+        if isVisibleOnList:
             deviceDisplayClass = None
             # Search for the class
             for prefix in ["sensorgui", "actuatorgui"]:
@@ -48,13 +49,13 @@ with Bus(settings.sender, settings.bitrate, dbgprint=True, logging=False) as bus
                     continue
             # Check if we actually found a class
             if deviceDisplayClass is None:
-                raise ImportError(f"Cannotbaseaddr find a display of type {deviceDesc['display']} to add")
+                raise ImportError(f"Cannot find a display of type {deviceDesc['display']} to add")
             # Make sure the class is an allowable class
             if not issubclass(deviceDisplayClass, DeviceRow):
                 raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
             display = deviceDisplayClass(device)
             window.listtab.layout.addLayout(display)
-            window.graphtab.addSensor(device)
+        window.graphtab.addSensor(device, isVisibleOnList)
     
     window.listtab.layout.addStretch()
     
