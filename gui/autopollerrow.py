@@ -31,6 +31,7 @@ class AutoPollerRow(QHBoxLayout):
         self.addWidget(self.intervalLabel)
 
         self.intervalbox = DecadeSpinBox()
+        self.intervalbox.setValue(self.poller.getInterval())
         self.intervalbox.setFixedWidth(80)
         def onSpinBoxChange():
             self.poller.setInterval(self.intervalbox.value())

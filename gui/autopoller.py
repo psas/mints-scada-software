@@ -1,4 +1,4 @@
-from nexus import Bus
+from nexus import Bus, dbgutils
 from threading import Event, Thread
 import time
 import numpy as np
@@ -71,6 +71,8 @@ class AutoPoller():
         Changing self._minInterval changes the minimum allowable value.
         
         s: The desired time in seconds between polls'''
+        log.info(f"Set interval to {s}")
+        log.info(dbgutils.getStackTrace())
         if s >= self._minInterval: # max rate 1kHz
             self.__interval = s
             self.resetStats()
@@ -80,7 +82,7 @@ class AutoPoller():
             raise ValueError("Interval too small")
 
     def setIntervalChangeListener(self, listener: callable):
-        self.statusListeners[AutoPoller.CHANGE_INTERVAL_EVENT] = callable
+        self.statusListeners[AutoPoller.CHANGE_INTERVAL_EVENT] = listener
         if self.statusListeners[self.CHANGE_INTERVAL_EVENT] is not None:
             self.statusListeners[self.CHANGE_INTERVAL_EVENT]()
 

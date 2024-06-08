@@ -26,7 +26,6 @@ if __name__ == '__main__':
         ]
     )
     log.debug("Hi!")
-    print("Should have HI'd just a moment ago")
 
     # Set up all the things
     with Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False) as bus:
