@@ -2,15 +2,17 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 
-from gui import ListView, GraphView, ExportView, ConsoleView, ScriptView, MintsScriptAPI
+from gui import ListView, GraphView, ExportView, ConsoleView, ScriptView, MintsScriptAPI, AutoPollerRow
 
 from nexus import BusRider
 
 import logging
 
 class MainWindow(QDialog):
-    def __init__(self, parent=None, loghandler=None):
+    def __init__(self, parent=None, loghandler=None, autopoller=None):
         super(MainWindow, self).__init__(parent)
+
+        self.autopoller = autopoller
 
         self.log = logging.getLogger("mainwindow")
 
@@ -49,7 +51,7 @@ class MainWindow(QDialog):
         self.listtab = ListView()
         self.console = ConsoleView(loghandler)
         self.exporter = ExportView()
-        self.scripter = ScriptView(MintsScriptAPI(devices=self.devices, graph=self.graph, exporter=self.exporter, abort=self.abort))
+        self.scripter = ScriptView(MintsScriptAPI(devices=self.devices, graph=self.graph, exporter=self.exporter, autopoller=self.autopoller, abort=self.abort))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.graph, "Graph")
@@ -59,12 +61,17 @@ class MainWindow(QDialog):
         self.tabs.addTab(self.console, "Console")
         self.mainlayout.addWidget(self.tabs)
 
+        self.tabs.setCurrentIndex(2)
+
         # If you don't like tabs, everything can be side by side
         # self.container = QHBoxLayout()
         # self.container.addWidget(self.graph)
         # self.container.addWidget(self.listtab)
         # self.container.addWidget(self.console)
         # self.mainlayout.addLayout(self.container)
+
+        apr = AutoPollerRow(self.autopoller)
+        self.mainlayout.addLayout(apr)
 
         self.setLayout(self.mainlayout)
 

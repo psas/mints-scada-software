@@ -63,7 +63,20 @@ class AutoPoller():
         ''' Gets the desired interval between polls.
         
         Returns the interval in seconds '''
-        return self.__interval
+        v = self.__interval
+
+        q = 0
+        while v < 1:
+            q += 1
+            v *= 10
+        log.info(f"Biggened v is {v}x10^-{q}")
+        n = float(int(str(f"{v:.0f}")))
+        while q > 0:
+            n /= 10
+            q -= 1
+        log.info(f"Interval should be returned as {n} type {type(n)}.")
+        # return 0.05
+        return n
 
     def setInterval(self, s: float):
         ''' Sets the interval the autopoller polls at.
@@ -77,6 +90,7 @@ class AutoPoller():
             self.__interval = s
             self.resetStats()
             if self.statusListeners[self.CHANGE_INTERVAL_EVENT] is not None:
+                log.info("Updating listener")
                 self.statusListeners[self.CHANGE_INTERVAL_EVENT]()
         else:
             raise ValueError("Interval too small")
@@ -112,6 +126,7 @@ class AutoPoller():
             self.__pollingThread = Thread(target=self.__pollingWorker)
             self.__pollingThread.start()
             log.info("Autopoller started")
+            log.info(dbgutils.getStackTrace())
 
     def stop(self):
         ''' Stops the autopoller if it was running. It can later be restarted, and you can still manually poll devices '''

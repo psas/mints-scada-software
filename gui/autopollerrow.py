@@ -2,6 +2,9 @@ from PyQt5.QtWidgets import QPushButton, QLabel, QHBoxLayout
 from PyQt5.QtCore import QTimer
 from gui import AutoPoller, DecadeSpinBox
 
+import logging
+log = logging.getLogger("autopoller.gui")
+
 class AutoPollerRow(QHBoxLayout):
 
     # GUI text
@@ -34,7 +37,8 @@ class AutoPollerRow(QHBoxLayout):
         self.intervalbox.setValue(self.poller.getInterval())
         self.intervalbox.setFixedWidth(80)
         def onSpinBoxChange():
-            self.poller.setInterval(self.intervalbox.value())
+            log.info("Interval SpinBox changed")
+            # self.poller.setInterval(self.intervalbox.value())
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
         self.intervalbox.setMinimum(0.001)
         self.intervalbox.setMaximum(10)
@@ -83,4 +87,8 @@ class AutoPollerRow(QHBoxLayout):
             self.poller.start()
 
     def onChangeListener(self):
-        self.intervalbox.setValue(self.poller.getInterval())
+        self.intervalbox.blockSignals(True)
+        n = self.poller.getInterval()
+        log.info(f"Changing to {n} type {type(n)}")
+        self.intervalbox.setValue(n)
+        self.intervalbox.blockSignals(False)

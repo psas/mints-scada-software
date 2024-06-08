@@ -3,6 +3,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 import logging
 import threading
 from gui import MintsScriptAPI
+import os
 
 ################################
 #
@@ -16,8 +17,8 @@ from gui import MintsScriptAPI
 ################################
 
 class ScriptView(QWidget):
-    START_BUTTON_TEXT = "Start"
-    STOP_BUTTON_TEXT = "Stop"
+    START_BUTTON_TEXT = "Run Script"
+    STOP_BUTTON_TEXT = "Kill Script"
 
     # This has to go here, not in the constructor. Not sure why, but this works.
     doneSignal = pyqtSignal()
@@ -50,18 +51,24 @@ class ScriptView(QWidget):
         self.scripteditor = QTextEdit()
         # self.scripteditor.insertPlainText('import time;print("hi1");time.sleep(3);print("hi2")')
         # self.scripteditor.insertPlainText('print(mints.devices["Generic Sensor 1"].value)')
-        self.scripteditor.insertPlainText('''
-import time
-mints.autopoller.setInterval(0.05)
-mints.autopoller.start()
-slnd = mints.devices["Generic Sensor 1"]
-slnd
-mints
-''')
         
         self.layout.addWidget(self.scripteditor)
 
+        self.filename = "script.py"
+        self._load(self.filename)
+
         self.mints: MintsScriptAPI = mintsapi
+
+    def _load(self, filename: str = None):
+        if filename is None:
+            self.log.error("Can't try to select file yet")
+        if os.path.isfile(filename):
+            with open(filename) as f:
+                for line in f:
+                    self.scripteditor.insertPlainText(line)
+            self.log.info(f"Loaded file {filename}")
+        else:
+            self.log.error(f"Can not open file {filename} since it doesn't exist")
 
     def _done(self):
         self.running.clear()
@@ -83,7 +90,7 @@ mints
                         "mints": self.mints
                     })
                 except Exception as e:
-                    self.log.error(repr(e))
+                    self.log.fatal(repr(e))
                     self.mints.abort()
                 doneSignal.emit()
 
