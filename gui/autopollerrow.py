@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QPushButton, QLabel, QHBoxLayout
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, pyqtSignal
 from gui import AutoPoller, DecadeSpinBox
 
 import logging
@@ -12,6 +12,8 @@ class AutoPollerRow(QHBoxLayout):
     STOP_TEXT = "Stop"
     RUNNING_TEXT = "Running"
     STOPPED_TEXT = "Stopped"
+
+    externalChange = pyqtSignal()
 
     def __init__(self, poller: AutoPoller):
         super().__init__()
@@ -37,8 +39,7 @@ class AutoPollerRow(QHBoxLayout):
         self.intervalbox.setValue(self.poller.getInterval())
         self.intervalbox.setFixedWidth(80)
         def onSpinBoxChange():
-            log.info("Interval SpinBox changed")
-            # self.poller.setInterval(self.intervalbox.value())
+            self.poller.setInterval(self.intervalbox.value())
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
         self.intervalbox.setMinimum(0.001)
         self.intervalbox.setMaximum(10)
@@ -67,7 +68,8 @@ class AutoPollerRow(QHBoxLayout):
         self.startStopButton.clicked.connect(self.buttonClick)
         self.addWidget(self.startStopButton)
 
-        self.poller.setIntervalChangeListener(self.onChangeListener)
+        self.poller.setIntervalChangeListener(self.externalChange.emit)
+        self.externalChange.connect(self.onExternalChangeSignal)
 
     def onStart(self):
         ''' Called when the autopoller starts '''
@@ -86,9 +88,5 @@ class AutoPollerRow(QHBoxLayout):
         else:
             self.poller.start()
 
-    def onChangeListener(self):
-        self.intervalbox.blockSignals(True)
-        n = self.poller.getInterval()
-        log.info(f"Changing to {n} type {type(n)}")
-        self.intervalbox.setValue(n)
-        self.intervalbox.blockSignals(False)
+    def onExternalChangeSignal(self):
+        self.intervalbox.setValue(self.poller.getInterval())
