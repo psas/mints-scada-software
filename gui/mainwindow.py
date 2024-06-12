@@ -1,7 +1,6 @@
 print("hi")
 from PyQt5.QtWidgets import *
-from PyQt5.QtGui import QPalette, QColor, QFont
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 
 import qdarkstyle
 
@@ -29,26 +28,9 @@ class MainWindow(QDialog):
         # Force the style to be the same on all OSs:
         QApplication.setStyle("Fusion")
 
-        # Now use a palette to switch to dark colors:
-        # palette = QPalette()
-        # palette.setColor(QPalette.Window, QColor(53, 53, 53))
-        # palette.setColor(QPalette.WindowText, Qt.white)
-        # palette.setColor(QPalette.Base, QColor(25, 25, 25))
-        # palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-        # palette.setColor(QPalette.ToolTipBase, Qt.white)
-        # palette.setColor(QPalette.ToolTipText, Qt.white)
-        # palette.setColor(QPalette.Text, Qt.white)
-        # palette.setColor(QPalette.Button, QColor(53, 53, 53))
-        # palette.setColor(QPalette.ButtonText, Qt.white)
-        # palette.setColor(QPalette.BrightText, Qt.red)
-        # palette.setColor(QPalette.Link, QColor(42, 130, 218))
-        # palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-        # palette.setColor(QPalette.HighlightedText, Qt.black)
-        # QApplication.setPalette(palette)
-        # with open("gui/style.css") as css:
-        #     self.setStyleSheet(css.read())
+        # Set dark theme
         self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api='pyqt5'))
-
+        
         font = QFont("Monospace")
         # font.setStyleHint(QFont.Monospace)
         self.setFont(font)
@@ -64,7 +46,7 @@ class MainWindow(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.graph, "Graph")
         self.tabs.addTab(self.listtab, "List")
-        # self.tabs.addTab(self.exporter, "Export")
+        self.tabs.addTab(self.exporter, "Export")
         self.tabs.addTab(self.scripter, "Script")
         self.tabs.addTab(self.console, "Console")
         self.mainlayout.addWidget(self.tabs)
@@ -85,6 +67,7 @@ class MainWindow(QDialog):
 
     def addDevice(self, device: BusRider, display: QWidget = None):
         self.devices[device.name] = device
+        self.exporter.devices.append(device)
         if display is not None:
             self.listtab.layout.addLayout(display)
         self.graph.addSensor(device, display is not None)
