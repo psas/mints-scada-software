@@ -1,6 +1,7 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 import importlib
+import os
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
 from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler
@@ -16,6 +17,8 @@ if __name__ == '__main__':
     formatstr = "%(asctime)s [%(name)-16.16s] [%(levelname)-5.5s]  %(message)s"
     consolehandler = QLoggingHandler()
     consolehandler.setFormatter(logging.Formatter(formatstr))
+    if not os.path.isdir("log"):
+        os.mkdir("log")
     logging.basicConfig(
         level=logging.DEBUG,
         format=formatstr,
