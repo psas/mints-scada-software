@@ -2,10 +2,6 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QCheckBox, QSpinB
 import matplotlib
 import matplotlib.lines
 import matplotlib.pyplot
-print("hi")
-# from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg # type: ignore
-import matplotlib.backends.backend_qt5agg # type: ignore
-print("hi2")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg # type: ignore
 from matplotlib.figure import Figure
 from PyQt5.QtCore import Qt, QTimer
