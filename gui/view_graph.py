@@ -15,7 +15,7 @@ log = logging.getLogger("Graph")
 
 class GraphView(QWidget):
     FOREGROUND_COLOR = "#f4f4f4"
-    BACKGROUND_COLOR = "#434343"
+    BACKGROUND_COLOR = "#19232d"
     LEGEND_COLOR = "#353535"
     def __init__(self):
         super().__init__()
