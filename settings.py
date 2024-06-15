@@ -13,5 +13,5 @@ devices = (
     {'name': 'Solenoid 1',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x67},
     {'name': 'Solenoid 1 (gen)',   'class': 'Solenoid',        'display': 'ActuatorRow',     'address': 0x67},
     {'name': 'Generic Sensor 2',   'class': 'GenericSensor',   'display': 'None',            'address': 0x64},
-    {'name': 'Real Gen. Actuator', 'class': 'GenericActuator', 'display': 'ActuatorRow',     'address': 0x70},
+    {'name': 'Light',              'class': 'GenericActuator', 'display': 'ActuatorRow',     'address': 0x70},
 )

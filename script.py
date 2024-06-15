@@ -1,11 +1,8 @@
-import time
-print("Start sleep")
-time.sleep(1)
-print("Hi")
-wait(5)
-print("End")
-
-# mints.autopoller.setInterval(0.05)
-# mints.autopoller.start()
-# slnd = mints.devices["Generic Sensor 1"]
-# abort()
+print("Blinky light time!")
+led = mints.devices["Light"]
+for i in range(20):
+    led.set(True)
+    wait(0.5)
+    led.set(False)
+    wait(0.5)
+print("All done blinking!")

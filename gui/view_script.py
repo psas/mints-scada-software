@@ -169,7 +169,7 @@ class ScriptView(QWidget):
             def runthread(script, doneSignal):
                 try:
                     # Internal variables for the script
-                    log = logging.getLogger("script.exec")
+                    log = logging.getLogger("script.exe")
                     def wait(time: float):
                         self._waiter.wait(time)
                     # Actually run the script
