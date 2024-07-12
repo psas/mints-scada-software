@@ -54,8 +54,10 @@ if __name__ == '__main__':
                 # Make sure the class is an allowable class
                 if not issubclass(deviceClass, BusRider):
                     raise ValueError(f"Device {deviceClass.__name__} must extend BusRider")
+                # Prepare device configuration
+                config = deviceDesc["config"] if "config" in deviceDesc else {}
                 # Initialize the device
-                device = deviceClass(deviceDesc["address"], deviceDesc["name"])
+                device = deviceClass(deviceDesc["address"], deviceDesc["name"], **config)
                 bus.addRider(device)
                 
                 # Find the display for the device
@@ -76,7 +78,8 @@ if __name__ == '__main__':
                     # Make sure the class is an allowable class
                     if not issubclass(deviceDisplayClass, DeviceRow):
                         raise ValueError(f"Device {deviceDisplayClass.__name__} must extend DeviceRow")
-                    display = deviceDisplayClass(device)
+                    displayConfig = deviceDesc["displayConfig"] if "displayConfig" in deviceDesc else {}
+                    display = deviceDisplayClass(device, **displayConfig)
                 window.addDevice(device, display)
             
             window.show()

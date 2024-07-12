@@ -8,7 +8,7 @@ class SolenoidRow(ActuatorRow):
         self.offButton.setText("Close")
 
     def onValueChange(self, sensor):
-        self.valueLabel.setText(f"Value: " + str("Open" if self.actor.value else "Closed") if self.actor.value is not None else 'error')
+        self.valueLabel.setText(f"Value: " + str("Open" if self.actor.state else "Closed") if self.actor.state is not None else 'error')
 
     def buttonClickOn(self):
         self.actor.setOpen(True)

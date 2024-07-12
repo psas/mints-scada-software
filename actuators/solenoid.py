@@ -1,12 +1,12 @@
 from nexus import GenericActuator
 
 class Solenoid(GenericActuator):
-    def __init__(self, id: int, name: str = "Solenoid", openPos: bool = True, simulated: bool = False):
+    def __init__(self, id: int, name: str = "Solenoid", inverted: bool = False, simulated: bool = False):
         super().__init__(id=id, name=name, simulated=simulated)
-        self.openPos = openPos
+        self.inverted = inverted
 
     def setOpen(self, state: bool):
-        self.set(state=state if self.openPos else not state)
+        self.set(state=state if not self.inverted else not state)
 
     def open(self):
         ''' Opens the solenoid value '''
@@ -15,3 +15,8 @@ class Solenoid(GenericActuator):
     def close(self):
         ''' Closes the solenoid value '''
         self.setOpen(False)
+
+    @property
+    def state(self):
+        ''' The state of the solenoid valve '''
+        return self.value if not self.inverted else not self.value
