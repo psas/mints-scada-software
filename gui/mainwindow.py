@@ -46,12 +46,12 @@ class MainWindow(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.graph, "Graph")
         self.tabs.addTab(self.listtab, "List")
-        self.tabs.addTab(self.exporter, "Export")
+        # self.tabs.addTab(self.exporter, "Export")
         self.tabs.addTab(self.scripter, "Script")
         self.tabs.addTab(self.console, "Console")
         self.mainlayout.addWidget(self.tabs)
 
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(1)
 
         # If you don't like tabs, everything can be side by side
         # self.container = QHBoxLayout()

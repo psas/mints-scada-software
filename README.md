@@ -1,14 +1,25 @@
 # mints-scada-software
 
 ### Installation
-This program uses Python's venv, so make sure that is installed first
-* `$ python -m venv .venv `
-* `$ .venv/bin/activate`
-* `$ pip install -r requirements.txt`
+These instructions are intended for Linux.
+* If you use a Mac, you may have to install Python 3.12 and call it differently in the setup.
+* If you use Windows, good luck!
+
+You need to have:
+* Python 3.12. Make sure you use it for the setup commands, but not the run commands.
+* venv
+
+To set up for the first time (as normal user):
+
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
 
 ### Running
-* `$ .venv/bin/activate`
-* `$ python main.py`
+Use these commands to run the software. Execute them in the same folder as `main.py`
+
+    source .venv/bin/activate
+    python main.py
 
 ### Logging file format
 Each line in the log file represents a single DataPacket. Both incoming and outgoing packets are logged. Several extra characters are added for ease of reading by humans. An example logged packet and its explanation are listed below
