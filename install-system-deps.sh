@@ -68,13 +68,7 @@ echo ""
 
 # Bind the device (requires admin on first run)
 echo "Binding device (may require Windows admin password)..."
-if ! powershell.exe -Command "Start-Process powershell -ArgumentList '-Command usbipd bind --busid $BUSID' -Verb RunAs -Wait" 2>/dev/null; then
-    echo "[!] Bind failed. The device might already be bound."
-fi
-
-# Attach to WSL
-echo "Attaching device to WSL..."
-if powershell.exe -Command "Start-Process powershell -ArgumentList '-Command usbipd attach --wsl --busid $BUSID' -Verb RunAs -Wait" 2>/dev/null; then
+if powershell.exe -Command "Start-Process powershell -ArgumentList '-WindowStyle Hidden -Command \"usbipd bind --busid $BUSID 2>&1 | Out-Null; usbipd attach --wsl --busid $BUSID\"' -Verb RunAs -Wait -WindowStyle Hidden" 2>/dev/null; then
     echo "[OK] Device attached successfully!"
 else
     echo "[ERROR] Failed to attach device. Make sure you approved the admin prompt."

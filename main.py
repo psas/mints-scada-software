@@ -1,10 +1,10 @@
 import sys
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 import importlib
 import os
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
-from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler
+from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler, ChecklistWindow
 
 import settings
 
@@ -30,10 +30,35 @@ if __name__ == '__main__':
     )
     log.debug("Hi!")
 
+    # Create QApplication first (needed for checklist window)
+    app = QApplication(sys.argv)
+
+    # Show startup checklist
+    checklist = ChecklistWindow(settings.sender)
+    if checklist.exec_() != QMessageBox.Accepted:
+        log.info("User cancelled startup checklist")
+        sys.exit(0)
+
     # Set up all the things
-    with Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False) as bus:
+    try:
+        bus = Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False)
+        log.info("CAN bus initialized successfully")
+    except Exception as e:
+        log.error(f"Failed to initialize CAN bus: {e}")
+        QMessageBox.critical(
+            None,
+            "Bus Initialization Error",
+            f"Failed to initialize CAN bus:\n{str(e)}\n\n"
+            f"Please check:\n"
+            f"1. Device is plugged in\n"
+            f"2. Device is forwarded to WSL (run 'make wsl-usb' if needed)\n"
+            f"3. No other program is using the port\n\n"
+            f"Then run 'make run' again."
+        )
+        sys.exit(1)
+
+    with bus:
         with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
-            app = QApplication(sys.argv)
             window = MainWindow(loghandler=consolehandler, autopoller=ap)
 
             # Load all devices from settings
