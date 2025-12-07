@@ -12,3 +12,4 @@ from .view_script import ScriptView
 from .mainwindow import MainWindow
 from .devicerow import DeviceRow
 from .checklist_window import ChecklistWindow
+from .timelineview import TimelineView

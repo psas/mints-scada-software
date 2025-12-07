@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QTimer, QTime
 import qdarkstyle
 
 from gui import ListView, GraphView, ExportView, ConsoleView, ScriptView, MintsScriptAPI, AutoPollerRow
+from gui.timelineview import TimelineView
 
 from nexus import BusRider
 
@@ -13,12 +14,15 @@ import logging
 from datetime import datetime, timedelta
 
 class MainWindow(QDialog):
-    def __init__(self, parent=None, loghandler=None, autopoller=None):
+    def __init__(self, parent=None, loghandler=None, autopoller=None, playback_mode=False, test_name=None):
         super(MainWindow, self).__init__(parent)
 
         logging.getLogger("qdarkstyle").setLevel(logging.ERROR)
 
         self.autopoller = autopoller
+        self.playback_mode = playback_mode
+        self.test_name = test_name  # Name of test being played back
+        self.change_test_requested = False  # Track if user wants to change test
 
         self.log = logging.getLogger("mainwindow")
 
@@ -28,7 +32,14 @@ class MainWindow(QDialog):
         self.mission_start_time = None
         self.mission_running = False
 
-        self.setWindowTitle("minTS Controller - Dashboard")
+        # Playback mode specific
+        self.playback_time = 0.0  # Current playback time in seconds (for playback mode)
+
+        # Set window title based on mode
+        if self.playback_mode and self.test_name:
+            self.setWindowTitle(f"minTS Controller - Playback: {self.test_name}")
+        else:
+            self.setWindowTitle("minTS Controller - Dashboard")
         self.setGeometry(0, 0, 1400, 800)  # Larger window for dashboard layout
 
         # Force the style to be the same on all OSs:
@@ -48,6 +59,14 @@ class MainWindow(QDialog):
         # Title bar with status
         self._create_title_bar()
 
+        # Timeline bar (shown in both live and playback modes) - moved to top
+        self.timeline = TimelineView(playback_mode=self.playback_mode)
+        self.mainlayout.addWidget(self.timeline)
+
+        # Connect timeline seek signal for playback mode
+        if self.playback_mode:
+            self.timeline.seek_requested.connect(self._on_timeline_seek)
+
         # Create views
         self.graph = GraphView()
         self.listtab = ListView()
@@ -64,9 +83,10 @@ class MainWindow(QDialog):
         # Create unified dashboard layout
         self._create_dashboard_layout()
 
-        # AutoPoller control at bottom
-        apr = AutoPollerRow(self.autopoller)
-        self.mainlayout.addLayout(apr)
+        # AutoPoller control at bottom (only in live mode)
+        if self.autopoller is not None:
+            apr = AutoPollerRow(self.autopoller)
+            self.mainlayout.addLayout(apr)
 
         self.setLayout(self.mainlayout)
 
@@ -111,8 +131,15 @@ class MainWindow(QDialog):
         title_layout.addWidget(self.clock_label)
 
         # Status indicator
-        self.status_indicator = QLabel("● Connected")
-        self.status_indicator.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        if self.playback_mode:
+            # if self.test_name:
+            #     self.status_indicator = QLabel(f"● Playback: {self.test_name}")
+            # else:
+            self.status_indicator = QLabel("● Playback")
+            self.status_indicator.setStyleSheet("color: #FFA726; font-weight: bold;")  # Yellow/Orange
+        else:
+            self.status_indicator = QLabel("● Connected")
+            self.status_indicator.setStyleSheet("color: #4CAF50; font-weight: bold;")  # Green
         self.status_indicator.setFont(QFont("Arial", 10))
         title_layout.addWidget(self.status_indicator)
 
@@ -298,6 +325,30 @@ class MainWindow(QDialog):
         # Add stretch to push buttons to top
         controls_layout.addStretch()
 
+        # CHANGE TEST button (only in playback mode) - Blue
+        if self.playback_mode:
+            self.change_test_button = QPushButton("CHANGE TEST")
+            self.change_test_button.setFont(QFont("Arial", 12, QFont.Bold))
+            self.change_test_button.setMinimumHeight(60)
+            self.change_test_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: 3px solid #1976D2;
+                    border-radius: 8px;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #1976D2;
+                    border: 3px solid #0D47A1;
+                }
+                QPushButton:pressed {
+                    background-color: #0D47A1;
+                }
+            """)
+            self.change_test_button.clicked.connect(self._on_change_test_clicked)
+            controls_layout.addWidget(self.change_test_button)
+
         panel_layout.addWidget(controls_widget)
 
         return panel
@@ -309,17 +360,32 @@ class MainWindow(QDialog):
         self.clock_label.setText(current_time)
 
         # Update mission elapsed time
-        if self.mission_running and self.mission_start_time:
+        if self.playback_mode:
+            # In playback mode, use playback_time (controlled by timeline seek)
+            self._update_mission_time_label(self.playback_time)
+            # Don't auto-update timeline (user controls it via seek slider)
+        elif self.mission_running and self.mission_start_time:
+            # In live mode, use actual elapsed time
             elapsed = datetime.now() - self.mission_start_time
             total_seconds = elapsed.total_seconds()
-            hours = int(total_seconds // 3600)
-            minutes = int((total_seconds % 3600) // 60)
-            seconds = int(total_seconds % 60)
-            microseconds = int((total_seconds % 1) * 1e6)
-            self.mission_time_label.setText(f"T+{hours:02d}:{minutes:02d}:{seconds:02d}.{microseconds:06d}")
+            self._update_mission_time_label(total_seconds)
+            # Update timeline with current time
+            self.timeline.set_current_time(total_seconds)
         else:
-            # Show T+00:00:00.000000 when not running (still bright green)
-            self.mission_time_label.setText("T+00:00:00.000000")
+            # Show T+00:00:00.000000 when not running
+            self._update_mission_time_label(0.0)
+            if not self.playback_mode:
+                self.timeline.set_current_time(0.0)
+
+    def _update_mission_time_label(self, total_seconds):
+        """Update the mission time label with given time in seconds"""
+        abs_seconds = abs(total_seconds)
+        hours = int(abs_seconds // 3600)
+        minutes = int((abs_seconds % 3600) // 60)
+        seconds = int(abs_seconds % 60)
+        microseconds = int((abs_seconds % 1) * 1e6)
+        sign = "+" if total_seconds >= 0 else "-"
+        self.mission_time_label.setText(f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{microseconds:06d}")
 
     def _on_start_clicked(self):
         """Handle START button click"""
@@ -345,6 +411,20 @@ class MainWindow(QDialog):
         self.mission_running = False
         # TODO: Implement hard stop logic (immediate shutdown like physical button)
         pass
+
+    def _on_change_test_clicked(self):
+        """Handle CHANGE TEST button click (playback mode only)"""
+        self.log.info("CHANGE TEST button clicked - Returning to test selection")
+        self.change_test_requested = True
+        self.close()  # Close the window to return to test selection
+
+    def _on_timeline_seek(self, seek_time):
+        """Handle timeline seek request (playback mode only)"""
+        self.playback_time = seek_time
+        self.timeline.set_current_time(seek_time)
+        self._update_mission_time_label(seek_time)
+        sign = "+" if seek_time >= 0 else ""
+        self.log.debug(f"Playback seeked to T{sign}{seek_time:.2f}s")
 
     def addDevice(self, device: BusRider, display: QWidget = None):
         self.devices[device.name] = device

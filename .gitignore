@@ -16,3 +16,6 @@ __pycache__
 .vscode/
 activate
 log/
+
+# test history playback
+testhistory/
