@@ -1,3 +1,24 @@
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# This mainwindow.py no longer in use. Windows now move to window_manager.py
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+# 
 print("hi")
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QFont

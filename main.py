@@ -5,7 +5,9 @@ import os
 import json
 
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
-from gui import MainWindow, DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler, ChecklistWindow
+
+from gui.window_manager import window_manager
+from gui import DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler, ChecklistWindow
 
 import settings
 
@@ -48,7 +50,7 @@ if __name__ == '__main__':
             log.info(f"Starting playback mode with test: {checklist.selected_test}")
 
             # Create playback console (no bus, no autopoller needed)
-            window = MainWindow(
+            window = window_manager(
                 loghandler=consolehandler,
                 autopoller=None,
                 playback_mode=True,
@@ -132,7 +134,7 @@ if __name__ == '__main__':
 
         with bus:
             with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
-                window = MainWindow(loghandler=consolehandler, autopoller=ap, playback_mode=False)
+                window = window_manager(loghandler=consolehandler, autopoller=ap, playback_mode=False)
 
                 # Load all devices from settings
                 for deviceDesc in settings.devices:
