@@ -1,7 +1,7 @@
 # MINTS SCADA Software - Makefile
 
 # Variables
-PYTHON := python
+PYTHON := python3
 VENV := .venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 REQUIREMENTS := requirements.txt

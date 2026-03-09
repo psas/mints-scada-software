@@ -2,5 +2,6 @@ pyserial==3.5
 python-can==4.3.1
 numpy>=1.25.2
 pyqt5>=5.15.9
+PyQtWebEngine>=5.15.7
 matplotlib==3.9.0
-qdarkstyle==3.2.3 
+qdarkstyle==3.2.3

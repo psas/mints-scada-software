@@ -288,7 +288,7 @@ class TankGaugeWidget(QWidget):
             f"Pres: {self._fmt_num(self.pressure_psi)} psi",
             f"Temp: {self._fmt_num(self.temp_c)} °C",
             f"Flow: {self._fmt_num(self.valve_open_pct)} %",
-            f"Level: {self._fmt_num(self.level_pct)} %",           
+            f"Level: {self._fmt_num(self.level_pct)} %",
         ]
 
         fm = p.fontMetrics()
@@ -535,9 +535,6 @@ class ControllerWindow(QMainWindow):
         body_layout.addWidget(body_split, 1)
         self.mainlayout.addWidget(body, 1)
 
-        if self.autopoller is not None:
-            apr = AutoPollerRow(self.autopoller)
-            self.mainlayout.addLayout(apr)
 
         # ====== Timers ======
         self.display_timer = QTimer(self)
@@ -737,7 +734,8 @@ class ControllerWindow(QMainWindow):
         return frame
 
     # =========================================================
-    # Left area (unchanged)
+    # Left area:
+    # Devices | Main View (Graph + AutoPollerRow inside)
     # =========================================================
     def _create_left_main_area(self) -> QWidget:
         split = QSplitter(Qt.Horizontal)
@@ -748,7 +746,17 @@ class ControllerWindow(QMainWindow):
         dev_panel.setMinimumWidth(260)
         split.addWidget(dev_panel)
 
-        graph_panel = self._panel("Main View", self.graph)
+        main_view = QWidget()
+        mv = QVBoxLayout(main_view)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(8)
+
+        mv.addWidget(self.graph, 1)
+
+        if (self.autopoller is not None) and (not self.playback_mode):
+            mv.addLayout(AutoPollerRow(self.autopoller))
+
+        graph_panel = self._panel("Main View", main_view)
         split.addWidget(graph_panel)
 
         split.setStretchFactor(0, 0)
