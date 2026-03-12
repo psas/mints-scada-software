@@ -1,16 +1,930 @@
 # controller_window.py
 from PyQt5.QtWidgets import *
-from PyQt5.QtGui import QFont, QPainter, QPen, QColor
-from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal
+from PyQt5.QtGui import QFont, QPainter, QPen, QColor, QDrag
+from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize
 
 import qdarkstyle
 import logging
 import math
 from datetime import datetime
 
-from gui import ListView, GraphView, ExportView, ConsoleView, ScriptView, MintsScriptAPI, AutoPollerRow
+from gui import (
+    GraphView,
+    ExportView,
+    ConsoleView,
+    ScriptView,
+    MintsScriptAPI,
+    AutoPollerRow,
+)
 from gui.timelineview import TimelineView
 from nexus import BusRider
+
+
+DEVICE_MIME_TYPE = "application/x-mints-device-id"
+SYSTEM_ORDER = {"IG": 0, "IPA": 1, "LOX": 2}
+
+
+def normalize_systems(device_systems):
+    if not device_systems:
+        return []
+
+    seen = set()
+    ordered = []
+    for s in device_systems:
+        if s and s not in seen:
+            seen.add(s)
+            ordered.append(s)
+
+    ordered.sort(key=lambda s: (SYSTEM_ORDER.get(s, 999), s))
+    return ordered
+
+
+def classify_system_bucket(device_systems):
+    systems = normalize_systems(device_systems)
+
+    if not systems:
+        return "Unassigned", None
+    if len(systems) == 1:
+        return systems[0], None
+
+    combo = " + ".join(systems)
+    return "Cross-System", combo
+
+
+
+
+class CollapsibleSection(QFrame):
+    expandedChanged = pyqtSignal(bool)
+    preferredHeightChanged = pyqtSignal()
+
+    def __init__(
+        self, title: str, content_widget: QWidget, expanded: bool = True, parent=None
+    ):
+        super().__init__(parent)
+
+        self.content_widget = content_widget
+
+        self.setFrameShape(QFrame.NoFrame)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: transparent;
+                border: 1px solid #3f3f3f;
+                border-radius: 8px;
+            }
+            QToolButton {
+                background: transparent;
+                color: #f0f0f0;
+                border: none;
+                font-weight: 700;
+                font-size: 13px;
+                padding: 6px 8px;
+                text-align: left;
+                border-radius: 7px;
+            }
+            QToolButton:hover {
+                background: #2a2d2e;
+            }
+        """
+        )
+
+        self.toggle_btn = QToolButton()
+        self.toggle_btn.setText(title)
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(expanded)
+        self.toggle_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle_btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.toggle_btn.toggled.connect(self._on_toggled)
+
+        self.content_frame = QFrame()
+        self.content_frame.setFrameShape(QFrame.NoFrame)
+        self.content_frame.setStyleSheet(
+            """
+            QFrame {
+                background: transparent;
+                border: none;
+            }
+        """
+        )
+
+        content_layout = QVBoxLayout(self.content_frame)
+        content_layout.setContentsMargins(6, 0, 6, 6)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(content_widget)
+
+        self.layout_main = QVBoxLayout(self)
+        self.layout_main.setContentsMargins(0, 0, 0, 0)
+        self.layout_main.setSpacing(0)
+        self.layout_main.addWidget(self.toggle_btn, 0)
+        self.layout_main.addWidget(self.content_frame, 0)
+
+        if hasattr(content_widget, "preferredHeightChanged"):
+            content_widget.preferredHeightChanged.connect(
+                self.preferredHeightChanged.emit
+            )
+
+        self._on_toggled(expanded)
+
+    def _on_toggled(self, checked: bool):
+        self.content_frame.setVisible(checked)
+        self.toggle_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self.updateGeometry()
+        self.expandedChanged.emit(checked)
+        self.preferredHeightChanged.emit()
+
+    def set_expanded(self, expanded: bool):
+        self.toggle_btn.setChecked(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_btn.isChecked()
+
+    def header_height(self) -> int:
+        return self.toggle_btn.sizeHint().height()
+
+    def content_vertical_padding(self) -> int:
+        m = self.content_frame.layout().contentsMargins()
+        return m.top() + m.bottom()
+
+    def preferred_content_height(self) -> int:
+        if hasattr(self.content_widget, "preferred_height"):
+            return int(self.content_widget.preferred_height())
+        return int(self.content_widget.sizeHint().height())
+
+    def set_content_height_limit(self, max_height=None):
+        if hasattr(self.content_widget, "set_height_limit"):
+            self.content_widget.set_height_limit(max_height)
+        else:
+            if max_height is None:
+                self.content_widget.setMaximumHeight(16777215)
+            else:
+                self.content_widget.setMaximumHeight(max(0, int(max_height)))
+        self.updateGeometry()
+
+
+
+
+
+
+class DeviceSectionTree(QTreeWidget):
+    deviceActivated = pyqtSignal(str)
+    preferredHeightChanged = pyqtSignal()
+
+    def __init__(self, parent=None, allow_drag=False, include_control_bucket=False):
+        super().__init__(parent)
+        self.allow_drag = allow_drag
+        self.include_control_bucket = include_control_bucket
+        self._device_items = {}
+
+        self._height_limit = None
+        self._preferred_height = 8
+
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setRootIsDecorated(True)
+        self.setUniformRowHeights(True)
+        self.setDragEnabled(allow_drag)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.setStyleSheet(
+            """
+            QTreeWidget {
+                background: transparent;
+                color: #e6e6e6;
+                border: none;
+                outline: 0;
+                padding: 4px 2px 4px 2px;
+            }
+            QTreeWidget::item {
+                padding: 2px 4px;
+            }
+            QTreeWidget::item:selected {
+                background: #264f78;
+                color: white;
+                border: none;
+            }
+        """
+        )
+
+        self.itemExpanded.connect(
+            lambda _item: QTimer.singleShot(0, self.update_height_to_contents)
+        )
+        self.itemCollapsed.connect(
+            lambda _item: QTimer.singleShot(0, self.update_height_to_contents)
+        )
+
+    def _append_child(self, parent_item, child_item):
+        if parent_item is None:
+            self.addTopLevelItem(child_item)
+        else:
+            parent_item.addChild(child_item)
+
+    def _get_or_create_child(self, parent_item, label: str, cache: dict, bold=False):
+        parent_key = id(parent_item) if parent_item is not None else 0
+        key = (parent_key, label)
+        if key in cache:
+            return cache[key]
+
+        item = QTreeWidgetItem([label])
+        item.setExpanded(True)
+
+        font = item.font(0)
+        font.setBold(bold)
+        item.setFont(0, font)
+
+        self._append_child(parent_item, item)
+        cache[key] = item
+        return item
+
+    def _group_chain_for_meta(self, meta: dict, group_mode: str):
+        system_label, combo_label = classify_system_bucket(
+            meta.get("deviceSystems", [])
+        )
+        device_group = meta.get("deviceGroup", "Other")
+        device_type = meta.get("deviceType", "Other")
+
+        if group_mode == "Device Group":
+            chain = [device_group, system_label]
+            if combo_label:
+                chain.append(combo_label)
+            return chain
+
+        if group_mode == "Device Type":
+            chain = [device_type, system_label]
+            if combo_label:
+                chain.append(combo_label)
+            return chain
+
+        chain = [system_label]
+        if combo_label:
+            chain.append(combo_label)
+        chain.append(device_group)
+        return chain
+
+    def _iter_visible_items(self):
+        def walk(item):
+            yield item
+            if item.isExpanded():
+                for i in range(item.childCount()):
+                    yield from walk(item.child(i))
+
+        for i in range(self.topLevelItemCount()):
+            yield from walk(self.topLevelItem(i))
+
+    def preferred_height(self) -> int:
+        visible_items = list(self._iter_visible_items())
+
+        if not visible_items:
+            return 8
+
+        row_h = self.sizeHintForRow(0)
+        if row_h <= 0:
+            row_h = max(self.fontMetrics().height() + 8, 20)
+
+        return len(visible_items) * row_h + 8
+
+    def _apply_height_limit(self):
+        target = max(8, int(self._preferred_height))
+
+        if self._height_limit is None or target <= self._height_limit:
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setFixedHeight(target)
+        else:
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setFixedHeight(max(24, int(self._height_limit)))
+
+    def update_height_to_contents(self):
+        new_pref = self.preferred_height()
+        if new_pref != self._preferred_height:
+            self._preferred_height = new_pref
+            self.preferredHeightChanged.emit()
+
+        self._apply_height_limit()
+
+    def set_height_limit(self, max_height=None):
+        normalized = None if max_height is None else max(24, int(max_height))
+        if normalized == self._height_limit:
+            return
+        self._height_limit = normalized
+        self._apply_height_limit()
+
+    def populate(self, metas: list, group_mode: str):
+        self.clear()
+        self._device_items = {}
+        cache = {}
+
+        sorted_metas = sorted(
+            metas,
+            key=lambda m: (
+                0 if m.get("isControllable", False) else 1,
+                (m.get("name") or "").lower(),
+                (m.get("id") or "").lower(),
+            ),
+        )
+
+        for meta in sorted_metas:
+            parent_item = None
+
+            if self.include_control_bucket:
+                control_label = (
+                    "Controllable"
+                    if meta.get("isControllable", False)
+                    else "Monitor Only"
+                )
+                parent_item = self._get_or_create_child(
+                    parent_item, control_label, cache, bold=True
+                )
+
+            for label in self._group_chain_for_meta(meta, group_mode):
+                parent_item = self._get_or_create_child(
+                    parent_item, label, cache, bold=(parent_item is None)
+                )
+
+            item = QTreeWidgetItem([meta["name"]])
+            item.setData(0, Qt.UserRole, meta["id"])
+            item.setToolTip(
+                0,
+                "\n".join(
+                    [
+                        f"id: {meta['id']}",
+                        f"name: {meta['name']}",
+                        f"deviceType: {meta['deviceType']}",
+                        f"deviceGroup: {meta['deviceGroup']}",
+                        f"deviceSystems: {', '.join(normalize_systems(meta.get('deviceSystems', []))) or 'Unassigned'}",
+                        (
+                            f"address: {meta['address']:#05x}"
+                            if isinstance(meta["address"], int)
+                            else f"address: {meta['address']}"
+                        ),
+                        f"hasElectricalIO: {meta['hasElectricalIO']}",
+                        f"isControllable: {meta['isControllable']}",
+                        f"widgetType: {meta['widgetType']}",
+                        f"isActive: {meta['isActive']}",
+                    ]
+                ),
+            )
+            self._append_child(parent_item, item)
+            self._device_items[meta["id"]] = item
+
+        self.collapseAll()
+        self.expandToDepth(0)
+        QTimer.singleShot(0, self.update_height_to_contents)
+
+    def jump_to_device(self, device_id: str) -> bool:
+        item = self._device_items.get(device_id)
+        if item is None:
+            return False
+
+        parent = item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent = parent.parent()
+
+        self.setCurrentItem(item)
+        self.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+        self.setFocus()
+        QTimer.singleShot(0, self.update_height_to_contents)
+        return True
+
+    def startDrag(self, supportedActions):
+        if not self.allow_drag:
+            return
+
+        item = self.currentItem()
+        if item is None:
+            return
+
+        device_id = item.data(0, Qt.UserRole)
+        if not device_id:
+            return
+
+        mime = QMimeData()
+        mime.setData(DEVICE_MIME_TYPE, str(device_id).encode("utf-8"))
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec_(Qt.CopyAction)
+
+    def mouseDoubleClickEvent(self, event):
+        if not self.allow_drag:
+            super().mouseDoubleClickEvent(event)
+            return
+
+        item = self.itemAt(event.pos())
+        if item is not None:
+            device_id = item.data(0, Qt.UserRole)
+            if device_id:
+                self.deviceActivated.emit(str(device_id))
+        super().mouseDoubleClickEvent(event)
+
+
+
+
+
+
+
+
+class DeviceLibraryPanel(QWidget):
+    deviceActivated = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self._all_meta_by_id = {}
+        self._group_mode = "System"
+        self._reflow_pending = False
+        self._last_toggled_section = None
+
+        self.active_signal_tree = DeviceSectionTree(
+            allow_drag=True, include_control_bucket=True
+        )
+        self.active_mechanical_tree = DeviceSectionTree(
+            allow_drag=False, include_control_bucket=False
+        )
+        self.inactive_tree = DeviceSectionTree(
+            allow_drag=False, include_control_bucket=False
+        )
+
+        self.active_signal_tree.deviceActivated.connect(self.deviceActivated.emit)
+
+        # ----- Search + sort controls -----
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search devices...")
+        self.search_input.textChanged.connect(self._update_search_results)
+        self.search_input.returnPressed.connect(self._activate_first_search_result)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(["System", "Device Group", "Device Type"])
+        self.sort_combo.currentTextChanged.connect(self._on_group_mode_changed)
+        self.sort_combo.setStyleSheet(
+            """
+            QComboBox {
+                background: #1f1f1f;
+                color: #e6e6e6;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+                padding: 4px 8px;
+                min-height: 26px;
+            }
+            QComboBox:hover {
+                border: 1px solid #5a5a5a;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+                background: transparent;
+            }
+            QComboBox QAbstractItemView {
+                background: #1b1b1b;
+                color: #e6e6e6;
+                border: 1px solid #4a4a4a;
+                selection-background-color: #3b6ea5;
+                selection-color: white;
+                outline: 0;
+            }
+        """
+        )
+
+        self.search_input.setStyleSheet(
+            """
+            QLineEdit {
+                background: #1f1f1f;
+                color: #e6e6e6;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+                padding: 4px 8px;
+                min-height: 26px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3b6ea5;
+            }
+        """
+        )
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        sort_row = QWidget()
+        sort_row_layout = QHBoxLayout(sort_row)
+        sort_row_layout.setContentsMargins(0, 0, 0, 0)
+        sort_row_layout.setSpacing(8)
+        sort_row_layout.addWidget(QLabel("Sort by:"), 0)
+        sort_row_layout.addWidget(self.sort_combo, 1)
+
+        search_row = QWidget()
+        search_row_layout = QHBoxLayout(search_row)
+        search_row_layout.setContentsMargins(0, 0, 0, 0)
+        search_row_layout.setSpacing(8)
+        search_row_layout.addWidget(self.search_input, 1)
+
+        controls_layout.addWidget(sort_row)
+        controls_layout.addWidget(search_row)
+
+        self.search_results = QListWidget()
+        self.search_results.hide()
+        self.search_results.setMaximumHeight(140)
+        self.search_results.itemClicked.connect(self._on_search_result_clicked)
+        self.search_results.setStyleSheet(
+            """
+            QListWidget {
+                background: #171717;
+                color: #e6e6e6;
+                border: 1px solid #444;
+                border-radius: 6px;
+            }
+            QListWidget::item:selected {
+                background: #3b6ea5;
+                color: white;
+            }
+        """
+        )
+
+        self.search_empty_label = QLabel("No matched device found")
+        self.search_empty_label.hide()
+        self.search_empty_label.setStyleSheet("color:#9a9a9a; padding: 4px 2px;")
+
+        # ----- Three independent sections -----
+        self.active_signal_section = CollapsibleSection(
+            "Active Signal Devices",
+            self.active_signal_tree,
+            expanded=True,
+        )
+        self.active_mechanical_section = CollapsibleSection(
+            "Active Mechanical Devices",
+            self.active_mechanical_tree,
+            expanded=False,
+        )
+        self.inactive_section = CollapsibleSection(
+            "Inactive Devices",
+            self.inactive_tree,
+            expanded=False,
+        )
+
+        for section in (
+            self.active_signal_section,
+            self.active_mechanical_section,
+            self.inactive_section,
+        ):
+            section.expandedChanged.connect(
+                lambda _checked, s=section: self._on_section_toggled(s)
+            )
+            section.preferredHeightChanged.connect(self._schedule_section_reflow)
+
+        self.active_signal_tree.preferredHeightChanged.connect(
+            self._schedule_section_reflow
+        )
+        self.active_mechanical_tree.preferredHeightChanged.connect(
+            self._schedule_section_reflow
+        )
+        self.inactive_tree.preferredHeightChanged.connect(self._schedule_section_reflow)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        layout.addWidget(controls, 0)
+        layout.addWidget(self.search_results, 0)
+        layout.addWidget(self.search_empty_label, 0)
+
+        self.sections_container = QWidget()
+        self.sections_layout = QVBoxLayout(self.sections_container)
+        self.sections_layout.setContentsMargins(0, 0, 0, 0)
+        self.sections_layout.setSpacing(8)
+
+        self.sections_layout.addWidget(self.active_signal_section, 0)
+        self.sections_layout.addStretch(1)
+        self.sections_layout.addWidget(self.active_mechanical_section, 0)
+        self.sections_layout.addWidget(self.inactive_section, 0)
+
+        layout.addWidget(self.sections_container, 1)
+
+        self.active_signal_section.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Maximum
+        )
+        self.active_mechanical_section.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Maximum
+        )
+        self.inactive_section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+        QTimer.singleShot(0, self._reflow_section_heights)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_section_reflow()
+
+    def _on_section_toggled(self, section):
+        self._last_toggled_section = section
+        self._schedule_section_reflow()
+
+    def _schedule_section_reflow(self):
+        if self._reflow_pending:
+            return
+        self._reflow_pending = True
+        QTimer.singleShot(0, self._reflow_section_heights)
+
+    def _reflow_section_heights(self):
+        self._reflow_pending = False
+
+        sections = [
+            self.active_signal_section,
+            self.active_mechanical_section,
+            self.inactive_section,
+        ]
+
+        container_h = self.sections_container.contentsRect().height()
+        if container_h <= 0:
+            return
+
+        spacing = self.sections_layout.spacing()
+        # items = top section + stretch + middle + bottom  => 4 items => 3 spacings
+        available = max(0, container_h - spacing * 3)
+
+        expanded_sections = [s for s in sections if s.is_expanded()]
+        header_total = sum(s.header_height() for s in sections)
+        padding_total = sum(s.content_vertical_padding() for s in expanded_sections)
+
+        available_for_content = max(0, available - header_total - padding_total)
+
+        preferred = {
+            s: max(0, s.preferred_content_height())
+            for s in expanded_sections
+        }
+        preferred_total = sum(preferred.values())
+
+        # enough room: everything natural, no internal scroll
+        if preferred_total <= available_for_content:
+            for s in sections:
+                s.set_content_height_limit(None)
+            return
+
+        if not expanded_sections:
+            return
+
+        # start with preferred heights
+        assigned = dict(preferred)
+
+        # reduce overflow, first try the section that was most recently toggled
+        overflow = preferred_total - available_for_content
+        soft_min = 72
+        hard_min = 36
+
+        order = []
+        if self._last_toggled_section in expanded_sections:
+            order.append(self._last_toggled_section)
+
+        others = [s for s in expanded_sections if s not in order]
+        others.sort(key=lambda sec: preferred[sec], reverse=True)
+        order.extend(others)
+
+        # first pass: don't shrink below soft_min
+        for s in order:
+            if overflow <= 0:
+                break
+            reducible = max(0, assigned[s] - soft_min)
+            take = min(reducible, overflow)
+            assigned[s] -= take
+            overflow -= take
+
+        # second pass: if still overflow, allow smaller, but not too tiny
+        for s in order:
+            if overflow <= 0:
+                break
+            reducible = max(0, assigned[s] - hard_min)
+            take = min(reducible, overflow)
+            assigned[s] -= take
+            overflow -= take
+
+        # if panel is extremely tiny, distribute what's left evenly
+        if overflow > 0:
+            share = max(hard_min, available_for_content // max(1, len(expanded_sections)))
+            for s in expanded_sections:
+                assigned[s] = share
+
+        for s in sections:
+            if s.is_expanded():
+                s.set_content_height_limit(assigned.get(s))
+            else:
+                s.set_content_height_limit(None)
+
+    def add_device(self, meta: dict):
+        self._all_meta_by_id[meta["id"]] = meta
+        self.rebuild_views()
+        self._update_search_results()
+
+    def rebuild_views(self):
+        active_signal = []
+        active_mechanical = []
+        inactive = []
+
+        for meta in self._all_meta_by_id.values():
+            if not meta.get("isActive", False):
+                inactive.append(meta)
+            elif meta.get("hasElectricalIO", False):
+                active_signal.append(meta)
+            else:
+                active_mechanical.append(meta)
+
+        self.active_signal_tree.populate(active_signal, self._group_mode)
+        self.active_mechanical_tree.populate(active_mechanical, self._group_mode)
+        self.inactive_tree.populate(inactive, self._group_mode)
+        self._schedule_section_reflow()
+
+    def _on_group_mode_changed(self, text: str):
+        self._group_mode = text
+        self.rebuild_views()
+        self._update_search_results()
+
+    def _match_meta(self, meta: dict, query: str) -> bool:
+        q = query.lower().strip()
+        if not q:
+            return False
+
+        fields = [
+            meta.get("id", ""),
+            meta.get("name", ""),
+            meta.get("deviceType", ""),
+            meta.get("deviceGroup", ""),
+            " ".join(meta.get("deviceSystems", [])),
+        ]
+        return any(q in str(field).lower() for field in fields)
+
+    def _section_name_for_meta(self, meta: dict) -> str:
+        if not meta.get("isActive", False):
+            return "Inactive Devices"
+        if meta.get("hasElectricalIO", False):
+            return "Active Signal Devices"
+        return "Active Mechanical Devices"
+
+    def _update_search_results(self):
+        query = self.search_input.text().strip()
+        self.search_results.clear()
+
+        if not query:
+            self.search_results.hide()
+            self.search_empty_label.hide()
+            self._schedule_section_reflow()
+            return
+
+        matches = []
+        for meta in self._all_meta_by_id.values():
+            if self._match_meta(meta, query):
+                matches.append(meta)
+
+        matches.sort(
+            key=lambda m: (
+                self._section_name_for_meta(m),
+                (m.get("name") or "").lower(),
+            )
+        )
+
+        if not matches:
+            self.search_results.hide()
+            self.search_empty_label.show()
+            self._schedule_section_reflow()
+            return
+
+        self.search_empty_label.hide()
+        for meta in matches:
+            section = self._section_name_for_meta(meta)
+            systems = normalize_systems(meta.get("deviceSystems", []))
+            system_text = (
+                " + ".join(systems)
+                if len(systems) > 1
+                else (systems[0] if systems else "Unassigned")
+            )
+            item = QListWidgetItem(f"{meta['name']}   [{section} / {system_text}]")
+            item.setData(Qt.UserRole, meta["id"])
+            self.search_results.addItem(item)
+
+        self.search_results.show()
+        self._schedule_section_reflow()
+
+    def _activate_first_search_result(self):
+        if self.search_results.isHidden() or self.search_results.count() == 0:
+            return
+        item = self.search_results.item(0)
+        if item is not None:
+            self._jump_to_device(item.data(Qt.UserRole))
+
+    def _on_search_result_clicked(self, item: QListWidgetItem):
+        device_id = item.data(Qt.UserRole)
+        if device_id:
+            self._jump_to_device(device_id)
+
+    def _jump_to_device(self, device_id: str):
+        meta = self._all_meta_by_id.get(device_id)
+        if meta is None:
+            return
+
+        if not meta.get("isActive", False):
+            self.inactive_section.set_expanded(True)
+            self.inactive_tree.jump_to_device(device_id)
+            self._last_toggled_section = self.inactive_section
+        elif meta.get("hasElectricalIO", False):
+            self.active_signal_section.set_expanded(True)
+            self.active_signal_tree.jump_to_device(device_id)
+            self._last_toggled_section = self.active_signal_section
+        else:
+            self.active_mechanical_section.set_expanded(True)
+            self.active_mechanical_tree.jump_to_device(device_id)
+            self._last_toggled_section = self.active_mechanical_section
+
+        self._schedule_section_reflow()
+
+    def activate_device(self, device_id: str):
+        self._jump_to_device(device_id)
+        meta = self._all_meta_by_id.get(device_id)
+        if meta and meta.get("isActive", False) and meta.get("hasElectricalIO", False):
+            self.deviceActivated.emit(device_id)
+
+
+
+
+
+
+
+
+class DeviceWorkspace(QWidget):
+    deviceDropped = pyqtSignal(str)
+
+    def __init__(self, graph_widget: QWidget, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+        self.graph_widget = graph_widget
+        self.graph_widget.hide()
+
+        self._graph_device_ids = set()
+
+        self.placeholder = QLabel(
+            "Drag active signal devices here\n\n"
+            "Only active devices with electrical I/O can be added to the workspace."
+        )
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setStyleSheet(
+            """
+            QLabel {
+                color: #9a9a9a;
+                border: 2px dashed #444;
+                border-radius: 12px;
+                padding: 28px;
+                background: #181818;
+            }
+        """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.placeholder)
+        layout.addWidget(self.graph_widget, 1)
+
+    def _refresh_empty_state(self):
+        has_graph = bool(self._graph_device_ids)
+        self.placeholder.setVisible(not has_graph)
+        self.graph_widget.setVisible(has_graph)
+
+    def add_graph_device(self, device):
+        device_id = getattr(device, "device_id", getattr(device, "name", None))
+        if not device_id or device_id in self._graph_device_ids:
+            self._refresh_empty_state()
+            return
+
+        self.graph_widget.addSensor(device, True)
+        self._graph_device_ids.add(device_id)
+        self._refresh_empty_state()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.ignore()
+            return
+
+        raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
+        if raw:
+            self.deviceDropped.emit(raw)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 class EngineForceWidget(QWidget):
@@ -82,8 +996,10 @@ class EngineForceWidget(QWidget):
         p.fillRect(0, 0, w, h, QColor(0, 0, 0, 0))
 
         all_present = (
-            self.up_n is not None and self.right_n is not None and
-            self.down_n is not None and self.left_n is not None
+            self.up_n is not None
+            and self.right_n is not None
+            and self.down_n is not None
+            and self.left_n is not None
         )
 
         # --- Total (pinned top-left) ---
@@ -123,11 +1039,15 @@ class EngineForceWidget(QWidget):
         # --- Draw circle ---
         p.setPen(QPen(QColor("#d0d0d0"), circle_pen_w))
         p.setBrush(Qt.NoBrush)
-        p.drawEllipse(int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2))
+        p.drawEllipse(
+            int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2)
+        )
 
         p.setPen(Qt.NoPen)
         p.setBrush(QColor("#bfbfbf"))
-        p.drawEllipse(int(cx - center_r), int(cy - center_r), int(center_r * 2), int(center_r * 2))
+        p.drawEllipse(
+            int(cx - center_r), int(cy - center_r), int(center_r * 2), int(center_r * 2)
+        )
 
         # --- Draw sensor boxes (two-line: value / N) ---
         val_font = QFont("Arial", val_fs, QFont.Bold)
@@ -137,7 +1057,12 @@ class EngineForceWidget(QWidget):
         def draw_value_box(x, y, v):
             rect = QRect(int(x), int(y), int(box_w), int(box_h))
             upper = QRect(rect.x(), rect.y(), rect.width(), rect.height() // 2)
-            lower = QRect(rect.x(), rect.y() + rect.height() // 2, rect.width(), rect.height() - rect.height() // 2)
+            lower = QRect(
+                rect.x(),
+                rect.y() + rect.height() // 2,
+                rect.width(),
+                rect.height() - rect.height() // 2,
+            )
 
             p.setFont(val_font)
             if v is None:
@@ -204,7 +1129,9 @@ class EngineForceWidget(QWidget):
 
         p.setBrush(dot_color)
         p.setPen(Qt.NoPen)
-        p.drawEllipse(int(dot_x - dot_r), int(dot_y - dot_r), int(dot_r * 2), int(dot_r * 2))
+        p.drawEllipse(
+            int(dot_x - dot_r), int(dot_y - dot_r), int(dot_r * 2), int(dot_r * 2)
+        )
 
         p.end()
 
@@ -220,6 +1147,7 @@ class TankGaugeWidget(QWidget):
     - label at bottom (IPA/LOX)
     - emits clicked(name) when pressed
     """
+
     clicked = pyqtSignal(str)
 
     def __init__(self, name: str, fill_color: str, parent=None):
@@ -236,7 +1164,9 @@ class TankGaugeWidget(QWidget):
         self.setMinimumHeight(220)
         self.setCursor(Qt.PointingHandCursor)
 
-    def set_data(self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None):
+    def set_data(
+        self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
+    ):
         self.pressure_psi = None if pressure_psi is None else float(pressure_psi)
         self.temp_c = None if temp_c is None else float(temp_c)
         self.level_pct = None if level_pct is None else float(level_pct)
@@ -282,7 +1212,6 @@ class TankGaugeWidget(QWidget):
 
         # Missing data displays as: "-- <unit>"
         # Standard unit formatting: psi, °C, %
-
 
         lines = [
             f"Pres: {self._fmt_num(self.pressure_psi)} psi",
@@ -341,7 +1270,9 @@ class TankGaugeWidget(QWidget):
             fill_color = self.fill_color
 
         fill_h = int(inner.height() * (lvl / 100.0))
-        fill_rect = QRect(inner.x(), inner.y() + inner.height() - fill_h, inner.width(), fill_h)
+        fill_rect = QRect(
+            inner.x(), inner.y() + inner.height() - fill_h, inner.width(), fill_h
+        )
 
         p.setPen(Qt.NoPen)
         p.setBrush(fill_color)
@@ -350,7 +1281,9 @@ class TankGaugeWidget(QWidget):
         # ---- Bottom label ----
         p.setFont(label_font)
         p.setPen(QColor("#e6e6e6"))
-        label_rect = QRect(int(pad), int(h - pad - label_h), int(w - 2 * pad), int(label_h))
+        label_rect = QRect(
+            int(pad), int(h - pad - label_h), int(w - 2 * pad), int(label_h)
+        )
         p.drawText(label_rect, Qt.AlignHCenter | Qt.AlignVCenter, self.name)
 
         p.end()
@@ -361,6 +1294,7 @@ class TelemetryWidget(QWidget):
     Two-tank telemetry panel (IPA + LOX) with an info label below.
     Clicking a tank updates info text and emits tank_clicked(name).
     """
+
     tank_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -398,10 +1332,14 @@ class TelemetryWidget(QWidget):
         self.info_label.setText(f"{name} tank selected.")
         self.tank_clicked.emit(name)
 
-    def set_ipa(self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None):
+    def set_ipa(
+        self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
+    ):
         self.ipa.set_data(pressure_psi, temp_c, level_pct, valve_open_pct)
 
-    def set_lox(self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None):
+    def set_lox(
+        self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
+    ):
         self.lox.set_data(pressure_psi, temp_c, level_pct, valve_open_pct)
 
     def set_info(self, text: str):
@@ -410,30 +1348,37 @@ class TelemetryWidget(QWidget):
 
 class ControllerWindow(QMainWindow):
     STATUS_STYLE = {
-        "idle":   ("Idle",   "#616161", "#ffffff"),
+        "idle": ("Idle", "#616161", "#ffffff"),
         "normal": ("Normal", "#2e7d32", "#ffffff"),
-        "hold":   ("Hold",   "#1565C0", "#ffffff"),
-        "abort":  ("Abort",  "#EF6C00", "#ffffff"),
-        "estop":  ("E-Stop", "#C62828", "#ffffff"),
+        "hold": ("Hold", "#1565C0", "#ffffff"),
+        "abort": ("Abort", "#EF6C00", "#ffffff"),
+        "estop": ("E-Stop", "#C62828", "#ffffff"),
     }
     HEALTH_STYLE = {
-        "default":   ("--",        "#616161", "#ffffff"),
-        "ok":        ("OK",        "#2e7d32", "#ffffff"),
+        "default": ("--", "#616161", "#ffffff"),
+        "ok": ("OK", "#2e7d32", "#ffffff"),
         "attention": ("Attention", "#F9A825", "#000000"),
-        "alarm":     ("Alarm",     "#C62828", "#ffffff"),
+        "alarm": ("Alarm", "#C62828", "#ffffff"),
     }
     MODE_STYLE = {
-        "auto":     ("Auto",     "#EF6C00", "#ffffff"),
-        "manual":   ("Manual",   "#EF6C00", "#ffffff"),
+        "auto": ("Auto", "#EF6C00", "#ffffff"),
+        "manual": ("Manual", "#EF6C00", "#ffffff"),
         "playback": ("Playback", "#1565C0", "#ffffff"),
     }
     SCRIPT_STYLE = {
-        "idle":    ("Idle",    "#616161", "#ffffff"),
+        "idle": ("Idle", "#616161", "#ffffff"),
         "running": ("Running", "#EF6C00", "#ffffff"),
-        "pause":   ("Paused",  "#1565C0", "#ffffff"),
+        "pause": ("Paused", "#1565C0", "#ffffff"),
     }
 
-    def __init__(self, loghandler=None, autopoller=None, playback_mode=False, test_name=None, manager=None):
+    def __init__(
+        self,
+        loghandler=None,
+        autopoller=None,
+        playback_mode=False,
+        test_name=None,
+        manager=None,
+    ):
         super().__init__()
         self.manager = manager
 
@@ -444,7 +1389,8 @@ class ControllerWindow(QMainWindow):
         self.playback_mode = playback_mode
         self.test_name = test_name
 
-        self.devices: dict[str, BusRider] = {}
+        self.devices: dict[str, object] = {}
+        self.device_meta: dict[str, dict] = {}
 
         self.mission_start_time = None
         self.mission_running = False
@@ -467,9 +1413,13 @@ class ControllerWindow(QMainWindow):
             self.timeline.seek_requested.connect(self._on_timeline_seek)
 
         self.graph = GraphView()
-        self.listtab = ListView()
         self.console = ConsoleView(loghandler)
         self.exporter = ExportView()
+
+        self.device_library = DeviceLibraryPanel()
+        self.workspace = DeviceWorkspace(self.graph)
+        self.workspace.deviceDropped.connect(self._on_device_requested)
+        self.device_library.deviceActivated.connect(self._on_device_requested)
 
         self.scripter = ScriptView(
             MintsScriptAPI(
@@ -513,14 +1463,16 @@ class ControllerWindow(QMainWindow):
         body_split.setChildrenCollapsible(False)
         body_split.setOpaqueResize(True)
 
-        body_split.setStyleSheet("""
+        body_split.setStyleSheet(
+            """
             QSplitter::handle {
                 background: #3a3a3a;
             }
             QSplitter::handle:hover {
                 background: #5a5a5a;
             }
-        """)
+        """
+        )
 
         left_area = self._create_left_main_area()
         right_area = self._create_right_controller_area()
@@ -534,7 +1486,6 @@ class ControllerWindow(QMainWindow):
 
         body_layout.addWidget(body_split, 1)
         self.mainlayout.addWidget(body, 1)
-
 
         # ====== Timers ======
         self.display_timer = QTimer(self)
@@ -604,7 +1555,9 @@ class ControllerWindow(QMainWindow):
 
         self.mission_time_label = QLabel("T+00:00:00.000")
         self.mission_time_label.setFont(QFont("Courier New", 22, QFont.Bold))
-        self.mission_time_label.setStyleSheet("color:#21c45a; padding:0 12px; background: transparent; border:none;")
+        self.mission_time_label.setStyleSheet(
+            "color:#21c45a; padding:0 12px; background: transparent; border:none;"
+        )
         self.mission_time_label.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.mission_time_label, 0, Qt.AlignVCenter)
 
@@ -622,7 +1575,9 @@ class ControllerWindow(QMainWindow):
 
         status_label = QLabel("Status:")
         status_label.setFont(QFont("Arial", 18, QFont.Bold))
-        status_label.setStyleSheet("color:#eaeaea; background: transparent; border:none;")
+        status_label.setStyleSheet(
+            "color:#eaeaea; background: transparent; border:none;"
+        )
         row1_lay.addWidget(status_label)
 
         self.status_badge = QLabel("Idle")
@@ -633,7 +1588,9 @@ class ControllerWindow(QMainWindow):
 
         health_label = QLabel("Health:")
         health_label.setFont(QFont("Arial", 18, QFont.Bold))
-        health_label.setStyleSheet("color:#eaeaea; background: transparent; border:none;")
+        health_label.setStyleSheet(
+            "color:#eaeaea; background: transparent; border:none;"
+        )
         row1_lay.addWidget(health_label)
 
         self.health_badge = QLabel("--")
@@ -659,7 +1616,9 @@ class ControllerWindow(QMainWindow):
 
         script_label = QLabel("Script:")
         script_label.setFont(QFont("Arial", 12, QFont.Bold))
-        script_label.setStyleSheet("color:#eaeaea; background: transparent; border:none;")
+        script_label.setStyleSheet(
+            "color:#eaeaea; background: transparent; border:none;"
+        )
         row2_lay.addWidget(script_label)
 
         self.script_badge = QLabel("Idle")
@@ -670,7 +1629,9 @@ class ControllerWindow(QMainWindow):
 
         self.clock_label = QLabel("00:00:00")
         self.clock_label.setFont(QFont("Courier New", 12))
-        self.clock_label.setStyleSheet("color:#cfcfcf; background: transparent; border:none;")
+        self.clock_label.setStyleSheet(
+            "color:#cfcfcf; background: transparent; border:none;"
+        )
         row2_lay.addWidget(self.clock_label)
 
         rlay.addWidget(row2)
@@ -742,8 +1703,8 @@ class ControllerWindow(QMainWindow):
         split.setHandleWidth(3)
         split.setChildrenCollapsible(False)
 
-        dev_panel = self._panel("Devices", self.listtab)
-        dev_panel.setMinimumWidth(260)
+        dev_panel = self._panel("Device Library", self.device_library)
+        dev_panel.setMinimumWidth(320)
         split.addWidget(dev_panel)
 
         main_view = QWidget()
@@ -751,17 +1712,17 @@ class ControllerWindow(QMainWindow):
         mv.setContentsMargins(0, 0, 0, 0)
         mv.setSpacing(8)
 
-        mv.addWidget(self.graph, 1)
+        mv.addWidget(self.workspace, 1)
 
         if (self.autopoller is not None) and (not self.playback_mode):
             mv.addLayout(AutoPollerRow(self.autopoller))
 
-        graph_panel = self._panel("Main View", main_view)
-        split.addWidget(graph_panel)
+        workspace_panel = self._panel("Workspace", main_view)
+        split.addWidget(workspace_panel)
 
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.setSizes([320, 1000])
+        split.setSizes([340, 1000])
         return split
 
     # =========================================================
@@ -816,7 +1777,9 @@ class ControllerWindow(QMainWindow):
         # Button column
         btn_col = QFrame()
         btn_col.setFixedWidth(170)
-        btn_col.setStyleSheet("QFrame{background:#1e1e1e; border-radius:10px; border:1px solid #444;}")
+        btn_col.setStyleSheet(
+            "QFrame{background:#1e1e1e; border-radius:10px; border:1px solid #444;}"
+        )
         blay = QVBoxLayout(btn_col)
         blay.setContentsMargins(12, 12, 12, 12)
         blay.setSpacing(12)
@@ -853,7 +1816,9 @@ class ControllerWindow(QMainWindow):
 
     def _panel(self, title: str, widget: QWidget) -> QWidget:
         panel = QFrame()
-        panel.setStyleSheet("QFrame{background:#202020; border:1px solid #444; border-radius:10px;}")
+        panel.setStyleSheet(
+            "QFrame{background:#202020; border:1px solid #444; border-radius:10px;}"
+        )
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -920,11 +1885,15 @@ class ControllerWindow(QMainWindow):
     # Public setters
     # =========================================================
     def set_status(self, key: str):
-        text, bg, fg = self.STATUS_STYLE.get(key.lower().strip(), self.STATUS_STYLE["idle"])
+        text, bg, fg = self.STATUS_STYLE.get(
+            key.lower().strip(), self.STATUS_STYLE["idle"]
+        )
         self._set_badge(self.status_badge, text, bg, fg, big=True)
 
     def set_health(self, key: str):
-        text, bg, fg = self.HEALTH_STYLE.get(key.lower().strip(), self.HEALTH_STYLE["default"])
+        text, bg, fg = self.HEALTH_STYLE.get(
+            key.lower().strip(), self.HEALTH_STYLE["default"]
+        )
         self._set_badge(self.health_badge, text, bg, fg, big=True)
 
     def set_mode(self, key: str):
@@ -932,7 +1901,9 @@ class ControllerWindow(QMainWindow):
         self._set_badge(self.mode_badge, text, bg, fg, big=False)
 
     def set_script_state(self, key: str):
-        text, bg, fg = self.SCRIPT_STYLE.get(key.lower().strip(), self.SCRIPT_STYLE["idle"])
+        text, bg, fg = self.SCRIPT_STYLE.get(
+            key.lower().strip(), self.SCRIPT_STYLE["idle"]
+        )
         self._set_badge(self.script_badge, text, bg, fg, big=False)
 
     def set_stages(self, prev: str, current: str, next_: str):
@@ -945,12 +1916,23 @@ class ControllerWindow(QMainWindow):
         self.engine_force_widget.set_sensors(up, right, down, left)
 
     # Telemetry update API
-    def set_tank_telemetry(self, tank: str, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None):
+    def set_tank_telemetry(
+        self,
+        tank: str,
+        pressure_psi=None,
+        temp_c=None,
+        level_pct=None,
+        valve_open_pct=None,
+    ):
         t = (tank or "").strip().lower()
         if t == "ipa":
-            self.telemetry_widget.set_ipa(pressure_psi, temp_c, level_pct, valve_open_pct)
+            self.telemetry_widget.set_ipa(
+                pressure_psi, temp_c, level_pct, valve_open_pct
+            )
         elif t == "lox":
-            self.telemetry_widget.set_lox(pressure_psi, temp_c, level_pct, valve_open_pct)
+            self.telemetry_widget.set_lox(
+                pressure_psi, temp_c, level_pct, valve_open_pct
+            )
 
     def set_tank_info(self, text: str):
         self.telemetry_widget.set_info(text)
@@ -983,7 +1965,9 @@ class ControllerWindow(QMainWindow):
         seconds = int(abs_seconds % 60)
         milliseconds = int((abs_seconds % 1) * 1000)
         sign = "+" if total_seconds >= 0 else "-"
-        self.mission_time_label.setText(f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}")
+        self.mission_time_label.setText(
+            f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        )
 
     def _on_timeline_seek(self, seek_time: float):
         self.playback_time = seek_time
@@ -1010,15 +1994,38 @@ class ControllerWindow(QMainWindow):
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 
+    def _on_device_requested(self, device_id: str):
+        meta = self.device_meta.get(device_id)
+        device = self.devices.get(device_id)
+
+        if meta is None or device is None:
+            self.log.warning(f"Requested unknown device: {device_id}")
+            return
+
+        if not meta.get("isActive", False):
+            self.log.info(f"Ignoring inactive device request: {device_id}")
+            return
+
+        if not meta.get("hasElectricalIO", False):
+            self.log.info(f"Ignoring mechanical device request: {device_id}")
+            return
+
+        self.workspace.add_graph_device(device)
+        self.log.info(f"Added active signal device to workspace: {device_id}")
+
     # =========================================================
     # Device hooks
     # =========================================================
-    def addDevice(self, device: BusRider, display: QWidget = None):
-        self.devices[device.name] = device
-        self.exporter.devices.append(device)
-        if display is not None:
-            self.listtab.layout.addLayout(display)
-        self.graph.addSensor(device, display is not None)
+    def addDevice(self, device, meta: dict):
+        device_id = meta["id"]
+
+        self.devices[device_id] = device
+        self.device_meta[device_id] = meta
+
+        if meta.get("isActive", False) and meta.get("hasElectricalIO", False):
+            self.exporter.devices.append(device)
+
+        self.device_library.add_device(meta)
 
     def abort(self):
         self.log.fatal("Abort triggered! Slap the big red button NOW!")
