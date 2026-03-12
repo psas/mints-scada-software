@@ -51,8 +51,6 @@ def classify_system_bucket(device_systems):
     return "Cross-System", combo
 
 
-
-
 class CollapsibleSection(QFrame):
     expandedChanged = pyqtSignal(bool)
     preferredHeightChanged = pyqtSignal()
@@ -161,10 +159,6 @@ class CollapsibleSection(QFrame):
             else:
                 self.content_widget.setMaximumHeight(max(0, int(max_height)))
         self.updateGeometry()
-
-
-
-
 
 
 class DeviceSectionTree(QTreeWidget):
@@ -424,12 +418,6 @@ class DeviceSectionTree(QTreeWidget):
         super().mouseDoubleClickEvent(event)
 
 
-
-
-
-
-
-
 class DeviceLibraryPanel(QWidget):
     deviceActivated = pyqtSignal(str)
 
@@ -653,10 +641,7 @@ class DeviceLibraryPanel(QWidget):
 
         available_for_content = max(0, available - header_total - padding_total)
 
-        preferred = {
-            s: max(0, s.preferred_content_height())
-            for s in expanded_sections
-        }
+        preferred = {s: max(0, s.preferred_content_height()) for s in expanded_sections}
         preferred_total = sum(preferred.values())
 
         # enough room: everything natural, no internal scroll
@@ -704,7 +689,9 @@ class DeviceLibraryPanel(QWidget):
 
         # if panel is extremely tiny, distribute what's left evenly
         if overflow > 0:
-            share = max(hard_min, available_for_content // max(1, len(expanded_sections)))
+            share = max(
+                hard_min, available_for_content // max(1, len(expanded_sections))
+            )
             for s in expanded_sections:
                 assigned[s] = share
 
@@ -846,12 +833,6 @@ class DeviceLibraryPanel(QWidget):
             self.deviceActivated.emit(device_id)
 
 
-
-
-
-
-
-
 class DeviceWorkspace(QWidget):
     deviceDropped = pyqtSignal(str)
 
@@ -893,7 +874,7 @@ class DeviceWorkspace(QWidget):
         self.graph_widget.setVisible(has_graph)
 
     def add_graph_device(self, device):
-        device_id = getattr(device, "device_id", getattr(device, "name", None))
+        device_id = getattr(device, "device_id", None)
         if not device_id or device_id in self._graph_device_ids:
             self._refresh_empty_state()
             return

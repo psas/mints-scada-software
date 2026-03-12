@@ -2,17 +2,23 @@
 from collections.abc import Callable
 from nexus import GenericSensor
 
+
 class Thermocouple(GenericSensor):
     def __init__(
         self,
         id: int,
-        name: str = "Thermocouple",
+        device_id: str = "Thermocouple",
         *,
         tc_type: str = "k",
         simulated: bool = False,
         genVal: Callable | None = None,
     ):
-        super().__init__(id=id, name=name, simulated=simulated, genVal=genVal)
+        super().__init__(
+            id=id,
+            device_id=device_id,
+            simulated=simulated,
+            genVal=genVal,
+        )
         self._type = tc_type
 
         if self._type == "k":

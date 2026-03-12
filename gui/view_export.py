@@ -4,12 +4,13 @@ import csv
 import os
 import logging
 
+
 class ExportView(QWidget):
     def __init__(self):
         super().__init__()
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
-        
+
         self.devices = []
 
         self.log = logging.getLogger("export")
@@ -18,7 +19,6 @@ class ExportView(QWidget):
         self.savebutton.clicked.connect(self._export)
 
         self.layout.addWidget(self.savebutton)
-
         self.layout.addStretch()
 
     def _export(self):
@@ -28,12 +28,14 @@ class ExportView(QWidget):
 
         for device in self.devices:
             if isinstance(device, GenericSensor):
-                device: GenericSensor = device
-                path = os.path.join(folder_path, device.name + ".csv")
+                device_id = getattr(device, "device_id", "unknown_device")
+                path = os.path.join(folder_path, f"{device_id}.csv")
                 with open(path, "w") as csvfile:
                     self.log.debug(f"Saving CSV {path}")
-                    spamwriter = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-                    spamwriter.writerow(['Spam'] * 5 + ['Baked Beans'])
-                    spamwriter.writerow(['Spam', 'Lovely Spam', 'Wonderful Spam'])
+                    spamwriter = csv.writer(
+                        csvfile, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+                    )
+                    spamwriter.writerow(["Spam"] * 5 + ["Baked Beans"])
+                    spamwriter.writerow(["Spam", "Lovely Spam", "Wonderful Spam"])
 
         self.log.info(f"Exporting to {folder_path}")

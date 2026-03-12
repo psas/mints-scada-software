@@ -14,6 +14,7 @@ import settings
 # Should be compatible with any slcan CANBus interface on Linux
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -34,14 +35,18 @@ REQUIRED_DEVICE_FIELDS = (
 def normalize_device_desc(device_desc: dict) -> dict:
     missing = [k for k in REQUIRED_DEVICE_FIELDS if k not in device_desc]
     if missing:
-        raise KeyError(f"Device config is missing required fields: {missing}\nConfig: {device_desc}")
+        raise KeyError(
+            f"Device config is missing required fields: {missing}\nConfig: {device_desc}"
+        )
 
     meta = {
         "id": device_desc["id"],
         "name": device_desc["name"],
         "deviceType": device_desc["deviceType"],
         "deviceGroup": device_desc["deviceGroup"],
-        "deviceSystems": list(device_desc["deviceSystems"]) if device_desc["deviceSystems"] else [],
+        "deviceSystems": (
+            list(device_desc["deviceSystems"]) if device_desc["deviceSystems"] else []
+        ),
         "address": device_desc["address"],
         "hasElectricalIO": bool(device_desc["hasElectricalIO"]),
         "isControllable": bool(device_desc["isControllable"]),
@@ -72,16 +77,26 @@ def resolve_device_class(device_type: str):
 
 def build_device(meta: dict):
     device_class = resolve_device_class(meta["deviceType"])
-    device = device_class(meta["address"], meta["name"], **meta["config"])
+
+    # Runtime identity is id-based, not name-based.
+    device = device_class(
+        meta["address"],
+        meta["id"],
+        **meta["config"],
+    )
 
     # Attach schema metadata to the runtime object
     device.device_id = meta["id"]
+    device.display_name = meta["name"]
+    device.address = meta["address"]
     device.meta = meta
     device.live_registered = False
     return device
 
 
-def maybe_register_device_with_bus(bus: Bus, device, meta: dict, used_addresses: set[int]) -> bool:
+def maybe_register_device_with_bus(
+    bus: Bus, device, meta: dict, used_addresses: set[int]
+) -> bool:
     if not meta["hasElectricalIO"]:
         log.debug(f"Skipping bus registration for mechanical-only device {meta['id']}")
         return False
@@ -114,14 +129,16 @@ def load_configured_devices(window, bus: Bus | None = None):
         device = build_device(meta)
 
         if bus is not None and meta["isActive"]:
-            device.live_registered = maybe_register_device_with_bus(bus, device, meta, used_addresses)
+            device.live_registered = maybe_register_device_with_bus(
+                bus, device, meta, used_addresses
+            )
         else:
             device.live_registered = False
 
         window.addDevice(device, meta)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     formatstr = "%(asctime)s [%(name)-16.16s] [%(levelname)-5.5s]  %(message)s"
     consolehandler = QLoggingHandler()
     consolehandler.setFormatter(logging.Formatter(formatstr))
@@ -133,8 +150,8 @@ if __name__ == '__main__':
         handlers=[
             logging.FileHandler("log/debug.log"),
             logging.StreamHandler(),
-            consolehandler
-        ]
+            consolehandler,
+        ],
     )
     log.debug("Hi!")
 
@@ -159,24 +176,28 @@ if __name__ == '__main__':
                 loghandler=consolehandler,
                 autopoller=None,
                 playback_mode=True,
-                test_name=checklist.selected_test
+                test_name=checklist.selected_test,
             )
 
             # Load devices into UI library / workspace model
             load_configured_devices(window, bus=None)
 
             # Load test metadata and populate timeline
-            metadata_path = os.path.join("testhistory", checklist.selected_test, "metadata.json")
+            metadata_path = os.path.join(
+                "testhistory", checklist.selected_test, "metadata.json"
+            )
             if os.path.exists(metadata_path):
                 try:
-                    with open(metadata_path, 'r') as f:
+                    with open(metadata_path, "r") as f:
                         metadata = json.load(f)
 
                     # Set timeline range (support both new and old format)
                     if "start_time" in metadata and "end_time" in metadata:
                         window.timeline.min_time = metadata["start_time"]
                         window.timeline.set_total_duration(metadata["end_time"])
-                        log.info(f"Test range: T{metadata['start_time']:+.1f}s to T+{metadata['end_time']:.1f}s")
+                        log.info(
+                            f"Test range: T{metadata['start_time']:+.1f}s to T+{metadata['end_time']:.1f}s"
+                        )
                     elif "duration" in metadata:
                         # Old format compatibility
                         window.timeline.set_total_duration(metadata["duration"])
@@ -209,7 +230,10 @@ if __name__ == '__main__':
                 # Create new checklist window and go directly to playback selection
                 checklist = ChecklistWindow(settings.sender)
                 checklist.show_playback_selection()
-                if checklist.exec_() != QMessageBox.Accepted or not checklist.playback_mode:
+                if (
+                    checklist.exec_() != QMessageBox.Accepted
+                    or not checklist.playback_mode
+                ):
                     log.info("User cancelled test selection")
                     sys.exit(0)
                 # Loop continues with new selected_test
@@ -224,7 +248,12 @@ if __name__ == '__main__':
 
         # Set up all the things
         try:
-            bus = Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False)
+            bus = Bus(
+                settings.sender,
+                settings.bitrate,
+                packetprinting=False,
+                packetlogging=False,
+            )
             log.info("CAN bus initialized successfully")
         except Exception as e:
             log.error(f"Failed to initialize CAN bus: {e}")
@@ -236,25 +265,20 @@ if __name__ == '__main__':
                 f"1. Device is plugged in\n"
                 f"2. Device is forwarded to WSL (run 'make wsl-usb' if needed)\n"
                 f"3. No other program is using the port\n\n"
-                f"Then run 'make run' again."
+                f"Then run 'make run' again.",
             )
             sys.exit(1)
 
         with bus:
             with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
-                window = window_manager(loghandler=consolehandler, autopoller=ap, playback_mode=False)
+                window = window_manager(
+                    loghandler=consolehandler, autopoller=ap, playback_mode=False
+                )
 
                 # Load all active devices from settings using new schema
                 load_configured_devices(window, bus=bus)
 
-
-
-
-
-
-
-
-# old code for load, find, and display
+                # old code for load, find, and display
                 # # Load all devices from settings
                 # for deviceDesc in settings.devices:
                 #     # We don't know what type the device is, so try a bunch of devices and see if we can find it
@@ -300,9 +324,6 @@ if __name__ == '__main__':
                 #         displayConfig = deviceDesc["displayConfig"] if "displayConfig" in deviceDesc else {}
                 #         display = deviceDisplayClass(device, **displayConfig)
                 #     window.addDevice(device, display)
-
-
-
 
                 window.show()
                 app.exec()

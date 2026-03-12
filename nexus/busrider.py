@@ -14,11 +14,18 @@ import threading
 
 # NEVER change if a device is simulated.
 
-class BusRider():
-    def __init__(self, id: int, name = "BusRider", simulated: bool = False):
-        # ID of the remote device
+
+class BusRider:
+    def __init__(self, id: int, device_id: str = "BusRider", simulated: bool = False):
+        # Hardware / bus address of the remote device
         self._id = id
-        
+
+        # Stable software identifier used everywhere in repo logic
+        self.device_id = device_id
+
+        # Optional display name for UI only
+        self.display_name = device_id
+
         # The serial number of the sensor
         # TODO check this to help ensure that the correct sensor is at this address
         self._serial = None
@@ -26,14 +33,11 @@ class BusRider():
         # The bus the rider rides on
         self._bus = None
 
-        # The name of the rider
-        self.name = name
-
         self._simulated = simulated
-        ''' If the sensor is simulated. DO NOT CHANGE THIS '''
+        """ If the sensor is simulated. DO NOT CHANGE THIS """
 
         self.time = None
-        ''' the time of the last reading '''
+        """ the time of the last reading """
 
         # An event that is triggered when a new packet comes in for this sensor
         self._event = threading.Event()
@@ -47,7 +51,7 @@ class BusRider():
             bus.send(request)
 
     def _onPacket(self, packet: DataPacket):
-        ''' Call this for every packet that comes in '''
+        """Call this for every packet that comes in"""
         if packet is not None and packet.id == self._id:
             if packet.reply:
                 if packet.cmd == BusCommands.READ_ID_LOW:
@@ -59,11 +63,11 @@ class BusRider():
                     self._decodePacket(packet)
                     # Trigger anything waiting for this sensor
                     self._event.set()
-    
-    def _decodePacket(self):
-        ''' Implement this in child classes '''
+
+    def _decodePacket(self, packet: DataPacket):
+        """Implement this in child classes"""
         pass
 
-    def poll():
-        ''' Implement this in child classes '''
+    def poll(self):
+        """Implement this in child classes"""
         pass
