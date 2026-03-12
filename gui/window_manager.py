@@ -6,7 +6,7 @@ from .controller_window import ControllerWindow
 from .scada_window import ScadaWindow
 
 
-class DualWindowManager(QObject):
+class WindowManager(QObject):
     """
     Dispatch hub:
     - Manages two windows and places each one full-screen on a separate display.
@@ -89,7 +89,7 @@ class DualWindowManager(QObject):
 
 # Key: export a callable window_manager so main.py does not need major changes.
 def window_manager(*, loghandler=None, autopoller=None, playback_mode=False, test_name=None):
-    return DualWindowManager(
+    return WindowManager(
         loghandler=loghandler,
         autopoller=autopoller,
         playback_mode=playback_mode,

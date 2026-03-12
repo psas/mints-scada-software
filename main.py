@@ -7,7 +7,7 @@ import json
 from nexus import Bus, BusRider, GenericSensor, GenericActuator
 
 from gui.window_manager import window_manager
-from gui import DeviceRow, AutoPoller, AutoPollerRow, QLoggingHandler, ChecklistWindow
+from gui import AutoPoller, AutoPollerRow, QLoggingHandler, ChecklistWindow
 
 import settings
 
@@ -57,7 +57,7 @@ def normalize_device_desc(device_desc: dict) -> dict:
 
 
 def resolve_device_class(device_type: str):
-    for prefix in ("sensors", "actuators", "nexus"):
+    for prefix in ("electricaldevices", "nexus"):
         try:
             module = importlib.import_module(prefix)
             cls = getattr(module, device_type)

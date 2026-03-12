@@ -1,7 +1,16 @@
+# electricaldevices/actuators/solenoid.py
+
+
 from nexus import GenericActuator
 
 class Solenoid(GenericActuator):
-    def __init__(self, id: int, name: str = "Solenoid", inverted: bool = False, simulated: bool = False):
+    def __init__(
+        self,
+        id: int,
+        name: str = "Solenoid",
+        inverted: bool = False,
+        simulated: bool = False,
+    ):
         super().__init__(id=id, name=name, simulated=simulated)
         self.inverted = inverted
 

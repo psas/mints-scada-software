@@ -1,7 +1,6 @@
 import settings
 from nexus import Bus, GenericSensor, GenericActuator
-from sensors import Thermocouple
-from actuators import Solenoid
+from electricaldevices import Thermocouple, Solenoid
 myid = 0x64
 
 count = -1

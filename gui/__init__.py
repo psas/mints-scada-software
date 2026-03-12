@@ -9,7 +9,6 @@ from .view_export import ExportView
 from .view_console import ConsoleView
 from .mintsscriptapi import MintsScriptAPI
 from .view_script import ScriptView
-from .mainwindow import MainWindow
-from .devicerow import DeviceRow
+# from .window_manager import WindowManager
 from .checklist_window import ChecklistWindow
 from .timelineview import TimelineView
