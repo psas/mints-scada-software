@@ -115,8 +115,37 @@ class WriterStatsState:
     last_flush_wall_time: str | None = None
     last_error_wall_time: str | None = None
     writer_status: str = "ready"
+    writer_pid: int | None = None
     errors: list[dict[str, Any]] = field(default_factory=list)
     snapshots_written: int = 0
+
+    def bump_stream(self, stream_name: str) -> None:
+        self.stream_counts[stream_name] = self.stream_counts.get(stream_name, 0) + 1
+
+    def update_queue_max_depth(self, depth: int | None) -> None:
+        if depth is None:
+            return
+        if depth > self.queue_max_depth:
+            self.queue_max_depth = depth
+
+    def add_error(self, *, wall_time: str, message: str) -> None:
+        self.last_error_wall_time = wall_time
+        self.writer_status = "error"
+        self.errors.append(
+            {
+                "time": wall_time,
+                "message": message,
+            }
+        )
+
+    def mark_flush(self, wall_time: str) -> None:
+        self.flush_count += 1
+        self.last_flush_wall_time = wall_time
+
+    def set_status(self, status: str, *, pid: int | None = None) -> None:
+        self.writer_status = status
+        if pid is not None:
+            self.writer_pid = pid
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +157,7 @@ class WriterStatsState:
             "last_flush_wall_time": self.last_flush_wall_time,
             "last_error_wall_time": self.last_error_wall_time,
             "writer_status": self.writer_status,
+            "writer_pid": self.writer_pid,
             "errors": list(self.errors),
             "snapshots_written": self.snapshots_written,
         }

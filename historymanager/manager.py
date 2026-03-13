@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import os
+import queue
 import re
 import threading
 import time
@@ -16,6 +18,7 @@ from .models import (
     WriterStatsState,
 )
 from .paths import build_run_paths, ensure_base_dirs
+from .writers import WriterRuntime, create_raw_writer_runtime
 
 
 def utc_now() -> datetime:
@@ -56,21 +59,46 @@ def _sanitize_name(value: str) -> str:
 class HistoryManager:
     """Manage history run directories and run lifecycle.
 
-    This commit intentionally keeps scope narrow:
-    - ensure base history root directories exist
-    - create run-scoped directory trees and base files
-    - manage start_run() / finish_run()
+    Commit 3 adds isolated raw/rawbak writer processes.
+    The public API stays small:
+    - start_run()
+    - finish_run()
+    - record_raw_event()
+    - record_structured_event()
+    - write_snapshot()
 
-    Later commits can replace the internals of event writing with queues and
-    dedicated writer processes without changing the public API shape.
+    Raw/rawbak now use independent writer paths so one side can fail without
+    necessarily blocking the other side.
     """
 
-    def __init__(self, project_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        project_root: str | Path | None = None,
+        *,
+        raw_queue_maxsize: int = 2000,
+        raw_enqueue_timeout_s: float = 0.05,
+        writer_start_timeout_s: float = 5.0,
+        writer_finish_timeout_s: float = 5.0,
+        writer_shutdown_timeout_s: float = 3.0,
+        fsync_raw_writes: bool = True,
+    ) -> None:
         self.base_dirs = ensure_base_dirs(project_root)
 
+        self.raw_queue_maxsize = raw_queue_maxsize
+        self.raw_enqueue_timeout_s = raw_enqueue_timeout_s
+        self.writer_start_timeout_s = writer_start_timeout_s
+        self.writer_finish_timeout_s = writer_finish_timeout_s
+        self.writer_shutdown_timeout_s = writer_shutdown_timeout_s
+        self.fsync_raw_writes = fsync_raw_writes
+
+        self._mp_context = mp.get_context("spawn")
         self._lock = threading.RLock()
+
         self.current_run: ActiveRun | None = None
         self.is_running = False
+
+        self._raw_writer: WriterRuntime | None = None
+        self._rawbak_writer: WriterRuntime | None = None
 
     def start_run(
         self,
@@ -140,7 +168,7 @@ class HistoryManager:
                 history_stats=history_stats,
             )
 
-            self.current_run = ActiveRun(
+            run = ActiveRun(
                 run_id=resolved_run_id,
                 paths=run_paths,
                 metadata=metadata,
@@ -150,12 +178,27 @@ class HistoryManager:
                 rawbak_stats=rawbak_stats,
                 history_stats=history_stats,
             )
+
+            self.current_run = run
             self.is_running = True
+
+            try:
+                self._start_raw_writers(run)
+            except Exception:
+                self._best_effort_shutdown_writers(run)
+                self.current_run = None
+                self.is_running = False
+                raise
+
+            self._write_writer_stats_triplet(run)
             return resolved_run_id
 
     def finish_run(self, reason: str = "operator_stop") -> str:
         with self._lock:
             run = self._require_active_run()
+
+            self._drain_writer_status_queues(run)
+            self._finish_raw_writers(run)
 
             end_wall_time = isoformat_z()
             end_mono_ns = time.monotonic_ns()
@@ -183,15 +226,38 @@ class HistoryManager:
             return finished_run_id
 
     def record_raw_event(self, stream_name: str, event: Mapping[str, Any]) -> None:
-        """Placeholder API for later writer-process integration."""
-        self._validate_raw_stream(stream_name)
-        self._require_active_run()
-        raise NotImplementedError(
-            "record_raw_event() will be implemented in the next commit with isolated writer paths"
-        )
+        with self._lock:
+            run = self._require_active_run()
+            self._validate_raw_stream(stream_name)
+            self._drain_writer_status_queues(run)
+
+            payload = dict(event)
+            payload.setdefault("run_id", run.run_id)
+            payload.setdefault("recorded_at", isoformat_z())
+            payload.setdefault("stream", stream_name)
+
+            raw_ok = self._enqueue_raw_event(
+                runtime=self._raw_writer,
+                stats=run.raw_stats,
+                stream_name=stream_name,
+                payload=payload,
+            )
+            rawbak_ok = self._enqueue_raw_event(
+                runtime=self._rawbak_writer,
+                stats=run.rawbak_stats,
+                stream_name=stream_name,
+                payload=payload,
+            )
+
+            if not raw_ok or not rawbak_ok:
+                self._write_writer_stats_triplet(run)
+
+            if not raw_ok and not rawbak_ok:
+                raise RuntimeError(
+                    "record_raw_event() failed to enqueue event to both raw and rawbak writers"
+                )
 
     def record_structured_event(self, stream_name: str, event: Mapping[str, Any]) -> None:
-        """Placeholder API for later structured writer integration."""
         self._validate_structured_stream(stream_name)
         self._require_active_run()
         raise NotImplementedError(
@@ -199,7 +265,6 @@ class HistoryManager:
         )
 
     def write_snapshot(self, snapshot_index: int, snapshot: Mapping[str, Any]) -> Path:
-        """Placeholder API for later snapshot writing."""
         self._require_active_run()
         raise NotImplementedError(
             "write_snapshot() will be implemented in a later commit"
@@ -312,3 +377,291 @@ class HistoryManager:
         atomic_write_json(run.paths.raw_writer_stats_path, run.raw_stats.to_dict())
         atomic_write_json(run.paths.rawbak_writer_stats_path, run.rawbak_stats.to_dict())
         atomic_write_json(run.paths.history_writer_stats_path, run.history_stats.to_dict())
+
+    def _start_raw_writers(self, run: ActiveRun) -> None:
+        self._raw_writer = create_raw_writer_runtime(
+            mp_context=self._mp_context,
+            side_name="raw",
+            queue_maxsize=self.raw_queue_maxsize,
+            fsync_every_event=self.fsync_raw_writes,
+        )
+        self._raw_writer.process.start()
+        self._raw_writer.command_queue.put(
+            {
+                "type": "start_run",
+                "run_id": run.run_id,
+                "stream_paths": {
+                    name: str(path)
+                    for name, path in run.paths.raw_stream_paths.items()
+                },
+            }
+        )
+        self._wait_for_expected_status(
+            runtime=self._raw_writer,
+            stats=run.raw_stats,
+            expected_type="started",
+            timeout_s=self.writer_start_timeout_s,
+        )
+
+        self._rawbak_writer = create_raw_writer_runtime(
+            mp_context=self._mp_context,
+            side_name="rawbak",
+            queue_maxsize=self.raw_queue_maxsize,
+            fsync_every_event=self.fsync_raw_writes,
+        )
+        self._rawbak_writer.process.start()
+        self._rawbak_writer.command_queue.put(
+            {
+                "type": "start_run",
+                "run_id": run.run_id,
+                "stream_paths": {
+                    name: str(path)
+                    for name, path in run.paths.rawbak_stream_paths.items()
+                },
+            }
+        )
+        self._wait_for_expected_status(
+            runtime=self._rawbak_writer,
+            stats=run.rawbak_stats,
+            expected_type="started",
+            timeout_s=self.writer_start_timeout_s,
+        )
+
+    def _enqueue_raw_event(
+        self,
+        *,
+        runtime: WriterRuntime | None,
+        stats: WriterStatsState,
+        stream_name: str,
+        payload: Mapping[str, Any],
+    ) -> bool:
+        now = isoformat_z()
+
+        if runtime is None:
+            stats.dropped_events += 1
+            stats.add_error(wall_time=now, message="writer runtime is missing")
+            return False
+
+        if not runtime.process.is_alive():
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer process is not alive",
+            )
+            return False
+
+        try:
+            runtime.command_queue.put(
+                {
+                    "type": "event",
+                    "stream_name": stream_name,
+                    "event": dict(payload),
+                },
+                timeout=self.raw_enqueue_timeout_s,
+            )
+            stats.bump_stream(stream_name)
+            stats.set_status("running", pid=runtime.process.pid)
+            stats.update_queue_max_depth(self._safe_queue_depth(runtime.command_queue))
+            return True
+
+        except queue.Full:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer queue is full",
+            )
+            return False
+
+        except Exception as exc:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} enqueue failed: {exc}",
+            )
+            return False
+
+    def _finish_raw_writers(self, run: ActiveRun) -> None:
+        for runtime, stats in (
+            (self._raw_writer, run.raw_stats),
+            (self._rawbak_writer, run.rawbak_stats),
+        ):
+            if runtime is None:
+                continue
+
+            finish_wall_time = isoformat_z()
+
+            if runtime.process.is_alive():
+                try:
+                    runtime.command_queue.put(
+                        {
+                            "type": "finish_run",
+                            "wall_time": finish_wall_time,
+                        },
+                        timeout=self.raw_enqueue_timeout_s,
+                    )
+                    self._wait_for_expected_status(
+                        runtime=runtime,
+                        stats=stats,
+                        expected_type="finished",
+                        timeout_s=self.writer_finish_timeout_s,
+                    )
+                except Exception as exc:
+                    stats.add_error(
+                        wall_time=isoformat_z(),
+                        message=f"{runtime.side_name} finish_run failed: {exc}",
+                    )
+
+                try:
+                    if runtime.process.is_alive():
+                        runtime.command_queue.put(
+                            {"type": "shutdown"},
+                            timeout=self.raw_enqueue_timeout_s,
+                        )
+                        self._wait_for_expected_status(
+                            runtime=runtime,
+                            stats=stats,
+                            expected_type="shutdown_ack",
+                            timeout_s=self.writer_shutdown_timeout_s,
+                        )
+                except Exception as exc:
+                    stats.add_error(
+                        wall_time=isoformat_z(),
+                        message=f"{runtime.side_name} shutdown failed: {exc}",
+                    )
+
+                runtime.process.join(timeout=self.writer_shutdown_timeout_s)
+                if runtime.process.is_alive():
+                    runtime.process.terminate()
+                    runtime.process.join(timeout=1.0)
+                    stats.add_error(
+                        wall_time=isoformat_z(),
+                        message=f"{runtime.side_name} writer process was terminated after timeout",
+                    )
+                    stats.set_status("terminated", pid=runtime.process.pid)
+                else:
+                    stats.set_status("stopped", pid=runtime.process.pid)
+
+            else:
+                stats.add_error(
+                    wall_time=isoformat_z(),
+                    message=f"{runtime.side_name} writer process was already dead during finish_run",
+                )
+
+        self._raw_writer = None
+        self._rawbak_writer = None
+
+    def _best_effort_shutdown_writers(self, run: ActiveRun) -> None:
+        for runtime, stats in (
+            (self._raw_writer, run.raw_stats),
+            (self._rawbak_writer, run.rawbak_stats),
+        ):
+            if runtime is None:
+                continue
+
+            try:
+                if runtime.process.is_alive():
+                    try:
+                        runtime.command_queue.put_nowait({"type": "shutdown"})
+                    except Exception:
+                        pass
+
+                    runtime.process.join(timeout=1.0)
+                    if runtime.process.is_alive():
+                        runtime.process.terminate()
+                        runtime.process.join(timeout=1.0)
+                        stats.add_error(
+                            wall_time=isoformat_z(),
+                            message=f"{runtime.side_name} writer required forced termination during startup cleanup",
+                        )
+            finally:
+                pass
+
+        self._raw_writer = None
+        self._rawbak_writer = None
+        self._write_writer_stats_triplet(run)
+
+    def _wait_for_expected_status(
+        self,
+        *,
+        runtime: WriterRuntime,
+        stats: WriterStatsState,
+        expected_type: str,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting for {expected_type!r} from {runtime.side_name} writer"
+                )
+
+            try:
+                message = runtime.status_queue.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError(
+                    f"Timed out waiting for {expected_type!r} from {runtime.side_name} writer"
+                ) from None
+
+            self._apply_writer_status_message(stats, message)
+
+            if message["type"] == "error":
+                raise RuntimeError(
+                    f"{runtime.side_name} writer error during {expected_type} wait: {message.get('message')}"
+                )
+
+            if message["type"] == expected_type:
+                return dict(message)
+
+    def _drain_writer_status_queues(self, run: ActiveRun) -> None:
+        for runtime, stats in (
+            (self._raw_writer, run.raw_stats),
+            (self._rawbak_writer, run.rawbak_stats),
+        ):
+            if runtime is None:
+                continue
+
+            while True:
+                try:
+                    message = runtime.status_queue.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    self._apply_writer_status_message(stats, message)
+
+    def _apply_writer_status_message(
+        self,
+        stats: WriterStatsState,
+        message: Mapping[str, Any],
+    ) -> None:
+        message_type = message["type"]
+        wall_time = message.get("wall_time") or isoformat_z()
+        pid = message.get("pid")
+
+        if message_type == "started":
+            stats.set_status("running", pid=pid)
+
+        elif message_type == "flushed":
+            stats.mark_flush(wall_time)
+            stats.set_status("running", pid=pid)
+
+        elif message_type == "finished":
+            stats.mark_flush(wall_time)
+            stats.set_status("finished", pid=pid)
+
+        elif message_type == "shutdown_ack":
+            stats.set_status("stopped", pid=pid)
+
+        elif message_type == "error":
+            detail = message.get("message", "unknown writer error")
+            command_type = message.get("command_type")
+            if command_type:
+                detail = f"{detail} (command_type={command_type})"
+            stats.add_error(wall_time=wall_time, message=detail)
+
+    def _safe_queue_depth(self, queue_obj: Any) -> int | None:
+        try:
+            return int(queue_obj.qsize())
+        except (NotImplementedError, AttributeError, OSError):
+            return None
