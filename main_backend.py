@@ -1,4 +1,4 @@
-from main_user_gui import main
+from backend.app import main
 
 if __name__ == "__main__":
     raise SystemExit(main())
