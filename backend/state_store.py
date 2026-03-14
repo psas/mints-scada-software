@@ -2,22 +2,13 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from .models import BackendRuntimeState
 
 
 class StateStore:
-    """Minimal authoritative backend runtime state.
-
-    Commit 5 scope:
-    - backend identity
-    - connected client count
-    - minimal run lifecycle state
-    - minimal bus connection state placeholder
-
-    Bus/reducer/device state will be added in later commits.
-    """
+    """Minimal authoritative backend runtime state."""
 
     def __init__(self, *, service_name: str, backend_started_at: str) -> None:
         self._lock = threading.RLock()
@@ -59,7 +50,6 @@ class StateStore:
         reason: str,
     ) -> None:
         with self._lock:
-            # Keep the last active run id visible until a new run starts.
             self._state.run.active_run_id = run_id
             self._state.run.is_running = False
             self._state.run.status = "completed"
@@ -72,11 +62,42 @@ class StateStore:
         connected: bool,
         reconnecting: bool,
         wall_time: str | None,
+        sender: str | None = None,
+        bitrate: int | None = None,
+        registered_ids: Iterable[str] | None = None,
+        skipped_ids: Iterable[str] | None = None,
     ) -> None:
         with self._lock:
             self._state.bus.connected = connected
             self._state.bus.reconnecting = reconnecting
             self._state.bus.last_transition_wall_time = wall_time
+
+            if sender is not None:
+                self._state.bus.sender = sender
+            if bitrate is not None:
+                self._state.bus.bitrate = bitrate
+
+            if registered_ids is not None:
+                ids = list(registered_ids)
+                self._state.bus.registered_ids = ids
+                self._state.bus.registered_count = len(ids)
+
+            if skipped_ids is not None:
+                ids = list(skipped_ids)
+                self._state.bus.skipped_ids = ids
+                self._state.bus.skipped_count = len(ids)
+
+    def set_device_inventory(
+        self,
+        *,
+        devices: list[Mapping[str, Any]],
+        load_errors: list[str] | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.device_registry.devices = [dict(device) for device in devices]
+            self._state.device_registry.total_devices = len(devices)
+            self._state.device_registry.load_errors = list(load_errors or [])
+            self._state.device_registry.load_error_count = len(self._state.device_registry.load_errors)
 
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:

@@ -7,10 +7,14 @@ from typing import Any, Iterable, Mapping
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
 
+from .bus_manager import BusManager
+from .device_registry import DeviceRegistry
 from .ipc_models import (
     IPCMessage,
     backend_status_message,
+    device_inventory_message,
     error_message,
+    hardware_status_message,
     hello_ack_message,
     pong_message,
     run_status_message,
@@ -22,17 +26,13 @@ from .state_store import StateStore
 
 
 class BackendService:
-    """Minimal backend service skeleton.
+    """Backend service skeleton.
 
-    Commit 5 scope:
-    - backend can start independently
-    - backend exposes a Unix-socket IPC server
-    - backend accepts hello/ping/status_request/request_full_state
-    - backend owns HistoryManager instance
-    - backend owns StateStore and RunController
-    - backend can start/finish a run through HistoryManager
-
-    This still does not own Bus, reducer, or device registry.
+    Commit 6 adds:
+    - backend-owned DeviceRegistry
+    - backend-owned BusManager
+    - device inventory loading from settings
+    - explicit live hardware initialization/shutdown IPC
     """
 
     def __init__(
@@ -55,6 +55,15 @@ class BackendService:
             state_store=self.state_store,
         )
 
+        self.device_registry = DeviceRegistry()
+        self.device_registry.load_from_settings()
+        self.state_store.set_device_inventory(
+            devices=self.device_registry.get_device_summaries(),
+            load_errors=self.device_registry.get_load_errors(),
+        )
+
+        self.bus_manager = BusManager()
+
         if socket_path is None:
             if self.project_root is None:
                 socket_path = Path(".backend_service.sock").resolve()
@@ -71,6 +80,9 @@ class BackendService:
             "ping",
             "status_request",
             "request_full_state",
+            "list_devices",
+            "initialize_live_hardware",
+            "shutdown_live_hardware",
             "start_run",
             "finish_run",
         ]
@@ -86,6 +98,19 @@ class BackendService:
         self.server.serve_forever()
 
     def stop(self) -> None:
+        self.bus_manager.shutdown_live_hardware()
+        self.device_registry.clear_live_registration_flags()
+        self.state_store.set_bus_connection_state(
+            connected=False,
+            reconnecting=False,
+            wall_time=isoformat_z(),
+            registered_ids=[],
+            skipped_ids=[],
+        )
+        self.state_store.set_device_inventory(
+            devices=self.device_registry.get_device_summaries(),
+            load_errors=self.device_registry.get_load_errors(),
+        )
         self.server.stop()
 
     def on_client_connected(self, client_id: str) -> None:
@@ -118,6 +143,72 @@ class BackendService:
             return
 
         if message.type == "request_full_state":
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "list_devices":
+            snapshot = self.state_store.get_snapshot()["device_registry"]
+            yield device_inventory_message(
+                total_devices=snapshot["total_devices"],
+                load_error_count=snapshot["load_error_count"],
+                load_errors=snapshot["load_errors"],
+                devices=snapshot["devices"],
+            )
+            return
+
+        if message.type == "initialize_live_hardware":
+            try:
+                result = self.bus_manager.initialize_live_hardware(self.device_registry)
+            except Exception as exc:
+                yield error_message("initialize_live_hardware_failed", str(exc))
+                return
+
+            self.state_store.set_bus_connection_state(
+                connected=True,
+                reconnecting=False,
+                wall_time=isoformat_z(),
+                sender=result.sender,
+                bitrate=result.bitrate,
+                registered_ids=result.registered_ids,
+                skipped_ids=result.skipped_ids,
+            )
+            self.state_store.set_device_inventory(
+                devices=self.device_registry.get_device_summaries(),
+                load_errors=self.device_registry.get_load_errors(),
+            )
+
+            yield hardware_status_message(
+                connected=True,
+                sender=result.sender,
+                bitrate=result.bitrate,
+                registered_ids=result.registered_ids,
+                skipped_ids=result.skipped_ids,
+            )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "shutdown_live_hardware":
+            self.bus_manager.shutdown_live_hardware()
+            self.device_registry.clear_live_registration_flags()
+            self.state_store.set_bus_connection_state(
+                connected=False,
+                reconnecting=False,
+                wall_time=isoformat_z(),
+                registered_ids=[],
+                skipped_ids=[],
+            )
+            self.state_store.set_device_inventory(
+                devices=self.device_registry.get_device_summaries(),
+                load_errors=self.device_registry.get_load_errors(),
+            )
+
+            yield hardware_status_message(
+                connected=False,
+                sender=self.bus_manager.sender,
+                bitrate=self.bus_manager.bitrate,
+                registered_ids=[],
+                skipped_ids=[],
+            )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 

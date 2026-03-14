@@ -110,6 +110,46 @@ def state_snapshot_message(snapshot: Mapping[str, Any]) -> IPCMessage:
     )
 
 
+def device_inventory_message(
+    *,
+    total_devices: int,
+    load_error_count: int,
+    load_errors: list[str],
+    devices: list[Mapping[str, Any]],
+) -> IPCMessage:
+    return IPCMessage(
+        type="device_inventory",
+        payload={
+            "total_devices": total_devices,
+            "load_error_count": load_error_count,
+            "load_errors": list(load_errors),
+            "devices": [dict(device) for device in devices],
+        },
+    )
+
+
+def hardware_status_message(
+    *,
+    connected: bool,
+    sender: str | None,
+    bitrate: int | None,
+    registered_ids: list[str],
+    skipped_ids: list[str],
+) -> IPCMessage:
+    return IPCMessage(
+        type="hardware_status",
+        payload={
+            "connected": connected,
+            "sender": sender,
+            "bitrate": bitrate,
+            "registered_ids": list(registered_ids),
+            "skipped_ids": list(skipped_ids),
+            "registered_count": len(registered_ids),
+            "skipped_count": len(skipped_ids),
+        },
+    )
+
+
 def pong_message() -> IPCMessage:
     return IPCMessage(type="pong", payload={})
 
