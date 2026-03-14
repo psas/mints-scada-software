@@ -1,4 +1,6 @@
 from pathlib import Path
+from gui.playback_catalog import discover_playback_runs
+
 
 from PyQt5.QtWidgets import (
     QDialog,
@@ -296,26 +298,24 @@ class ChecklistWindow(QDialog):
             return
 
         try:
-            run_dirs = []
-            for child in history_path.iterdir():
-                if not child.is_dir():
-                    continue
-                metadata_path = child / "metadata.json"
-                if metadata_path.exists():
-                    run_dirs.append(child.name)
+            run_summaries = discover_playback_runs(self._project_root())
 
-            if not run_dirs:
+            if not run_summaries:
                 item = QListWidgetItem("No playback runs available")
                 item.setFlags(Qt.NoItemFlags)
                 self.test_list.addItem(item)
                 log.info("No run directories with metadata.json found in %s", history_path)
                 return
 
-            run_dirs.sort(reverse=True)
-            for run_dir_name in run_dirs:
-                self.test_list.addItem(run_dir_name)
+            for summary in run_summaries:
+                item = QListWidgetItem(
+                    f"{summary.display_title}\n{summary.display_subtitle}"
+                )
+                item.setData(Qt.UserRole, str(summary.run_dir))
+                item.setToolTip(summary.tooltip_text)
+                self.test_list.addItem(item)
 
-            log.info("Found %d playback runs in %s", len(run_dirs), history_path)
+            log.info("Found %d playback runs in %s", len(run_summaries), history_path)
 
         except Exception as e:
             log.error("Error loading playback runs: %s", e)
@@ -326,11 +326,14 @@ class ChecklistWindow(QDialog):
     def on_test_selected(self):
         """Handle playback run selection"""
         current_item = self.test_list.currentItem()
+
         if current_item and current_item.flags() & Qt.ItemIsEnabled:
-            self.selected_test = current_item.text()
+            selected_path = current_item.data(Qt.UserRole)
+            self.selected_test = selected_path or current_item.text()
             self.playback_mode = True
             log.info("Selected run for playback: %s", self.selected_test)
             self.accept()
+
 
     def set_bus_status(self, success, message=""):
         """Update bus initialization status"""
