@@ -31,7 +31,6 @@ def isoformat_z(dt: datetime | None = None) -> str:
 
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    """Write JSON atomically using a temp file + replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
 
@@ -49,6 +48,16 @@ def _touch_file(path: Path) -> None:
     path.touch(exist_ok=False)
 
 
+def _append_jsonl(path: Path, payload: Mapping[str, Any], *, fsync: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=False))
+        handle.write("\n")
+        handle.flush()
+        if fsync:
+            os.fsync(handle.fileno())
+
+
 def _sanitize_name(value: str) -> str:
     cleaned = value.strip().lower().replace(" ", "_")
     cleaned = re.sub(r"[^a-z0-9_\-]+", "", cleaned)
@@ -57,19 +66,7 @@ def _sanitize_name(value: str) -> str:
 
 
 class HistoryManager:
-    """Manage history run directories and run lifecycle.
-
-    Commit 3 adds isolated raw/rawbak writer processes.
-    The public API stays small:
-    - start_run()
-    - finish_run()
-    - record_raw_event()
-    - record_structured_event()
-    - write_snapshot()
-
-    Raw/rawbak now use independent writer paths so one side can fail without
-    necessarily blocking the other side.
-    """
+    """Manage history run directories and run lifecycle."""
 
     def __init__(
         self,
@@ -81,6 +78,7 @@ class HistoryManager:
         writer_finish_timeout_s: float = 5.0,
         writer_shutdown_timeout_s: float = 3.0,
         fsync_raw_writes: bool = True,
+        fsync_structured_writes: bool = False,
     ) -> None:
         self.base_dirs = ensure_base_dirs(project_root)
 
@@ -90,6 +88,7 @@ class HistoryManager:
         self.writer_finish_timeout_s = writer_finish_timeout_s
         self.writer_shutdown_timeout_s = writer_shutdown_timeout_s
         self.fsync_raw_writes = fsync_raw_writes
+        self.fsync_structured_writes = fsync_structured_writes
 
         self._mp_context = mp.get_context("spawn")
         self._lock = threading.RLock()
@@ -257,18 +256,56 @@ class HistoryManager:
                     "record_raw_event() failed to enqueue event to both raw and rawbak writers"
                 )
 
-    def record_structured_event(self, stream_name: str, event: Mapping[str, Any]) -> None:
-        self._validate_structured_stream(stream_name)
-        self._require_active_run()
-        raise NotImplementedError(
-            "record_structured_event() will be implemented in a later commit"
-        )
+    def record_structured_event(
+        self,
+        stream_name: str,
+        event: Mapping[str, Any],
+        *,
+        write_merged: bool = True,
+    ) -> None:
+        with self._lock:
+            run = self._require_active_run()
+            self._validate_structured_stream(stream_name)
+
+            payload = dict(event)
+            payload.setdefault("run_id", run.run_id)
+            payload.setdefault("recorded_at", isoformat_z())
+            payload.setdefault("stream", stream_name)
+
+            _append_jsonl(
+                run.paths.structured_stream_paths[stream_name],
+                payload,
+                fsync=self.fsync_structured_writes,
+            )
+            run.history_stats.bump_stream(stream_name)
+            run.history_stats.mark_flush(payload["recorded_at"])
+
+            if write_merged:
+                _append_jsonl(
+                    run.paths.merged_path,
+                    payload,
+                    fsync=self.fsync_structured_writes,
+                )
+                run.history_stats.bump_stream("merged")
+                run.history_stats.mark_flush(payload["recorded_at"])
+
+            self._write_writer_stats_triplet(run)
 
     def write_snapshot(self, snapshot_index: int, snapshot: Mapping[str, Any]) -> Path:
-        self._require_active_run()
-        raise NotImplementedError(
-            "write_snapshot() will be implemented in a later commit"
-        )
+        with self._lock:
+            run = self._require_active_run()
+
+            path = run.paths.snapshots_dir / f"{snapshot_index:06d}.json"
+            payload = dict(snapshot)
+            payload.setdefault("run_id", run.run_id)
+            payload.setdefault("snapshot_index", snapshot_index)
+            payload.setdefault("recorded_at", isoformat_z())
+
+            atomic_write_json(path, payload)
+            run.history_stats.snapshots_written += 1
+            run.history_stats.mark_flush(payload["recorded_at"])
+            self._write_writer_stats_triplet(run)
+            return path
 
     def _make_default_run_id(self, test_name: str) -> str:
         timestamp = utc_now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")

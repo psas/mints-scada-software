@@ -99,6 +99,48 @@ class StateStore:
             self._state.device_registry.load_errors = list(load_errors or [])
             self._state.device_registry.load_error_count = len(self._state.device_registry.load_errors)
 
+    def mark_device_packet(
+        self,
+        *,
+        device_id: str,
+        wall_time: str,
+        packet_id: int,
+        packet_seq: int,
+        packet_cmd: int,
+        packet_reply: bool,
+        packet_err: bool,
+        packet_rsvd: bool,
+        packet_timestamp: float | None,
+        packet_data: list[int],
+        runtime_value: Any,
+        runtime_aux: Any,
+        runtime_time: Any,
+        source: str,
+    ) -> None:
+        with self._lock:
+            current = self._state.device_runtime.by_id.get(device_id, {})
+            packet_count = int(current.get("packet_count", 0)) + 1
+
+            self._state.device_runtime.by_id[device_id] = {
+                "device_id": device_id,
+                "online": True,
+                "source": source,
+                "packet_count": packet_count,
+                "last_packet_wall_time": wall_time,
+                "last_packet_id": packet_id,
+                "last_packet_seq": packet_seq,
+                "last_packet_cmd": packet_cmd,
+                "last_packet_reply": packet_reply,
+                "last_packet_err": packet_err,
+                "last_packet_rsvd": packet_rsvd,
+                "last_packet_timestamp": packet_timestamp,
+                "last_packet_data": list(packet_data),
+                "last_packet_data_hex": " ".join(f"{b:02X}" for b in packet_data),
+                "runtime_value": runtime_value,
+                "runtime_aux": runtime_aux,
+                "runtime_time": runtime_time,
+            }
+
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
             return deepcopy(self._state.to_dict())

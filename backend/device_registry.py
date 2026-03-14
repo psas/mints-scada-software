@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from nexus import Bus, BusRider
 
@@ -77,7 +77,6 @@ def build_device(meta: dict[str, Any]):
         **meta["config"],
     )
 
-    # Attach schema metadata to the runtime object.
     device.device_id = meta["id"]
     device.display_name = meta["name"]
     device.address = meta["address"]
@@ -130,6 +129,13 @@ class DeviceRegistry:
     def __init__(self) -> None:
         self._entries_by_id: dict[str, DeviceEntry] = {}
         self._load_errors: list[str] = []
+        self._packet_listener: Callable[[dict[str, Any], Any, Any], None] | None = None
+
+    def set_packet_listener(
+        self,
+        listener: Callable[[dict[str, Any], Any, Any], None] | None,
+    ) -> None:
+        self._packet_listener = listener
 
     def load_from_settings(self) -> None:
         self._entries_by_id.clear()
@@ -139,6 +145,7 @@ class DeviceRegistry:
             try:
                 meta = normalize_device_desc(device_desc)
                 runtime = build_device(meta)
+                self._install_runtime_packet_hook(meta, runtime)
                 self._entries_by_id[meta["id"]] = DeviceEntry(meta=meta, runtime=runtime)
             except Exception as exc:
                 device_id = device_desc.get("id", "<unknown>")
@@ -219,3 +226,27 @@ class DeviceRegistry:
 
     def __len__(self) -> int:
         return len(self._entries_by_id)
+
+    def _install_runtime_packet_hook(self, meta: dict[str, Any], runtime: Any) -> None:
+        if getattr(runtime, "_backend_packet_hook_installed", False):
+            return
+
+        original_on_packet = runtime._onPacket
+
+        def wrapped_on_packet(packet, _original=original_on_packet, _meta=meta, _runtime=runtime):
+            _original(packet)
+
+            listener = self._packet_listener
+            if listener is None:
+                return
+
+            if packet is None:
+                return
+
+            if getattr(packet, "id", None) != getattr(_runtime, "_id", None):
+                return
+
+            listener(dict(_meta), _runtime, packet)
+
+        runtime._onPacket = wrapped_on_packet
+        runtime._backend_packet_hook_installed = True

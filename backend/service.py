@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping
 
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
+from nexus import DataPacket
 
 from .bus_manager import BusManager
 from .device_registry import DeviceRegistry
@@ -19,20 +20,24 @@ from .ipc_models import (
     pong_message,
     run_status_message,
     state_snapshot_message,
+    structured_event_message,
 )
 from .ipc_server import IPCServer
+from .reducer import Reducer
 from .run_controller import RunController
 from .state_store import StateStore
+from .structured_builder import StructuredEventBuilder
 
 
 class BackendService:
     """Backend service skeleton.
 
-    Commit 6 adds:
-    - backend-owned DeviceRegistry
-    - backend-owned BusManager
-    - device inventory loading from settings
-    - explicit live hardware initialization/shutdown IPC
+    Commit 7 adds:
+    - reducer pipeline
+    - structured event builder
+    - packet hook from runtime devices into backend
+    - generic telemetry persistence path
+    - mock telemetry IPC for smoke testing without real hardware
     """
 
     def __init__(
@@ -55,7 +60,11 @@ class BackendService:
             state_store=self.state_store,
         )
 
+        self.reducer = Reducer(state_store=self.state_store)
+        self.structured_builder = StructuredEventBuilder()
+
         self.device_registry = DeviceRegistry()
+        self.device_registry.set_packet_listener(self._handle_device_packet)
         self.device_registry.load_from_settings()
         self.state_store.set_device_inventory(
             devices=self.device_registry.get_device_summaries(),
@@ -85,6 +94,7 @@ class BackendService:
             "shutdown_live_hardware",
             "start_run",
             "finish_run",
+            "ingest_mock_telemetry",
         ]
 
         self.server = IPCServer(
@@ -270,6 +280,48 @@ class BackendService:
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
+        if message.type == "ingest_mock_telemetry":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                device_id = self._require_non_empty_string(payload, "device_id")
+
+                if device_id not in self.device_registry:
+                    raise ValueError(f"Unknown device_id: {device_id}")
+
+                meta = self.device_registry.get_meta(device_id)
+                runtime = self.device_registry.get_runtime(device_id)
+
+                seq = self._get_optional_int(payload, "seq") or 1
+                cmd = self._get_optional_int(payload, "cmd") or 1
+                reply = self._get_optional_bool(payload, "reply", default=True)
+                err = self._get_optional_bool(payload, "err", default=False)
+                rsvd = self._get_optional_bool(payload, "rsvd", default=False)
+                data = self._get_optional_int_list(payload, "data") or [0, 0, 0, 0, 0, 0]
+
+                packet = DataPacket(
+                    id=meta["address"],
+                    seq=seq,
+                    cmd=cmd,
+                    data=data,
+                    reply=reply,
+                    err=err,
+                    rsvd=rsvd,
+                )
+
+                structured_event = self._process_telemetry_packet(
+                    meta=meta,
+                    runtime=runtime,
+                    packet=packet,
+                    source="mock_ipc",
+                )
+            except Exception as exc:
+                yield error_message("ingest_mock_telemetry_failed", str(exc))
+                return
+
+            yield structured_event_message(structured_event)
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
         yield error_message(
             "unsupported_message_type",
             f"Unsupported IPC message type: {message.type}",
@@ -279,6 +331,51 @@ class BackendService:
     def connected_client_count(self) -> int:
         with self._lock:
             return len(self._connected_clients)
+
+    def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
+        self._process_telemetry_packet(
+            meta=meta,
+            runtime=runtime,
+            packet=packet,
+            source="bus",
+        )
+
+    def _process_telemetry_packet(
+        self,
+        *,
+        meta: dict[str, Any],
+        runtime: Any,
+        packet: Any,
+        source: str,
+    ) -> dict[str, Any]:
+        raw_event = self.structured_builder.build_raw_telemetry_event(
+            meta=meta,
+            packet=packet,
+            source=source,
+        )
+
+        if self.history_manager.is_running:
+            self.history_manager.record_raw_event("telemetry_in", raw_event)
+
+        reduction = self.reducer.apply_telemetry_packet(
+            meta=meta,
+            runtime=runtime,
+            packet=packet,
+            source=source,
+        )
+
+        structured_event = self.structured_builder.build_structured_telemetry_event(
+            meta=meta,
+            reduction=reduction,
+        )
+
+        if self.history_manager.is_running:
+            self.history_manager.record_structured_event(
+                "telemetry_in",
+                structured_event,
+            )
+
+        return structured_event
 
     def _build_backend_status_message(self) -> IPCMessage:
         status = self.state_store.get_backend_status()
@@ -314,3 +411,40 @@ class BackendService:
         if not isinstance(value, Mapping):
             raise ValueError(f"IPC payload field '{key}' must be an object when provided")
         return dict(value)
+
+    def _get_optional_int(self, payload: Mapping[str, Any], key: str) -> int | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, int):
+            raise ValueError(f"IPC payload field '{key}' must be an integer when provided")
+        return int(value)
+
+    def _get_optional_bool(
+        self,
+        payload: Mapping[str, Any],
+        key: str,
+        *,
+        default: bool | None = None,
+    ) -> bool | None:
+        value = payload.get(key, default)
+        if value is None:
+            return None
+        if not isinstance(value, bool):
+            raise ValueError(f"IPC payload field '{key}' must be a boolean when provided")
+        return value
+
+    def _get_optional_int_list(self, payload: Mapping[str, Any], key: str) -> list[int] | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError(f"IPC payload field '{key}' must be a list when provided")
+        result: list[int] = []
+        for item in value:
+            if not isinstance(item, int):
+                raise ValueError(f"IPC payload field '{key}' must contain integers only")
+            if item < 0 or item > 255:
+                raise ValueError(f"IPC payload field '{key}' integers must be 0..255")
+            result.append(int(item))
+        return result

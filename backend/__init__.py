@@ -4,6 +4,8 @@ from .state_store import StateStore
 from .run_controller import RunController
 from .bus_manager import BusManager
 from .device_registry import DeviceRegistry
+from .reducer import Reducer
+from .structured_builder import StructuredEventBuilder
 
 __all__ = [
     "BackendService",
@@ -12,4 +14,6 @@ __all__ = [
     "RunController",
     "BusManager",
     "DeviceRegistry",
+    "Reducer",
+    "StructuredEventBuilder",
 ]

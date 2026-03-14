@@ -54,6 +54,19 @@ class DeviceRegistryState:
 
 
 @dataclass
+class DeviceRuntimeState:
+    by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "by_id": {
+                device_id: dict(state)
+                for device_id, state in self.by_id.items()
+            }
+        }
+
+
+@dataclass
 class BackendRuntimeState:
     service_name: str
     backend_started_at: str
@@ -61,6 +74,7 @@ class BackendRuntimeState:
     run: RunRuntimeState = field(default_factory=RunRuntimeState)
     bus: BusRuntimeState = field(default_factory=BusRuntimeState)
     device_registry: DeviceRegistryState = field(default_factory=DeviceRegistryState)
+    device_runtime: DeviceRuntimeState = field(default_factory=DeviceRuntimeState)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,4 +84,5 @@ class BackendRuntimeState:
             "run": self.run.to_dict(),
             "bus": self.bus.to_dict(),
             "device_registry": self.device_registry.to_dict(),
+            "device_runtime": self.device_runtime.to_dict(),
         }

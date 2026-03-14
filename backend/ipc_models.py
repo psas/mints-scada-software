@@ -110,6 +110,13 @@ def state_snapshot_message(snapshot: Mapping[str, Any]) -> IPCMessage:
     )
 
 
+def structured_event_message(event: Mapping[str, Any]) -> IPCMessage:
+    return IPCMessage(
+        type="structured_event",
+        payload=dict(event),
+    )
+
+
 def device_inventory_message(
     *,
     total_devices: int,
