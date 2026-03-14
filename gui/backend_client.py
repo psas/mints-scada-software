@@ -20,6 +20,8 @@ class BackendClient(QObject):
     device_inventory_received = pyqtSignal(dict)
     hardware_status_received = pyqtSignal(dict)
     run_status_received = pyqtSignal(dict)
+    operator_action_recorded_received = pyqtSignal(dict)
+    command_result_received = pyqtSignal(dict)
     error_received = pyqtSignal(dict)
 
     raw_message_received = pyqtSignal(str, dict)
@@ -121,6 +123,12 @@ class BackendClient(QObject):
     def ingest_mock_telemetry(self, payload: Mapping[str, Any]) -> None:
         self.send_message("ingest_mock_telemetry", payload)
 
+    def send_operator_action(self, payload: Mapping[str, Any]) -> None:
+        self.send_message("operator_action", payload)
+
+    def request_command(self, payload: Mapping[str, Any]) -> None:
+        self.send_message("command_request", payload)
+
     def _reader_loop(self) -> None:
         try:
             reader = self._reader
@@ -200,6 +208,10 @@ class BackendClient(QObject):
             self.hardware_status_received.emit(payload)
         elif message_type == "run_status":
             self.run_status_received.emit(payload)
+        elif message_type == "operator_action_recorded":
+            self.operator_action_recorded_received.emit(payload)
+        elif message_type == "command_result":
+            self.command_result_received.emit(payload)
         elif message_type == "error":
             self.error_received.emit(payload)
 

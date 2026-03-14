@@ -9,14 +9,17 @@ from historymanager.manager import isoformat_z
 from nexus import DataPacket
 
 from .bus_manager import BusManager
+from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
 from .ipc_models import (
     IPCMessage,
     backend_status_message,
+    command_result_message,
     device_inventory_message,
     error_message,
     hardware_status_message,
     hello_ack_message,
+    operator_action_recorded_message,
     pong_message,
     run_status_message,
     state_snapshot_message,
@@ -64,6 +67,10 @@ class BackendService:
         )
 
         self.bus_manager = BusManager()
+        self.command_router = CommandRouter(
+            device_registry=self.device_registry,
+            bus_manager=self.bus_manager,
+        )
 
         if socket_path is None:
             if self.project_root is None:
@@ -87,6 +94,8 @@ class BackendService:
             "start_run",
             "finish_run",
             "ingest_mock_telemetry",
+            "operator_action",
+            "command_request",
         ]
 
         self.server = IPCServer(
@@ -314,6 +323,69 @@ class BackendService:
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
+        if message.type == "operator_action":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                action_event = self._build_operator_action_event(payload)
+                self._record_operator_action_if_running(action_event)
+            except Exception as exc:
+                yield error_message("operator_action_failed", str(exc))
+                return
+
+            yield operator_action_recorded_message(action_event)
+            return
+
+        if message.type == "command_request":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+
+                operator_action_payload = self._get_optional_mapping(payload, "operator_action")
+                if operator_action_payload is not None:
+                    action_event = self._build_operator_action_event(operator_action_payload)
+                    self._record_operator_action_if_running(action_event)
+
+                dispatch_result = self.command_router.route_command(payload)
+
+                if self.history_manager.is_running:
+                    self.history_manager.record_raw_event(
+                        "command_out",
+                        dispatch_result.command_event,
+                    )
+            except Exception as exc:
+                if self.history_manager.is_running:
+                    self.history_manager.record_raw_event(
+                        "system_event",
+                        {
+                            "event_type": "command_dispatch_failed",
+                            "severity": "error",
+                            "message": str(exc),
+                        },
+                    )
+
+                command_name = None
+                device_id = None
+                if isinstance(message.payload, Mapping):
+                    command_name = message.payload.get("command_name")
+                    device_id = message.payload.get("device_id")
+
+                yield command_result_message(
+                    success=False,
+                    command_name=command_name if isinstance(command_name, str) else "<unknown>",
+                    device_id=device_id if isinstance(device_id, str) else None,
+                    dispatched_via="none",
+                    error=str(exc),
+                )
+                return
+
+            yield command_result_message(
+                success=True,
+                command_name=dispatch_result.command_name,
+                device_id=dispatch_result.device_id,
+                dispatched_via=dispatch_result.dispatched_via,
+                result_summary=dispatch_result.result_summary,
+            )
+            return
+
         yield error_message(
             "unsupported_message_type",
             f"Unsupported IPC message type: {message.type}",
@@ -368,6 +440,26 @@ class BackendService:
             )
 
         return structured_event
+
+    def _record_operator_action_if_running(self, action_event: Mapping[str, Any]) -> None:
+        if self.history_manager.is_running:
+            self.history_manager.record_raw_event("operator_action", action_event)
+
+    def _build_operator_action_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        action = self._require_non_empty_string(payload, "action")
+        event = {
+            "event_kind": "operator_action",
+            "action": action,
+            "recorded_by": "backend",
+            "operator_action_at": isoformat_z(),
+        }
+
+        for key, value in payload.items():
+            if key == "action":
+                continue
+            event[key] = value
+
+        return event
 
     def _build_backend_status_message(self) -> IPCMessage:
         status = self.state_store.get_backend_status()

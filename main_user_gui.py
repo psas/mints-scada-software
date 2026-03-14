@@ -39,12 +39,16 @@ class GuiBackendBridge:
     def _attach_backend_client(self) -> None:
         setattr(self.window, "backend_client", self.backend_client)
         setattr(self.window, "backend_device_catalog", self.device_catalog)
+        setattr(self.window, "send_operator_action", self.send_operator_action)
+        setattr(self.window, "request_backend_command", self.request_backend_command)
 
         for child_name in ("controller", "scada"):
             child = getattr(self.window, child_name, None)
             if child is not None:
                 setattr(child, "backend_client", self.backend_client)
                 setattr(child, "backend_device_catalog", self.device_catalog)
+                setattr(child, "send_operator_action", self.send_operator_action)
+                setattr(child, "request_backend_command", self.request_backend_command)
 
     def _connect_signals(self) -> None:
         self.backend_client.connected.connect(self.on_connected)
@@ -56,7 +60,38 @@ class GuiBackendBridge:
         self.backend_client.device_inventory_received.connect(self.on_device_inventory)
         self.backend_client.hardware_status_received.connect(self.on_hardware_status)
         self.backend_client.run_status_received.connect(self.on_run_status)
+        self.backend_client.operator_action_recorded_received.connect(self.on_operator_action_recorded)
+        self.backend_client.command_result_received.connect(self.on_command_result)
         self.backend_client.error_received.connect(self.on_error)
+
+    def send_operator_action(self, action: str, **extra: Any) -> None:
+        payload = {"action": action, **extra}
+        self.backend_client.send_operator_action(payload)
+
+    def request_backend_command(
+        self,
+        command_name: str,
+        *,
+        device_id: str | None = None,
+        command_args: list[Any] | None = None,
+        command_kwargs: dict[str, Any] | None = None,
+        mock_only: bool = False,
+        operator_action: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "command_name": command_name,
+            "mock_only": mock_only,
+        }
+        if device_id is not None:
+            payload["device_id"] = device_id
+        if command_args is not None:
+            payload["command_args"] = list(command_args)
+        if command_kwargs is not None:
+            payload["command_kwargs"] = dict(command_kwargs)
+        if operator_action is not None:
+            payload["operator_action"] = dict(operator_action)
+
+        self.backend_client.request_command(payload)
 
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
@@ -152,6 +187,27 @@ class GuiBackendBridge:
         handler = getattr(self.window, "handle_run_status", None)
         if callable(handler):
             handler(dict(payload))
+
+    def on_operator_action_recorded(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "last_operator_action_recorded", dict(payload))
+
+        handler = getattr(self.window, "handle_operator_action_recorded", None)
+        if callable(handler):
+            handler(dict(payload))
+
+    def on_command_result(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "last_command_result", dict(payload))
+
+        handler = getattr(self.window, "handle_command_result", None)
+        if callable(handler):
+            handler(dict(payload))
+
+        for child_name in ("controller", "scada"):
+            child = getattr(self.window, child_name, None)
+            if child is not None:
+                child_handler = getattr(child, "handle_command_result", None)
+                if callable(child_handler):
+                    child_handler(dict(payload))
 
     def on_error(self, payload: dict[str, Any]) -> None:
         code = payload.get("code", "unknown")

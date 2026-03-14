@@ -6,6 +6,7 @@ from .bus_manager import BusManager
 from .device_registry import DeviceRegistry
 from .reducer import Reducer
 from .structured_builder import StructuredEventBuilder
+from .command_router import CommandRouter
 
 __all__ = [
     "BackendService",
@@ -16,4 +17,5 @@ __all__ = [
     "DeviceRegistry",
     "Reducer",
     "StructuredEventBuilder",
+    "CommandRouter",
 ]

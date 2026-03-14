@@ -117,6 +117,35 @@ def structured_event_message(event: Mapping[str, Any]) -> IPCMessage:
     )
 
 
+def operator_action_recorded_message(action: Mapping[str, Any]) -> IPCMessage:
+    return IPCMessage(
+        type="operator_action_recorded",
+        payload=dict(action),
+    )
+
+
+def command_result_message(
+    *,
+    success: bool,
+    command_name: str,
+    device_id: str | None,
+    dispatched_via: str,
+    result_summary: Any = None,
+    error: str | None = None,
+) -> IPCMessage:
+    return IPCMessage(
+        type="command_result",
+        payload={
+            "success": success,
+            "command_name": command_name,
+            "device_id": device_id,
+            "dispatched_via": dispatched_via,
+            "result_summary": result_summary,
+            "error": error,
+        },
+    )
+
+
 def device_inventory_message(
     *,
     total_devices: int,
