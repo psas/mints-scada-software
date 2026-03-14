@@ -43,14 +43,19 @@ Backend Service
     - structured writer
   - command dispatch
   - script runner
+  - backend health monitor
   - IPC server
 
-GUI Client
-  - window creation
+GUI Client Side
+  - GUI launcher
+  - GUI supervisor
+  - abort relay
+  - left window process
+  - right window process
   - visualization
   - operator interaction
   - playback UI
-  - IPC client
+  - IPC clients
   - subscribes to backend state/events
   - sends action/command requests to backend
 ````
@@ -98,6 +103,28 @@ Structured persistence is important, but it must not stall live state updates.
 
 Each append-only file must have a single writer owner.
 
+### 9. GUI windows must not share one failure domain
+
+The left and right GUI windows must be able to fail independently.
+
+A crash or freeze in one window process must not force the other window process down.
+
+### 10. Abort must remain backend-authoritative
+
+Abort may be triggered from either GUI window, but abort dispatch must still flow through backend command authority.
+
+An abort relay process may forward abort requests, but it must not directly own hardware control.
+
+### 11. GUI recovery should preserve workspace when possible
+
+GUI layout, window placement, and widget arrangement should be restorable after crash or restart through GUI workspace metadata.
+
+If that metadata is invalid or unavailable, the GUI must fall back to a safe default layout.
+
+### 12. Playback must support archive validation
+
+Playback should not only load `ignitionhistory`, but also support validation of archive consistency across raw, rawbak, and structured history.
+
 ---
 
 ## Runtime Responsibilities
@@ -119,6 +146,7 @@ The backend service is responsible for:
 * enforcing command validation / interlocks
 * publishing state and events to GUI clients
 * handling GUI reconnects
+* monitoring writer, queue, bus, and script health
 * optionally running scripts in a controlled backend-owned environment
 
 ## GUI Responsibilities
@@ -134,6 +162,8 @@ The GUI is responsible for:
 * receiving state snapshots and patches
 * receiving structured events for display
 * displaying playback data
+* maintaining window-local presentation state
+* restoring workspace layout from GUI workspace metadata
 
 The GUI is **not** responsible for:
 
@@ -214,6 +244,24 @@ ignitionhistory/
     complete.json
 ```
 
+### Archive Validation and Rebuild
+
+Playback-oriented history should also support validation and optional rebuild support.
+
+Validation should compare the available data in:
+
+* `.ignitionraw`
+* `.ignitionrawbak`
+* `ignitionhistory`
+
+The goal is to determine whether:
+
+* all sources match
+* one or more sources are missing
+* sources conflict and require manual inspection
+
+If rebuild support is used, rebuilt artifacts must remain separate from the native archive and must not silently overwrite native files.
+
 ---
 
 ## Event Streams
@@ -279,6 +327,9 @@ Examples:
 * writer exception
 * thread restarted
 * process restarted
+* GUI window restarted
+* script held
+* script continued
 
 ---
 
@@ -309,6 +360,17 @@ Operator clicks button in GUI
   -> Reducer/state update follows when telemetry confirms change
 ```
 
+### Abort Flow
+
+```text
+Operator presses abort in left or right GUI window
+  -> GUI window sends local abort request to AbortRelay
+  -> AbortRelay forwards operator_action to backend
+  -> AbortRelay forwards abort command_request to backend
+  -> Backend validates and dispatches abort
+  -> History/state updates follow in backend
+```
+
 ### Snapshot Flow
 
 ```text
@@ -331,7 +393,7 @@ Must be written by a separate dedicated writer path.
 
 ### Structured
 
-May be more relaxed than raw/rawbak, but must remain asynchronous and must not block live processing.
+Must be written through its own dedicated asynchronous writer path and must not block live processing.
 
 ### Requirement
 
@@ -341,9 +403,9 @@ Preferred model:
 
 ```text
 backend
-  -> raw_queue     -> raw_writer_process     -> .ignitionraw/<run_id>/
-  -> rawbak_queue  -> rawbak_writer_process  -> .ignitionrawbak/<run_id>/
-  -> structured_queue -> structured_writer   -> ignitionhistory/<run_id>/
+  -> raw_queue        -> raw_writer_process        -> .ignitionraw/<run_id>/
+  -> rawbak_queue     -> rawbak_writer_process     -> .ignitionrawbak/<run_id>/
+  -> structured_queue -> structured_writer_process -> ignitionhistory/<run_id>/
 ```
 
 ---
@@ -360,6 +422,7 @@ The backend and GUI communicate through an explicit IPC protocol.
 * protocol should be stable and explicit
 * messages should be typed
 * no GUI direct object references into backend internals
+* each GUI window should identify itself independently
 
 ### Initial Message Types
 
@@ -374,6 +437,8 @@ The backend and GUI communicate through an explicit IPC protocol.
 * `operator_action`
 * `start_script`
 * `stop_script`
+* `hold_script`
+* `continue_script`
 
 #### backend -> GUI
 
@@ -383,6 +448,7 @@ The backend and GUI communicate through an explicit IPC protocol.
 * `state_patch`
 * `structured_event`
 * `system_event`
+* `script_status`
 * `error`
 
 ---
@@ -434,6 +500,8 @@ The state store should eventually contain at least:
 * current profile/test info
 * script runner state
 * writer health state
+* GUI client presence
+* GUI window health state
 
 The GUI may cache a copy for rendering, but the backend copy is authoritative.
 
@@ -456,11 +524,13 @@ The backend command path must eventually support:
 
 The GUI must request commands, not perform them directly.
 
+Abort relay may forward an abort request, but it does not replace backend command authority.
+
 ---
 
 ## Script Model
 
-Scripts must eventually move under backend control.
+Scripts must move under backend control.
 
 Goals:
 
@@ -469,12 +539,16 @@ Goals:
 * backend can capture script-related system events
 * safer termination model than in-process GUI execution
 * future ability to sandbox or subprocess-isolate scripts
+* support a backend-native plan mode
+* support hold/continue semantics for plan-mode execution
+
+Plan-mode execution should allow a script to pause between steps without moving command authority into the GUI.
 
 ---
 
 ## Playback Model
 
-Playback should ultimately use `ignitionhistory/<run_id>/...` as the replay-oriented archive.
+Playback should use `ignitionhistory/<run_id>/...` as the replay-oriented archive.
 
 Expected playback sources:
 
@@ -484,6 +558,38 @@ Expected playback sources:
 * `snapshots/`
 
 Playback must not depend on live backend memory state.
+
+Playback should also support:
+
+* archive integrity checking
+* mismatch reporting
+* optional rebuild-based recovery when sources are missing but not conflicting
+* clear distinction between native archive data and rebuilt archive data
+
+---
+
+## GUI Supervision and Workspace Recovery
+
+The GUI side should support a supervisor process that monitors the left and right window processes.
+
+Goals:
+
+* detect frozen or closed GUI windows
+* restart a failed GUI window during active recording
+* avoid a single GUI failure taking down all visible operator windows
+* restore window placement and layout after restart
+
+GUI layout and placement should be stored in a machine-local GUI workspace metadata file.
+
+That metadata should include, at minimum:
+
+* window role
+* display/monitor placement
+* window position and size
+* layout/profile selection
+* widget arrangement
+
+If GUI workspace metadata cannot be restored, the GUI should fall back to a safe default layout.
 
 ---
 
@@ -499,7 +605,9 @@ The backend should emit system events for runtime health transitions such as:
 * structured writer lagging/failing
 * queue overflow warning
 * GUI client connected/disconnected
+* GUI window restarted
 * script runner started/stopped/crashed
+* script held/continued
 
 These should be visible both in history and in GUI runtime views.
 
@@ -533,77 +641,15 @@ historymanager/
   stats.py
   snapshots.py
 
-docs/
-  backend_service_architecture.md
+gui/
+  backend_client.py
+  checklist_window.py
+  controller_window.py
+  scada_window.py
+  supervisor.py
+  abort_relay.py
+  window_host.py
 ```
-
----
-
-## Migration Plan
-
-### Phase 1: Architecture and history foundation
-
-* add backend architecture doc
-* add historymanager base paths and run lifecycle
-* add raw/rawbak writer process skeleton
-
-### Phase 2: Backend service skeleton
-
-* add backend entrypoint
-* add IPC server
-* add IPC models
-* add state store
-* add run controller
-
-### Phase 3: Move bus ownership to backend
-
-* backend creates and owns bus
-* backend owns device registry
-* GUI no longer directly owns bus
-
-### Phase 4: Move reducer and structured builder to backend
-
-* telemetry enters backend
-* backend records raw
-* reducer updates state
-* structured events are built and persisted
-
-### Phase 5: Convert GUI into client
-
-* add backend client layer
-* GUI subscribes to backend state/events
-* GUI no longer owns live system state
-
-### Phase 6: Move command path to backend
-
-* GUI sends command requests
-* backend validates and dispatches
-* operator_action and command_out are recorded separately
-
-### Phase 7: Move scripts to backend-owned runner
-
-* backend owns script lifecycle
-* GUI becomes a requester only
-
-### Phase 8: Switch playback to ignitionhistory
-
-* playback reads structured history archive
-* live and playback archive models are unified
-
----
-
-## Non-Goals for Early Commits
-
-The first commits do **not** need to complete all backend functionality.
-
-Early commits only need to establish:
-
-* system boundaries
-* directory layout
-* history run lifecycle
-* writer isolation strategy
-* backend service skeleton
-* GUI/client split direction
 
 ---
 
@@ -611,13 +657,16 @@ Early commits only need to establish:
 
 This architecture is considered successful when:
 
-1. the backend can continue running if the GUI exits or crashes
+1. the backend can continue running if one or both GUI windows exit or crash
 2. the backend can continue receiving telemetry without GUI
 3. raw/rawbak continue recording independently
 4. reducer and state store continue updating without GUI
 5. structured events continue being produced without GUI
-6. GUI can reconnect and recover current live state
-7. playback uses replay-oriented history instead of ad hoc live state
+6. one GUI window can fail without taking the other down
+7. GUI can reconnect and recover current live state
+8. playback uses replay-oriented history instead of ad hoc live state
+9. playback can detect missing/mismatched archive sources
+10. abort remains available from either GUI window without moving command authority out of backend
 
 ---
 
@@ -626,9 +675,10 @@ This architecture is considered successful when:
 The intended end state is:
 
 * the backend is the runtime core
-* the GUI is a restartable client
+* the GUI is a restartable supervised client side
 * live state belongs to backend
 * hardware command dispatch belongs to backend
 * history belongs to backend
+* playback belongs to `ignitionhistory`
 * GUI is an observer/operator surface, not the system body
-
+* one GUI window failure should not collapse the entire operator display surface
