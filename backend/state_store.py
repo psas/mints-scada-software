@@ -141,6 +141,53 @@ class StateStore:
                 "runtime_time": runtime_time,
             }
 
+    def mark_script_started(
+        self,
+        *,
+        script_id: str,
+        name: str,
+        pid: int,
+        launch_mode: str,
+        command: list[str],
+        cwd: str | None,
+        started_wall_time: str,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.is_running = True
+            self._state.script_runner.script_id = script_id
+            self._state.script_runner.name = name
+            self._state.script_runner.pid = pid
+            self._state.script_runner.launch_mode = launch_mode
+            self._state.script_runner.command = list(command)
+            self._state.script_runner.cwd = cwd
+            self._state.script_runner.started_wall_time = started_wall_time
+            self._state.script_runner.finished_wall_time = None
+            self._state.script_runner.last_exit_code = None
+            self._state.script_runner.last_stop_reason = None
+
+    def mark_script_finished(
+        self,
+        *,
+        finished_wall_time: str,
+        return_code: int | None,
+        reason: str,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.is_running = False
+            self._state.script_runner.finished_wall_time = finished_wall_time
+            self._state.script_runner.last_exit_code = return_code
+            self._state.script_runner.last_stop_reason = reason
+
+    def clear_script_running_state(self) -> None:
+        with self._lock:
+            self._state.script_runner.is_running = False
+            self._state.script_runner.script_id = None
+            self._state.script_runner.name = None
+            self._state.script_runner.pid = None
+            self._state.script_runner.launch_mode = None
+            self._state.script_runner.command = []
+            self._state.script_runner.cwd = None
+
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
             return deepcopy(self._state.to_dict())

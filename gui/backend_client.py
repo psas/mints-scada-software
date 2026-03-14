@@ -22,6 +22,7 @@ class BackendClient(QObject):
     run_status_received = pyqtSignal(dict)
     operator_action_recorded_received = pyqtSignal(dict)
     command_result_received = pyqtSignal(dict)
+    script_status_received = pyqtSignal(dict)
     error_received = pyqtSignal(dict)
 
     raw_message_received = pyqtSignal(str, dict)
@@ -129,6 +130,17 @@ class BackendClient(QObject):
     def request_command(self, payload: Mapping[str, Any]) -> None:
         self.send_message("command_request", payload)
 
+    def start_script(self, payload: Mapping[str, Any]) -> None:
+        self.send_message("start_script", payload)
+
+    def stop_script(self, *, reason: str = "operator_stop") -> None:
+        self.send_message(
+            "stop_script",
+            {
+                "reason": reason,
+            },
+        )
+
     def _reader_loop(self) -> None:
         try:
             reader = self._reader
@@ -212,6 +224,8 @@ class BackendClient(QObject):
             self.operator_action_recorded_received.emit(payload)
         elif message_type == "command_result":
             self.command_result_received.emit(payload)
+        elif message_type == "script_status":
+            self.script_status_received.emit(payload)
         elif message_type == "error":
             self.error_received.emit(payload)
 

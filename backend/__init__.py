@@ -7,6 +7,7 @@ from .device_registry import DeviceRegistry
 from .reducer import Reducer
 from .structured_builder import StructuredEventBuilder
 from .command_router import CommandRouter
+from .script_runner import ScriptRunner
 
 __all__ = [
     "BackendService",
@@ -18,4 +19,5 @@ __all__ = [
     "Reducer",
     "StructuredEventBuilder",
     "CommandRouter",
+    "ScriptRunner",
 ]

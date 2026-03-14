@@ -41,6 +41,8 @@ class GuiBackendBridge:
         setattr(self.window, "backend_device_catalog", self.device_catalog)
         setattr(self.window, "send_operator_action", self.send_operator_action)
         setattr(self.window, "request_backend_command", self.request_backend_command)
+        setattr(self.window, "start_backend_script", self.start_backend_script)
+        setattr(self.window, "stop_backend_script", self.stop_backend_script)
 
         for child_name in ("controller", "scada"):
             child = getattr(self.window, child_name, None)
@@ -49,6 +51,8 @@ class GuiBackendBridge:
                 setattr(child, "backend_device_catalog", self.device_catalog)
                 setattr(child, "send_operator_action", self.send_operator_action)
                 setattr(child, "request_backend_command", self.request_backend_command)
+                setattr(child, "start_backend_script", self.start_backend_script)
+                setattr(child, "stop_backend_script", self.stop_backend_script)
 
     def _connect_signals(self) -> None:
         self.backend_client.connected.connect(self.on_connected)
@@ -62,6 +66,7 @@ class GuiBackendBridge:
         self.backend_client.run_status_received.connect(self.on_run_status)
         self.backend_client.operator_action_recorded_received.connect(self.on_operator_action_recorded)
         self.backend_client.command_result_received.connect(self.on_command_result)
+        self.backend_client.script_status_received.connect(self.on_script_status)
         self.backend_client.error_received.connect(self.on_error)
 
     def send_operator_action(self, action: str, **extra: Any) -> None:
@@ -92,6 +97,30 @@ class GuiBackendBridge:
             payload["operator_action"] = dict(operator_action)
 
         self.backend_client.request_command(payload)
+
+    def start_backend_script(
+        self,
+        *,
+        name: str,
+        command: list[str] | None = None,
+        inline_python: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"name": name}
+        if command is not None:
+            payload["command"] = list(command)
+        if inline_python is not None:
+            payload["inline_python"] = inline_python
+        if cwd is not None:
+            payload["cwd"] = cwd
+        if env is not None:
+            payload["env"] = dict(env)
+
+        self.backend_client.start_script(payload)
+
+    def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
+        self.backend_client.stop_script(reason=reason)
 
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
@@ -209,6 +238,20 @@ class GuiBackendBridge:
                 if callable(child_handler):
                     child_handler(dict(payload))
 
+    def on_script_status(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "last_script_status", dict(payload))
+
+        handler = getattr(self.window, "handle_script_status", None)
+        if callable(handler):
+            handler(dict(payload))
+
+        for child_name in ("controller", "scada", "script"):
+            child = getattr(self.window, child_name, None)
+            if child is not None:
+                child_handler = getattr(child, "handle_script_status", None)
+                if callable(child_handler):
+                    child_handler(dict(payload))
+
     def on_error(self, payload: dict[str, Any]) -> None:
         code = payload.get("code", "unknown")
         message = payload.get("message", "Unknown backend error")
@@ -218,6 +261,8 @@ class GuiBackendBridge:
             "initialize_live_hardware_failed",
             "start_run_failed",
             "finish_run_failed",
+            "start_script_failed",
+            "stop_script_failed",
         }:
             QMessageBox.warning(
                 None,

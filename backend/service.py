@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
@@ -22,12 +23,14 @@ from .ipc_models import (
     operator_action_recorded_message,
     pong_message,
     run_status_message,
+    script_status_message,
     state_snapshot_message,
     structured_event_message,
 )
 from .ipc_server import IPCServer
 from .reducer import Reducer
 from .run_controller import RunController
+from .script_runner import ScriptRunner
 from .state_store import StateStore
 from .structured_builder import StructuredEventBuilder
 
@@ -71,6 +74,7 @@ class BackendService:
             device_registry=self.device_registry,
             bus_manager=self.bus_manager,
         )
+        self.script_runner = ScriptRunner()
 
         if socket_path is None:
             if self.project_root is None:
@@ -96,6 +100,8 @@ class BackendService:
             "ingest_mock_telemetry",
             "operator_action",
             "command_request",
+            "start_script",
+            "stop_script",
         ]
 
         self.server = IPCServer(
@@ -109,6 +115,8 @@ class BackendService:
         self.server.serve_forever()
 
     def stop(self) -> None:
+        self.script_runner.shutdown()
+
         self.bus_manager.shutdown_live_hardware()
         self.device_registry.clear_live_registration_flags()
         self.state_store.set_bus_connection_state(
@@ -386,6 +394,95 @@ class BackendService:
             )
             return
 
+        if message.type == "start_script":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                script_id = uuid4().hex
+
+                start_result = self.script_runner.start_script(
+                    payload,
+                    script_id=script_id,
+                    on_exit=self._handle_script_exit,
+                )
+
+                self.state_store.mark_script_started(
+                    script_id=start_result.script_id,
+                    name=start_result.name,
+                    pid=start_result.pid,
+                    launch_mode=start_result.launch_mode,
+                    command=start_result.command,
+                    cwd=start_result.cwd,
+                    started_wall_time=isoformat_z(),
+                )
+
+                self._record_system_event_if_running(
+                    {
+                        "event_type": "script_started",
+                        "severity": "info",
+                        "script_id": start_result.script_id,
+                        "name": start_result.name,
+                        "pid": start_result.pid,
+                        "launch_mode": start_result.launch_mode,
+                        "command": list(start_result.command),
+                        "cwd": start_result.cwd,
+                    }
+                )
+            except Exception as exc:
+                yield error_message("start_script_failed", str(exc))
+                return
+
+            yield script_status_message(
+                status="started",
+                script_id=start_result.script_id,
+                name=start_result.name,
+                pid=start_result.pid,
+                launch_mode=start_result.launch_mode,
+                command=start_result.command,
+                cwd=start_result.cwd,
+            )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "stop_script":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                reason = self._get_optional_string(payload, "reason") or "operator_stop"
+
+                stop_result = self.script_runner.stop_script(reason=reason)
+                self.state_store.mark_script_finished(
+                    finished_wall_time=isoformat_z(),
+                    return_code=stop_result.get("returncode"),
+                    reason=reason,
+                )
+                self.state_store.clear_script_running_state()
+
+                self._record_system_event_if_running(
+                    {
+                        "event_type": "script_stopped",
+                        "severity": "info",
+                        "script_id": stop_result.get("script_id"),
+                        "name": stop_result.get("name"),
+                        "pid": stop_result.get("pid"),
+                        "reason": reason,
+                        "returncode": stop_result.get("returncode"),
+                        "stopped_via": stop_result.get("stopped_via"),
+                    }
+                )
+            except Exception as exc:
+                yield error_message("stop_script_failed", str(exc))
+                return
+
+            yield script_status_message(
+                status="stopped",
+                script_id=stop_result.get("script_id"),
+                name=stop_result.get("name"),
+                pid=stop_result.get("pid"),
+                returncode=stop_result.get("returncode"),
+                reason=reason,
+            )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
         yield error_message(
             "unsupported_message_type",
             f"Unsupported IPC message type: {message.type}",
@@ -402,6 +499,29 @@ class BackendService:
             runtime=runtime,
             packet=packet,
             source="bus",
+        )
+
+    def _handle_script_exit(self, info: Mapping[str, Any]) -> None:
+        returncode = info.get("returncode")
+        self.state_store.mark_script_finished(
+            finished_wall_time=isoformat_z(),
+            return_code=returncode if isinstance(returncode, int) else None,
+            reason="process_exit",
+        )
+        self.state_store.clear_script_running_state()
+
+        self._record_system_event_if_running(
+            {
+                "event_type": "script_exited",
+                "severity": "info" if returncode == 0 else "warning",
+                "script_id": info.get("script_id"),
+                "name": info.get("name"),
+                "pid": info.get("pid"),
+                "launch_mode": info.get("launch_mode"),
+                "command": list(info.get("command", [])),
+                "cwd": info.get("cwd"),
+                "returncode": returncode,
+            }
         )
 
     def _process_telemetry_packet(
@@ -444,6 +564,10 @@ class BackendService:
     def _record_operator_action_if_running(self, action_event: Mapping[str, Any]) -> None:
         if self.history_manager.is_running:
             self.history_manager.record_raw_event("operator_action", action_event)
+
+    def _record_system_event_if_running(self, event: Mapping[str, Any]) -> None:
+        if self.history_manager.is_running:
+            self.history_manager.record_raw_event("system_event", event)
 
     def _build_operator_action_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         action = self._require_non_empty_string(payload, "action")

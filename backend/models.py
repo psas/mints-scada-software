@@ -67,6 +67,24 @@ class DeviceRuntimeState:
 
 
 @dataclass
+class ScriptRunnerState:
+    is_running: bool = False
+    script_id: str | None = None
+    name: str | None = None
+    pid: int | None = None
+    launch_mode: str | None = None
+    command: list[str] = field(default_factory=list)
+    cwd: str | None = None
+    started_wall_time: str | None = None
+    finished_wall_time: str | None = None
+    last_exit_code: int | None = None
+    last_stop_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class BackendRuntimeState:
     service_name: str
     backend_started_at: str
@@ -75,6 +93,7 @@ class BackendRuntimeState:
     bus: BusRuntimeState = field(default_factory=BusRuntimeState)
     device_registry: DeviceRegistryState = field(default_factory=DeviceRegistryState)
     device_runtime: DeviceRuntimeState = field(default_factory=DeviceRuntimeState)
+    script_runner: ScriptRunnerState = field(default_factory=ScriptRunnerState)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,4 +104,5 @@ class BackendRuntimeState:
             "bus": self.bus.to_dict(),
             "device_registry": self.device_registry.to_dict(),
             "device_runtime": self.device_runtime.to_dict(),
+            "script_runner": self.script_runner.to_dict(),
         }

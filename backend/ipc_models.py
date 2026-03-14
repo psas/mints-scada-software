@@ -146,6 +146,34 @@ def command_result_message(
     )
 
 
+def script_status_message(
+    *,
+    status: str,
+    script_id: str | None,
+    name: str | None,
+    pid: int | None,
+    launch_mode: str | None = None,
+    command: list[str] | None = None,
+    cwd: str | None = None,
+    returncode: int | None = None,
+    reason: str | None = None,
+) -> IPCMessage:
+    return IPCMessage(
+        type="script_status",
+        payload={
+            "status": status,
+            "script_id": script_id,
+            "name": name,
+            "pid": pid,
+            "launch_mode": launch_mode,
+            "command": list(command or []),
+            "cwd": cwd,
+            "returncode": returncode,
+            "reason": reason,
+        },
+    )
+
+
 def device_inventory_message(
     *,
     total_devices: int,
