@@ -5,7 +5,7 @@ PYTHON := python3
 VENV := .venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 REQUIREMENTS := requirements.txt
-MAIN := main.py
+MAIN := main_user_gui.py
 
 # Default target: show help
 .PHONY: help

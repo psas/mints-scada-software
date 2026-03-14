@@ -1,11 +1,22 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                              QPushButton, QWidget, QApplication, QListWidget,
-                              QListWidgetItem)
+from pathlib import Path
+
+from PyQt5.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QWidget,
+    QApplication,
+    QListWidget,
+    QListWidgetItem,
+)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 import qdarkstyle
-import os
 import logging
+
+from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 """
 Startup Checklist Window
@@ -71,13 +82,13 @@ class ChecklistItem(QWidget):
             self.status_label.setStyleSheet("color: #555;")
         elif self.status == "checking":
             self.status_label.setText("◐")
-            self.status_label.setStyleSheet("color: #FFA726;")  # Orange/Yellow
+            self.status_label.setStyleSheet("color: #FFA726;")
         elif self.status == "pass":
             self.status_label.setText("●")
-            self.status_label.setStyleSheet("color: #4CAF50;")  # Green
+            self.status_label.setStyleSheet("color: #4CAF50;")
         elif self.status == "fail":
             self.status_label.setText("●")
-            self.status_label.setStyleSheet("color: #F44336;")  # Red
+            self.status_label.setStyleSheet("color: #F44336;")
 
 
 class ChecklistWindow(QDialog):
@@ -90,25 +101,21 @@ class ChecklistWindow(QDialog):
         super().__init__(parent)
         self.serial_port = serial_port
         self.all_passed = False
-        self.selected_test = None  # Will store selected test folder name
-        self.playback_mode = False  # Track if user selected playback
+        self.selected_test = None
+        self.playback_mode = False
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
         self.setGeometry(100, 100, 600, 400)
 
-        # Apply dark theme
         QApplication.setStyle("Fusion")
-        self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api='pyqt5'))
+        self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api="pyqt5"))
 
-        # Main layout
         self.main_layout = QVBoxLayout(self)
 
-        # Create checklist content widget
         self.checklist_widget = QWidget()
         checklist_layout = QVBoxLayout(self.checklist_widget)
         checklist_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Title
         title = QLabel("System Pre-Flight Checklist")
         title.setFont(QFont("Arial", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
@@ -120,7 +127,6 @@ class ChecklistWindow(QDialog):
         subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
         checklist_layout.addWidget(subtitle)
 
-        # Checklist items
         self.check_serial = ChecklistItem("Serial port connection")
         self.check_bus = ChecklistItem("CAN bus initialization")
         self.check_devices = ChecklistItem("Device communication")
@@ -131,7 +137,6 @@ class ChecklistWindow(QDialog):
 
         checklist_layout.addStretch()
 
-        # Status message
         self.status_message = QLabel("")
         self.status_message.setFont(QFont("Arial", 10))
         self.status_message.setAlignment(Qt.AlignCenter)
@@ -139,7 +144,6 @@ class ChecklistWindow(QDialog):
         self.status_message.setStyleSheet("margin: 10px; padding: 10px;")
         checklist_layout.addWidget(self.status_message)
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         self.playback_button = QPushButton("Playback")
@@ -162,10 +166,8 @@ class ChecklistWindow(QDialog):
 
         checklist_layout.addLayout(button_layout)
 
-        # Add checklist widget to main layout
         self.main_layout.addWidget(self.checklist_widget)
 
-        # Start checks after a short delay
         QTimer.singleShot(500, self.run_checks)
 
     def run_checks(self):
@@ -174,79 +176,76 @@ class ChecklistWindow(QDialog):
         self.status_message.setText("Running checks...")
         self.status_message.setStyleSheet("color: #888; margin: 10px; padding: 10px;")
 
-        # Check 1: Serial port
         self.check_serial.set_checking()
-        QApplication.processEvents()  # Update UI
+        QApplication.processEvents()
 
-        if os.path.exists(self.serial_port):
+        if Path(self.serial_port).exists():
             self.check_serial.set_pass(f"Found: {self.serial_port}")
-            log.info(f"Serial port check passed: {self.serial_port}")
+            log.info("Serial port check passed: %s", self.serial_port)
         else:
             self.check_serial.set_fail(f"Not found: {self.serial_port}")
-            log.error(f"Serial port not found: {self.serial_port}")
+            log.error("Serial port not found: %s", self.serial_port)
             self._handle_failure("Serial port not found. Please check USB connection.")
             return
 
-        # Check 2: CAN bus (placeholder - actual check done in main.py)
         self.check_bus.set_checking()
         QApplication.processEvents()
         self.check_bus.set_pass("Ready")
 
-        # Check 3: Devices (placeholder - actual check done in main.py)
         self.check_devices.set_checking()
         QApplication.processEvents()
         self.check_devices.set_pass("Ready to initialize")
 
-        # All checks passed
         self._handle_success()
 
     def _handle_success(self):
         """Handle successful completion of all checks"""
         self.all_passed = True
         self.status_message.setText("All checks passed! Ready to start.")
-        self.status_message.setStyleSheet("color: #4CAF50; margin: 10px; padding: 10px; font-weight: bold;")
+        self.status_message.setStyleSheet(
+            "color: #4CAF50; margin: 10px; padding: 10px; font-weight: bold;"
+        )
         self.continue_button.setEnabled(True)
         log.info("All pre-flight checks passed")
 
     def _handle_failure(self, message):
         """Handle check failure"""
         self.all_passed = False
-        self.status_message.setText(f"Check failed: {message}\n\nFix the issue and run 'make run' again.")
-        self.status_message.setStyleSheet("color: #F44336; margin: 10px; padding: 10px; background-color: #3a1a1a; border-radius: 5px;")
-        log.error(f"Pre-flight check failed: {message}")
+        self.status_message.setText(
+            f"Check failed: {message}\n\nFix the issue and run 'make run' again."
+        )
+        self.status_message.setStyleSheet(
+            "color: #F44336; margin: 10px; padding: 10px; "
+            "background-color: #3a1a1a; border-radius: 5px;"
+        )
+        log.error("Pre-flight check failed: %s", message)
 
     def show_playback_selection(self):
-        """Switch to playback test selection view"""
-        # Hide checklist widget
+        """Switch to playback run selection view"""
         self.checklist_widget.hide()
 
-        # Create playback selection widget
         self.playback_widget = QWidget()
         playback_layout = QVBoxLayout(self.playback_widget)
         playback_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Title
-        title = QLabel("Select Test to Playback")
+        title = QLabel("Select Run to Playback")
         title.setFont(QFont("Arial", 16, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         playback_layout.addWidget(title)
 
-        subtitle = QLabel("Choose a test from the list below")
+        subtitle = QLabel(f"Choose a run from {HISTORY_ROOT_DIRNAME}")
         subtitle.setFont(QFont("Arial", 10))
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
         playback_layout.addWidget(subtitle)
 
-        # List of available tests
         self.test_list = QListWidget()
         self.test_list.setFont(QFont("Arial", 11))
         self.test_list.itemDoubleClicked.connect(self.on_test_selected)
         playback_layout.addWidget(self.test_list)
 
-        # Load tests from testhistory folder
         self._load_available_tests()
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         back_button = QPushButton("Back")
@@ -268,62 +267,70 @@ class ChecklistWindow(QDialog):
 
         playback_layout.addLayout(button_layout)
 
-        # Add playback widget to main layout
         self.main_layout.addWidget(self.playback_widget)
 
     def show_checklist(self):
         """Switch back to checklist view"""
-        if hasattr(self, 'playback_widget'):
+        if hasattr(self, "playback_widget"):
             self.playback_widget.hide()
             self.main_layout.removeWidget(self.playback_widget)
             self.playback_widget.deleteLater()
         self.checklist_widget.show()
 
-    def _load_available_tests(self):
-        """Load available tests from testhistory folder"""
-        self.test_list.clear()
-        testhistory_path = os.path.join(os.getcwd(), "testhistory")
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
 
-        # Check if testhistory folder exists
-        if not os.path.exists(testhistory_path):
-            # Show "no tests available" message
-            item = QListWidgetItem("No tests available")
-            item.setFlags(Qt.NoItemFlags)  # Make it non-selectable
+    def _ignitionhistory_path(self) -> Path:
+        return self._project_root() / HISTORY_ROOT_DIRNAME
+
+    def _load_available_tests(self):
+        """Load available playback runs from ignitionhistory folder"""
+        self.test_list.clear()
+        history_path = self._ignitionhistory_path()
+
+        if not history_path.exists():
+            item = QListWidgetItem("No playback runs available")
+            item.setFlags(Qt.NoItemFlags)
             self.test_list.addItem(item)
-            log.info("testhistory folder does not exist")
+            log.info("%s folder does not exist", history_path)
             return
 
-        # List all subdirectories in testhistory
         try:
-            subdirs = [d for d in os.listdir(testhistory_path)
-                      if os.path.isdir(os.path.join(testhistory_path, d))]
+            run_dirs = []
+            for child in history_path.iterdir():
+                if not child.is_dir():
+                    continue
+                metadata_path = child / "metadata.json"
+                if metadata_path.exists():
+                    run_dirs.append(child.name)
 
-            if not subdirs:
-                # No tests found
-                item = QListWidgetItem("No tests available")
-                item.setFlags(Qt.NoItemFlags)  # Make it non-selectable
+            if not run_dirs:
+                item = QListWidgetItem("No playback runs available")
+                item.setFlags(Qt.NoItemFlags)
                 self.test_list.addItem(item)
-                log.info("No test subdirectories found in testhistory")
-            else:
-                # Sort by name (which should be dates)
-                subdirs.sort(reverse=True)  # Most recent first
-                for subdir in subdirs:
-                    self.test_list.addItem(subdir)
-                log.info(f"Found {len(subdirs)} tests in testhistory")
+                log.info("No run directories with metadata.json found in %s", history_path)
+                return
+
+            run_dirs.sort(reverse=True)
+            for run_dir_name in run_dirs:
+                self.test_list.addItem(run_dir_name)
+
+            log.info("Found %d playback runs in %s", len(run_dirs), history_path)
+
         except Exception as e:
-            log.error(f"Error loading tests: {e}")
-            item = QListWidgetItem(f"Error loading tests: {e}")
+            log.error("Error loading playback runs: %s", e)
+            item = QListWidgetItem(f"Error loading playback runs: {e}")
             item.setFlags(Qt.NoItemFlags)
             self.test_list.addItem(item)
 
     def on_test_selected(self):
-        """Handle test selection"""
+        """Handle playback run selection"""
         current_item = self.test_list.currentItem()
         if current_item and current_item.flags() & Qt.ItemIsEnabled:
             self.selected_test = current_item.text()
             self.playback_mode = True
-            log.info(f"Selected test for playback: {self.selected_test}")
-            self.accept()  # Close dialog and proceed
+            log.info("Selected run for playback: %s", self.selected_test)
+            self.accept()
 
     def set_bus_status(self, success, message=""):
         """Update bus initialization status"""
@@ -339,6 +346,5 @@ class ChecklistWindow(QDialog):
             self.check_devices.set_pass(message or "All devices responding")
         else:
             self.check_devices.set_fail(message or "Some devices not responding")
-            # This is a warning, not a hard failure
             self.status_message.setText("Warning: " + message)
             self.status_message.setStyleSheet("color: #FFA726; margin: 10px; padding: 10px;")

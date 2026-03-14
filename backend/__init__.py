@@ -8,6 +8,7 @@ from .reducer import Reducer
 from .structured_builder import StructuredEventBuilder
 from .command_router import CommandRouter
 from .script_runner import ScriptRunner
+from .health import HealthPublisher
 
 __all__ = [
     "BackendService",
@@ -20,4 +21,5 @@ __all__ = [
     "StructuredEventBuilder",
     "CommandRouter",
     "ScriptRunner",
+    "HealthPublisher",
 ]

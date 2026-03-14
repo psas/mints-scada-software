@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from gui import ChecklistWindow, QLoggingHandler
 from gui.backend_client import BackendClient
 from gui.device_catalog import BackendDeviceCatalog
 from gui.window_manager import window_manager
+from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 log = logging.getLogger(__name__)
 
@@ -271,6 +273,104 @@ class GuiBackendBridge:
             )
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object in {path}")
+    return data
+
+
+def _load_jsonl_file(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+    return events
+
+
+def _parse_iso_wall_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _extract_event_wall_time(event: dict[str, Any]) -> datetime | None:
+    for key in (
+        "recorded_at",
+        "structured_at",
+        "wall_time",
+        "operator_action_at",
+        "requested_at",
+        "start_wall_time",
+        "finished_wall_time",
+    ):
+        parsed = _parse_iso_wall_time(event.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _build_playback_timeline_label(event: dict[str, Any]) -> str | None:
+    event_kind = event.get("event_kind")
+    stream = event.get("stream")
+
+    if event_kind == "system_event" or stream == "system_event":
+        event_type = event.get("event_type", "system")
+        return f"SYS {event_type}"
+
+    if event_kind == "operator_action" or stream == "operator_action":
+        action = event.get("action", "action")
+        return f"OP {action}"
+
+    if event_kind == "command_out" or stream == "command_out" or event_kind == "command_dispatch":
+        command_name = event.get("command_name", "command")
+        return f"CMD {command_name}"
+
+    # Telemetry can be very high-volume, so avoid flooding the timeline.
+    return None
+
+
+def _resolve_ignitionhistory_run_dir(selected_test: str) -> Path:
+    candidate = Path(selected_test)
+
+    if candidate.is_absolute():
+        if candidate.is_file() and candidate.name == "metadata.json":
+            return candidate.parent
+        if candidate.is_dir():
+            return candidate
+        raise FileNotFoundError(f"Playback path does not exist: {candidate}")
+
+    if candidate.exists():
+        resolved = candidate.resolve()
+        if resolved.is_file() and resolved.name == "metadata.json":
+            return resolved.parent
+        if resolved.is_dir():
+            return resolved
+
+    history_root = _project_root() / HISTORY_ROOT_DIRNAME
+    exact = history_root / selected_test
+    if exact.is_dir():
+        return exact
+
+    raise FileNotFoundError(
+        f"Could not resolve playback run '{selected_test}' under {history_root}"
+    )
+
+
 def _load_playback_device_proxies(window: Any) -> None:
     catalog = BackendDeviceCatalog()
     proxies = catalog.seed_from_settings_devices(settings.devices)
@@ -282,37 +382,85 @@ def _load_playback_device_proxies(window: Any) -> None:
         window.addDevice(proxy, proxy.meta)
 
 
-def _load_legacy_playback_metadata(window: Any, test_name: str) -> None:
-    metadata_path = os.path.join("testhistory", test_name, "metadata.json")
-    if not os.path.exists(metadata_path):
-        log.warning("No playback metadata file found at %s", metadata_path)
-        return
+def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
+    run_dir = _resolve_ignitionhistory_run_dir(selected_test)
 
-    try:
-        with open(metadata_path, "r", encoding="utf-8") as handle:
-            metadata = json.load(handle)
+    metadata_path = run_dir / "metadata.json"
+    merged_path = run_dir / "merged.jsonl"
+    snapshots_dir = run_dir / "snapshots"
 
-        if "start_time" in metadata and "end_time" in metadata:
-            window.timeline.min_time = metadata["start_time"]
-            window.timeline.set_total_duration(metadata["end_time"])
-            log.info(
-                "Playback test range: T%+.1fs to T+%.1fs",
-                metadata["start_time"],
-                metadata["end_time"],
-            )
-        elif "duration" in metadata:
-            window.timeline.set_total_duration(metadata["duration"])
-            log.info("Playback duration: %ss", metadata["duration"])
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Missing playback metadata file: {metadata_path}")
 
-        for event in metadata.get("events", []):
-            if isinstance(event, dict) and "time" in event and "label" in event:
-                window.timeline.add_event(event["time"], event["label"])
+    metadata = _load_json_file(metadata_path)
+    merged_events = _load_jsonl_file(merged_path) if merged_path.exists() else []
+    snapshot_files = sorted(snapshots_dir.glob("*.json")) if snapshots_dir.is_dir() else []
 
-        window.timeline.set_current_time(0.0)
-        window.playback_time = 0.0
+    setattr(window, "playback_history_dir", str(run_dir))
+    setattr(window, "playback_run_id", metadata.get("run_id", run_dir.name))
+    setattr(window, "playback_metadata", metadata)
+    setattr(window, "playback_merged_events", merged_events)
+    setattr(window, "playback_snapshot_files", [str(path) for path in snapshot_files])
 
-    except Exception as exc:
-        log.error("Failed to load playback metadata: %s", exc)
+    # If snapshots exist and contain a state object, seed the GUI-side device catalog.
+    if snapshot_files:
+        try:
+            first_snapshot = _load_json_file(snapshot_files[0])
+            setattr(window, "playback_initial_snapshot", first_snapshot)
+
+            snapshot_state = first_snapshot.get("state")
+            catalog = getattr(window, "backend_device_catalog", None)
+            if isinstance(snapshot_state, dict) and catalog is not None:
+                catalog.apply_state_snapshot(snapshot_state)
+                setattr(window, "backend_device_presentation", catalog.to_presentation_snapshot())
+        except Exception as exc:
+            log.warning("Failed to load initial playback snapshot: %s", exc)
+
+    start_dt = _parse_iso_wall_time(metadata.get("start_wall_time"))
+    end_dt = _parse_iso_wall_time(metadata.get("end_wall_time"))
+
+    event_times = [dt for dt in (_extract_event_wall_time(event) for event in merged_events) if dt is not None]
+
+    if start_dt is None and event_times:
+        start_dt = min(event_times)
+    if end_dt is None and event_times:
+        end_dt = max(event_times)
+
+    if start_dt is None:
+        start_dt = datetime.now().astimezone()
+    if end_dt is None:
+        end_dt = start_dt
+
+    duration_s = max(0.0, (end_dt - start_dt).total_seconds())
+
+    window.timeline.min_time = 0.0
+    window.timeline.set_total_duration(duration_s)
+
+    added_labels = 0
+    for event in merged_events:
+        label = _build_playback_timeline_label(event)
+        if label is None:
+            continue
+
+        event_dt = _extract_event_wall_time(event)
+        if event_dt is None:
+            continue
+
+        relative_s = max(0.0, (event_dt - start_dt).total_seconds())
+        window.timeline.add_event(relative_s, label)
+        added_labels += 1
+
+    window.timeline.set_current_time(0.0)
+    window.playback_time = 0.0
+
+    log.info(
+        "Loaded ignitionhistory playback run %s from %s with %s merged events, %s timeline labels, %s snapshots",
+        metadata.get("run_id", run_dir.name),
+        run_dir,
+        len(merged_events),
+        added_labels,
+        len(snapshot_files),
+    )
 
 
 def _configure_logging() -> QLoggingHandler:
@@ -337,7 +485,7 @@ def _configure_logging() -> QLoggingHandler:
 
 
 def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, test_name: str) -> int:
-    log.info("Starting playback mode with test: %s", test_name)
+    log.info("Starting playback mode with run: %s", test_name)
     window = window_manager(
         loghandler=consolehandler,
         autopoller=None,
@@ -346,7 +494,19 @@ def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, te
     )
 
     _load_playback_device_proxies(window)
-    _load_legacy_playback_metadata(window, test_name)
+
+    try:
+        _load_ignitionhistory_playback(window, test_name)
+    except Exception as exc:
+        log.error("Failed to load ignitionhistory playback: %s", exc)
+        QMessageBox.critical(
+            None,
+            "Playback Load Error",
+            "Failed to load playback from ignitionhistory.\n\n"
+            f"Run: {test_name}\n"
+            f"Error: {exc}",
+        )
+        return 1
 
     window.show()
     exec_fn = getattr(app, "exec", app.exec_)

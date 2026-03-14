@@ -12,6 +12,7 @@ from nexus import DataPacket
 from .bus_manager import BusManager
 from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
+from .health import HealthPublisher
 from .ipc_models import (
     IPCMessage,
     backend_status_message,
@@ -49,6 +50,8 @@ class BackendService:
         self.service_name = "teststand-backend"
 
         self.history_manager = HistoryManager(project_root=project_root)
+        self.health = HealthPublisher(history_manager=self.history_manager)
+
         self.state_store = StateStore(
             service_name=self.service_name,
             backend_started_at=self.started_at,
@@ -115,6 +118,12 @@ class BackendService:
         self.server.serve_forever()
 
     def stop(self) -> None:
+        if self.history_manager.is_running:
+            self.health.record_system_event(
+                "backend_stopping",
+                severity="info",
+            )
+
         self.script_runner.shutdown()
 
         self.bus_manager.shutdown_live_hardware()
@@ -135,12 +144,28 @@ class BackendService:
     def on_client_connected(self, client_id: str) -> None:
         with self._lock:
             self._connected_clients.add(client_id)
-            self.state_store.set_connected_clients(len(self._connected_clients))
+            connected_count = len(self._connected_clients)
+            self.state_store.set_connected_clients(connected_count)
+
+        self.health.record_system_event(
+            "gui_client_connected",
+            severity="info",
+            client_id=client_id,
+            connected_clients=connected_count,
+        )
 
     def on_client_disconnected(self, client_id: str) -> None:
         with self._lock:
             self._connected_clients.discard(client_id)
-            self.state_store.set_connected_clients(len(self._connected_clients))
+            connected_count = len(self._connected_clients)
+            self.state_store.set_connected_clients(connected_count)
+
+        self.health.record_system_event(
+            "gui_client_disconnected",
+            severity="info",
+            client_id=client_id,
+            connected_clients=connected_count,
+        )
 
     def handle_message(self, client_id: str, message: IPCMessage) -> Iterable[IPCMessage]:
         if message.type == "hello":
@@ -179,6 +204,11 @@ class BackendService:
             try:
                 result = self.bus_manager.initialize_live_hardware(self.device_registry)
             except Exception as exc:
+                self.health.record_system_event(
+                    "live_hardware_init_failed",
+                    severity="error",
+                    message=str(exc),
+                )
                 yield error_message("initialize_live_hardware_failed", str(exc))
                 return
 
@@ -194,6 +224,17 @@ class BackendService:
             self.state_store.set_device_inventory(
                 devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
+            )
+
+            self.health.record_system_event(
+                "live_hardware_initialized",
+                severity="info",
+                sender=result.sender,
+                bitrate=result.bitrate,
+                registered_ids=list(result.registered_ids),
+                skipped_ids=list(result.skipped_ids),
+                registered_count=result.registered_count,
+                skipped_count=result.skipped_count,
             )
 
             yield hardware_status_message(
@@ -219,6 +260,13 @@ class BackendService:
             self.state_store.set_device_inventory(
                 devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
+            )
+
+            self.health.record_system_event(
+                "live_hardware_shutdown",
+                severity="info",
+                sender=self.bus_manager.sender,
+                bitrate=self.bus_manager.bitrate,
             )
 
             yield hardware_status_message(
@@ -255,6 +303,16 @@ class BackendService:
                 yield error_message("start_run_failed", str(exc))
                 return
 
+            self.health.record_system_event(
+                "run_started",
+                severity="info",
+                run_id=run_result["run_id"],
+                mode=run_result.get("mode"),
+                test_name=run_result.get("test_name"),
+                operator=run_result.get("operator"),
+                profile_name=run_result.get("profile_name"),
+            )
+
             yield run_status_message(
                 run_id=run_result["run_id"],
                 mode=run_result.get("mode"),
@@ -272,6 +330,18 @@ class BackendService:
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 reason = self._get_optional_string(payload, "reason") or "operator_stop"
+
+                current_run = self.history_manager.current_run
+                current_run_id = current_run.run_id if current_run is not None else None
+
+                if current_run_id is not None:
+                    self.health.record_system_event(
+                        "run_finish_requested",
+                        severity="info",
+                        run_id=current_run_id,
+                        reason=reason,
+                    )
+
                 finish_result = self.run_controller.finish_run(reason=reason)
             except Exception as exc:
                 yield error_message("finish_run_failed", str(exc))
@@ -354,27 +424,24 @@ class BackendService:
 
                 dispatch_result = self.command_router.route_command(payload)
 
-                if self.history_manager.is_running:
-                    self.history_manager.record_raw_event(
-                        "command_out",
-                        dispatch_result.command_event,
-                    )
+                self._record_command_out_if_running(
+                    dispatch_result.command_event,
+                    result_summary=dispatch_result.result_summary,
+                )
             except Exception as exc:
-                if self.history_manager.is_running:
-                    self.history_manager.record_raw_event(
-                        "system_event",
-                        {
-                            "event_type": "command_dispatch_failed",
-                            "severity": "error",
-                            "message": str(exc),
-                        },
-                    )
-
                 command_name = None
                 device_id = None
                 if isinstance(message.payload, Mapping):
                     command_name = message.payload.get("command_name")
                     device_id = message.payload.get("device_id")
+
+                self.health.record_system_event(
+                    "command_dispatch_failed",
+                    severity="error",
+                    message=str(exc),
+                    command_name=command_name if isinstance(command_name, str) else None,
+                    device_id=device_id if isinstance(device_id, str) else None,
+                )
 
                 yield command_result_message(
                     success=False,
@@ -415,19 +482,22 @@ class BackendService:
                     started_wall_time=isoformat_z(),
                 )
 
-                self._record_system_event_if_running(
-                    {
-                        "event_type": "script_started",
-                        "severity": "info",
-                        "script_id": start_result.script_id,
-                        "name": start_result.name,
-                        "pid": start_result.pid,
-                        "launch_mode": start_result.launch_mode,
-                        "command": list(start_result.command),
-                        "cwd": start_result.cwd,
-                    }
+                self.health.record_system_event(
+                    "script_started",
+                    severity="info",
+                    script_id=start_result.script_id,
+                    name=start_result.name,
+                    pid=start_result.pid,
+                    launch_mode=start_result.launch_mode,
+                    command=list(start_result.command),
+                    cwd=start_result.cwd,
                 )
             except Exception as exc:
+                self.health.record_system_event(
+                    "script_start_failed",
+                    severity="error",
+                    message=str(exc),
+                )
                 yield error_message("start_script_failed", str(exc))
                 return
 
@@ -456,19 +526,22 @@ class BackendService:
                 )
                 self.state_store.clear_script_running_state()
 
-                self._record_system_event_if_running(
-                    {
-                        "event_type": "script_stopped",
-                        "severity": "info",
-                        "script_id": stop_result.get("script_id"),
-                        "name": stop_result.get("name"),
-                        "pid": stop_result.get("pid"),
-                        "reason": reason,
-                        "returncode": stop_result.get("returncode"),
-                        "stopped_via": stop_result.get("stopped_via"),
-                    }
+                self.health.record_system_event(
+                    "script_stopped",
+                    severity="info",
+                    script_id=stop_result.get("script_id"),
+                    name=stop_result.get("name"),
+                    pid=stop_result.get("pid"),
+                    reason=reason,
+                    returncode=stop_result.get("returncode"),
+                    stopped_via=stop_result.get("stopped_via"),
                 )
             except Exception as exc:
+                self.health.record_system_event(
+                    "script_stop_failed",
+                    severity="error",
+                    message=str(exc),
+                )
                 yield error_message("stop_script_failed", str(exc))
                 return
 
@@ -510,18 +583,16 @@ class BackendService:
         )
         self.state_store.clear_script_running_state()
 
-        self._record_system_event_if_running(
-            {
-                "event_type": "script_exited",
-                "severity": "info" if returncode == 0 else "warning",
-                "script_id": info.get("script_id"),
-                "name": info.get("name"),
-                "pid": info.get("pid"),
-                "launch_mode": info.get("launch_mode"),
-                "command": list(info.get("command", [])),
-                "cwd": info.get("cwd"),
-                "returncode": returncode,
-            }
+        self.health.record_system_event(
+            "script_exited",
+            severity="info" if returncode == 0 else "warning",
+            script_id=info.get("script_id"),
+            name=info.get("name"),
+            pid=info.get("pid"),
+            launch_mode=info.get("launch_mode"),
+            command=list(info.get("command", [])),
+            cwd=info.get("cwd"),
+            returncode=returncode,
         )
 
     def _process_telemetry_packet(
@@ -565,9 +636,34 @@ class BackendService:
         if self.history_manager.is_running:
             self.history_manager.record_raw_event("operator_action", action_event)
 
-    def _record_system_event_if_running(self, event: Mapping[str, Any]) -> None:
+            structured_event = {
+                **dict(action_event),
+                "structured_at": isoformat_z(),
+            }
+            self.history_manager.record_structured_event(
+                "operator_action",
+                structured_event,
+            )
+
+    def _record_command_out_if_running(
+        self,
+        command_event: Mapping[str, Any],
+        *,
+        result_summary: Any = None,
+    ) -> None:
         if self.history_manager.is_running:
-            self.history_manager.record_raw_event("system_event", event)
+            self.history_manager.record_raw_event("command_out", command_event)
+
+            structured_event = {
+                **dict(command_event),
+                "event_kind": "command_out",
+                "structured_at": isoformat_z(),
+                "result_summary": result_summary,
+            }
+            self.history_manager.record_structured_event(
+                "command_out",
+                structured_event,
+            )
 
     def _build_operator_action_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         action = self._require_non_empty_string(payload, "action")
