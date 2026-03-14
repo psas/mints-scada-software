@@ -194,7 +194,8 @@ class DeviceRegistry:
         for entry in self._entries_by_id.values():
             entry.runtime.live_registered = False
 
-    def get_device_summaries(self) -> list[dict[str, Any]]:
+    def get_gui_device_presentations(self) -> list[dict[str, Any]]:
+        """Return presentation-safe inventory summaries for GUI consumption."""
         return [
             {
                 "id": entry.meta["id"],
@@ -211,6 +212,10 @@ class DeviceRegistry:
             }
             for entry in self._entries_by_id.values()
         ]
+
+    def get_device_summaries(self) -> list[dict[str, Any]]:
+        """Backward-compatible alias for older callers."""
+        return self.get_gui_device_presentations()
 
     def get_load_errors(self) -> list[str]:
         return list(self._load_errors)

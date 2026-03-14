@@ -12,56 +12,10 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 import settings
 from gui import ChecklistWindow, QLoggingHandler
 from gui.backend_client import BackendClient
+from gui.device_catalog import BackendDeviceCatalog
 from gui.window_manager import window_manager
 
 log = logging.getLogger(__name__)
-
-REQUIRED_DEVICE_FIELDS = (
-    "id",
-    "name",
-    "deviceType",
-    "deviceGroup",
-    "deviceSystems",
-    "address",
-    "hasElectricalIO",
-    "isControllable",
-    "widgetType",
-    "isActive",
-)
-
-
-class BackendDeviceProxy:
-    """Lightweight GUI-side proxy for a backend-owned device runtime."""
-
-    def __init__(self, meta: dict[str, Any]) -> None:
-        self.meta = dict(meta)
-
-        self.device_id = self.meta["id"]
-        self.display_name = self.meta["name"]
-        self.name = self.meta["name"]
-        self.address = self.meta["address"]
-        self._id = self.meta["address"]
-
-        self.live_registered = bool(self.meta.get("live_registered", False))
-
-        # Runtime-like fields that GUI widgets may inspect.
-        self.value = None
-        self.aux = None
-        self.time = None
-        self.online = False
-
-    def apply_inventory_summary(self, summary: dict[str, Any]) -> None:
-        self.meta.update(summary)
-        self.live_registered = bool(summary.get("live_registered", self.live_registered))
-
-    def apply_runtime_state(self, runtime_state: dict[str, Any]) -> None:
-        self.online = bool(runtime_state.get("online", self.online))
-        self.value = runtime_state.get("runtime_value")
-        self.aux = runtime_state.get("runtime_aux")
-        self.time = runtime_state.get("runtime_time")
-
-    def __repr__(self) -> str:
-        return f"BackendDeviceProxy(device_id={self.device_id!r}, name={self.display_name!r})"
 
 
 class GuiBackendBridge:
@@ -77,18 +31,20 @@ class GuiBackendBridge:
         self.window = window
         self.backend_client = backend_client
         self.initialize_live_hardware_on_connect = initialize_live_hardware_on_connect
-        self.devices_by_id: dict[str, BackendDeviceProxy] = {}
+        self.device_catalog = BackendDeviceCatalog()
 
         self._attach_backend_client()
         self._connect_signals()
 
     def _attach_backend_client(self) -> None:
         setattr(self.window, "backend_client", self.backend_client)
+        setattr(self.window, "backend_device_catalog", self.device_catalog)
 
         for child_name in ("controller", "scada"):
             child = getattr(self.window, child_name, None)
             if child is not None:
                 setattr(child, "backend_client", self.backend_client)
+                setattr(child, "backend_device_catalog", self.device_catalog)
 
     def _connect_signals(self) -> None:
         self.backend_client.connected.connect(self.on_connected)
@@ -134,8 +90,9 @@ class GuiBackendBridge:
             handler(dict(payload))
 
     def on_state_snapshot(self, snapshot: dict[str, Any]) -> None:
-        self._sync_devices_from_snapshot(snapshot)
+        self.device_catalog.apply_state_snapshot(snapshot)
         setattr(self.window, "backend_state_snapshot", dict(snapshot))
+        setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
 
         handler = getattr(self.window, "apply_backend_state_snapshot", None)
         if callable(handler):
@@ -167,24 +124,16 @@ class GuiBackendBridge:
         if not isinstance(devices, list):
             devices = []
 
-        for device_summary in devices:
-            if not isinstance(device_summary, dict):
-                continue
-            device_id = device_summary.get("id")
-            if not isinstance(device_id, str):
-                continue
+        new_proxies = self.device_catalog.sync_inventory(devices)
 
-            if device_id not in self.devices_by_id:
-                proxy = BackendDeviceProxy(device_summary)
-                self.devices_by_id[device_id] = proxy
-                try:
-                    self.window.addDevice(proxy, proxy.meta)
-                except Exception as exc:
-                    log.exception("Failed to add backend device proxy %s: %s", device_id, exc)
-            else:
-                self.devices_by_id[device_id].apply_inventory_summary(device_summary)
+        for proxy in new_proxies:
+            try:
+                self.window.addDevice(proxy, proxy.meta)
+            except Exception as exc:
+                log.exception("Failed to add backend device proxy %s: %s", proxy.device_id, exc)
 
         setattr(self.window, "backend_device_inventory", dict(payload))
+        setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
 
         handler = getattr(self.window, "handle_device_inventory", None)
         if callable(handler):
@@ -220,58 +169,16 @@ class GuiBackendBridge:
                 f"{code}\n\n{message}",
             )
 
-    def _sync_devices_from_snapshot(self, snapshot: dict[str, Any]) -> None:
-        device_registry = snapshot.get("device_registry", {})
-        registry_devices = device_registry.get("devices", [])
-        if isinstance(registry_devices, list):
-            for summary in registry_devices:
-                if not isinstance(summary, dict):
-                    continue
-                device_id = summary.get("id")
-                if isinstance(device_id, str) and device_id in self.devices_by_id:
-                    self.devices_by_id[device_id].apply_inventory_summary(summary)
-
-        device_runtime = snapshot.get("device_runtime", {}).get("by_id", {})
-        if not isinstance(device_runtime, dict):
-            return
-
-        for device_id, runtime_state in device_runtime.items():
-            proxy = self.devices_by_id.get(device_id)
-            if proxy is None or not isinstance(runtime_state, dict):
-                continue
-            proxy.apply_runtime_state(runtime_state)
-
-
-def _normalize_settings_device_meta(device_desc: dict[str, Any]) -> dict[str, Any]:
-    missing = [key for key in REQUIRED_DEVICE_FIELDS if key not in device_desc]
-    if missing:
-        raise KeyError(
-            f"Device config is missing required fields: {missing}\nConfig: {device_desc}"
-        )
-
-    return {
-        "id": device_desc["id"],
-        "name": device_desc["name"],
-        "deviceType": device_desc["deviceType"],
-        "deviceGroup": device_desc["deviceGroup"],
-        "deviceSystems": (
-            list(device_desc["deviceSystems"]) if device_desc["deviceSystems"] else []
-        ),
-        "address": device_desc["address"],
-        "hasElectricalIO": bool(device_desc["hasElectricalIO"]),
-        "isControllable": bool(device_desc["isControllable"]),
-        "widgetType": device_desc["widgetType"],
-        "isActive": bool(device_desc["isActive"]),
-        "config": dict(device_desc.get("config", {})),
-        "live_registered": False,
-    }
-
 
 def _load_playback_device_proxies(window: Any) -> None:
-    for device_desc in settings.devices:
-        meta = _normalize_settings_device_meta(device_desc)
-        proxy = BackendDeviceProxy(meta)
-        window.addDevice(proxy, meta)
+    catalog = BackendDeviceCatalog()
+    proxies = catalog.seed_from_settings_devices(settings.devices)
+
+    setattr(window, "backend_device_catalog", catalog)
+    setattr(window, "backend_device_presentation", catalog.to_presentation_snapshot())
+
+    for proxy in proxies:
+        window.addDevice(proxy, proxy.meta)
 
 
 def _load_legacy_playback_metadata(window: Any, test_name: str) -> None:
@@ -356,7 +263,7 @@ def _run_live_gui_mode(app: QApplication, *, consolehandler: QLoggingHandler) ->
 
     socket_path = Path(__file__).resolve().parent / ".backend_service.sock"
     backend_client = BackendClient(socket_path=socket_path)
-    bridge = GuiBackendBridge(
+    GuiBackendBridge(
         window=window,
         backend_client=backend_client,
         initialize_live_hardware_on_connect=True,

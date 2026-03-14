@@ -30,15 +30,7 @@ from .structured_builder import StructuredEventBuilder
 
 
 class BackendService:
-    """Backend service skeleton.
-
-    Commit 7 adds:
-    - reducer pipeline
-    - structured event builder
-    - packet hook from runtime devices into backend
-    - generic telemetry persistence path
-    - mock telemetry IPC for smoke testing without real hardware
-    """
+    """Backend service skeleton."""
 
     def __init__(
         self,
@@ -67,7 +59,7 @@ class BackendService:
         self.device_registry.set_packet_listener(self._handle_device_packet)
         self.device_registry.load_from_settings()
         self.state_store.set_device_inventory(
-            devices=self.device_registry.get_device_summaries(),
+            devices=self.device_registry.get_gui_device_presentations(),
             load_errors=self.device_registry.get_load_errors(),
         )
 
@@ -118,7 +110,7 @@ class BackendService:
             skipped_ids=[],
         )
         self.state_store.set_device_inventory(
-            devices=self.device_registry.get_device_summaries(),
+            devices=self.device_registry.get_gui_device_presentations(),
             load_errors=self.device_registry.get_load_errors(),
         )
         self.server.stop()
@@ -183,7 +175,7 @@ class BackendService:
                 skipped_ids=result.skipped_ids,
             )
             self.state_store.set_device_inventory(
-                devices=self.device_registry.get_device_summaries(),
+                devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
             )
 
@@ -208,7 +200,7 @@ class BackendService:
                 skipped_ids=[],
             )
             self.state_store.set_device_inventory(
-                devices=self.device_registry.get_device_summaries(),
+                devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
             )
 
