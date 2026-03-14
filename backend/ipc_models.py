@@ -77,6 +77,39 @@ def backend_status_message(
     )
 
 
+def run_status_message(
+    *,
+    run_id: str,
+    mode: str | None,
+    status: str,
+    test_name: str | None = None,
+    operator: str | None = None,
+    profile_name: str | None = None,
+    reason: str | None = None,
+    started_wall_time: str | None = None,
+    finished_wall_time: str | None = None,
+) -> IPCMessage:
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "mode": mode,
+        "status": status,
+        "test_name": test_name,
+        "operator": operator,
+        "profile_name": profile_name,
+        "reason": reason,
+        "started_wall_time": started_wall_time,
+        "finished_wall_time": finished_wall_time,
+    }
+    return IPCMessage(type="run_status", payload=payload)
+
+
+def state_snapshot_message(snapshot: Mapping[str, Any]) -> IPCMessage:
+    return IPCMessage(
+        type="state_snapshot",
+        payload=dict(snapshot),
+    )
+
+
 def pong_message() -> IPCMessage:
     return IPCMessage(type="pong", payload={})
 
