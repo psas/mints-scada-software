@@ -1,7 +1,6 @@
 from pathlib import Path
 from gui.playback_catalog import discover_playback_runs
 
-
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -12,6 +11,10 @@ from PyQt5.QtWidgets import (
     QApplication,
     QListWidget,
     QListWidgetItem,
+    QLineEdit,
+    QPlainTextEdit,
+    QFormLayout,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
@@ -95,8 +98,11 @@ class ChecklistItem(QWidget):
 
 class ChecklistWindow(QDialog):
     """
-    Pre-flight checklist window
-    Checks system requirements before launching main application
+    Pre-flight checklist window.
+
+    Supports two startup paths:
+    - live mode: collect run metadata before backend start_run
+    - playback mode: select a recorded run from ignitionhistory
     """
 
     def __init__(self, serial_port, parent=None):
@@ -105,17 +111,24 @@ class ChecklistWindow(QDialog):
         self.all_passed = False
         self.selected_test = None
         self.playback_mode = False
+        self.live_run_metadata: dict[str, str] | None = None
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
-        self.setGeometry(100, 100, 600, 400)
+        self.setGeometry(100, 100, 640, 460)
 
         QApplication.setStyle("Fusion")
         self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api="pyqt5"))
 
         self.main_layout = QVBoxLayout(self)
 
-        self.checklist_widget = QWidget()
-        checklist_layout = QVBoxLayout(self.checklist_widget)
+        self.checklist_widget = self._build_checklist_widget()
+        self.main_layout.addWidget(self.checklist_widget)
+
+        QTimer.singleShot(500, self.run_checks)
+
+    def _build_checklist_widget(self) -> QWidget:
+        widget = QWidget()
+        checklist_layout = QVBoxLayout(widget)
         checklist_layout.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel("System Pre-Flight Checklist")
@@ -155,8 +168,8 @@ class ChecklistWindow(QDialog):
 
         button_layout.addStretch()
 
-        self.continue_button = QPushButton("Continue")
-        self.continue_button.clicked.connect(self.accept)
+        self.continue_button = QPushButton("Live")
+        self.continue_button.clicked.connect(self.show_live_setup)
         self.continue_button.setEnabled(False)
         self.continue_button.setMinimumWidth(100)
         button_layout.addWidget(self.continue_button)
@@ -167,10 +180,76 @@ class ChecklistWindow(QDialog):
         button_layout.addWidget(self.exit_button)
 
         checklist_layout.addLayout(button_layout)
+        return widget
 
-        self.main_layout.addWidget(self.checklist_widget)
+    def _build_live_setup_widget(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        QTimer.singleShot(500, self.run_checks)
+        title = QLabel("Live Run Setup")
+        title.setFont(QFont("Arial", 16, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        subtitle = QLabel("Enter run metadata before backend start_run.")
+        subtitle.setFont(QFont("Arial", 10))
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
+        layout.addWidget(subtitle)
+
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)
+        form_layout.setContentsMargins(30, 10, 30, 10)
+        form_layout.setSpacing(12)
+        form_layout.setLabelAlignment(Qt.AlignRight)
+
+        self.test_name_input = QLineEdit()
+        self.test_name_input.setPlaceholderText("Example: ignition_test_01")
+        form_layout.addRow("Test name", self.test_name_input)
+
+        self.operator_input = QLineEdit()
+        self.operator_input.setPlaceholderText("Operator name")
+        form_layout.addRow("Operator", self.operator_input)
+
+        self.profile_input = QLineEdit()
+        self.profile_input.setPlaceholderText("Optional profile name")
+        form_layout.addRow("Profile", self.profile_input)
+
+        self.notes_input = QPlainTextEdit()
+        self.notes_input.setPlaceholderText("Optional run notes")
+        self.notes_input.setMinimumHeight(120)
+        form_layout.addRow("Notes", self.notes_input)
+
+        layout.addWidget(form_widget)
+
+        self.live_setup_status = QLabel("")
+        self.live_setup_status.setWordWrap(True)
+        self.live_setup_status.setAlignment(Qt.AlignCenter)
+        self.live_setup_status.setStyleSheet("color: #888; margin: 10px; padding: 10px;")
+        layout.addWidget(self.live_setup_status)
+
+        button_layout = QHBoxLayout()
+
+        back_button = QPushButton("Back")
+        back_button.clicked.connect(self.show_checklist)
+        back_button.setMinimumWidth(100)
+        button_layout.addWidget(back_button)
+
+        button_layout.addStretch()
+
+        start_button = QPushButton("Start Live")
+        start_button.clicked.connect(self.on_live_selected)
+        start_button.setMinimumWidth(120)
+        button_layout.addWidget(start_button)
+
+        exit_button = QPushButton("Exit")
+        exit_button.clicked.connect(self.reject)
+        exit_button.setMinimumWidth(100)
+        button_layout.addWidget(exit_button)
+
+        layout.addLayout(button_layout)
+        return widget
 
     def run_checks(self):
         """Run all pre-flight checks"""
@@ -203,7 +282,7 @@ class ChecklistWindow(QDialog):
     def _handle_success(self):
         """Handle successful completion of all checks"""
         self.all_passed = True
-        self.status_message.setText("All checks passed! Ready to start.")
+        self.status_message.setText("All checks passed! Ready to continue.")
         self.status_message.setStyleSheet(
             "color: #4CAF50; margin: 10px; padding: 10px; font-weight: bold;"
         )
@@ -222,9 +301,31 @@ class ChecklistWindow(QDialog):
         )
         log.error("Pre-flight check failed: %s", message)
 
+    def show_live_setup(self):
+        """Switch to live run metadata entry view."""
+        if not self.all_passed:
+            QMessageBox.warning(
+                self,
+                "Checks Not Complete",
+                "All pre-flight checks must pass before starting live mode.",
+            )
+            return
+
+        self.checklist_widget.hide()
+
+        if not hasattr(self, "live_setup_widget"):
+            self.live_setup_widget = self._build_live_setup_widget()
+            self.main_layout.addWidget(self.live_setup_widget)
+
+        self.playback_mode = False
+        self.live_setup_widget.show()
+        self.test_name_input.setFocus()
+
     def show_playback_selection(self):
         """Switch to playback run selection view"""
         self.checklist_widget.hide()
+        if hasattr(self, "live_setup_widget"):
+            self.live_setup_widget.hide()
 
         self.playback_widget = QWidget()
         playback_layout = QVBoxLayout(self.playback_widget)
@@ -270,14 +371,51 @@ class ChecklistWindow(QDialog):
         playback_layout.addLayout(button_layout)
 
         self.main_layout.addWidget(self.playback_widget)
+        self.playback_widget.show()
 
     def show_checklist(self):
-        """Switch back to checklist view"""
+        """Switch back to the main checklist view."""
         if hasattr(self, "playback_widget"):
             self.playback_widget.hide()
             self.main_layout.removeWidget(self.playback_widget)
             self.playback_widget.deleteLater()
+            del self.playback_widget
+
+        if hasattr(self, "live_setup_widget"):
+            self.live_setup_widget.hide()
+
         self.checklist_widget.show()
+
+    def on_live_selected(self):
+        """Validate live metadata and accept the dialog for live startup."""
+        test_name = self.test_name_input.text().strip()
+        operator = self.operator_input.text().strip()
+        profile_name = self.profile_input.text().strip()
+        notes = self.notes_input.toPlainText().strip()
+
+        if not test_name:
+            self.live_setup_status.setText("Test name is required.")
+            self.live_setup_status.setStyleSheet(
+                "color: #F44336; margin: 10px; padding: 10px;"
+                "background-color: #3a1a1a; border-radius: 5px;"
+            )
+            self.test_name_input.setFocus()
+            return
+
+        self.live_run_metadata = {
+            "test_name": test_name,
+            "mode": "live",
+        }
+        if operator:
+            self.live_run_metadata["operator"] = operator
+        if profile_name:
+            self.live_run_metadata["profile_name"] = profile_name
+        if notes:
+            self.live_run_metadata["notes"] = notes
+
+        self.playback_mode = False
+        log.info("Selected live startup metadata: %s", self.live_run_metadata)
+        self.accept()
 
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parent.parent
@@ -333,7 +471,6 @@ class ChecklistWindow(QDialog):
             self.playback_mode = True
             log.info("Selected run for playback: %s", self.selected_test)
             self.accept()
-
 
     def set_bus_status(self, success, message=""):
         """Update bus initialization status"""

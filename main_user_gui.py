@@ -29,10 +29,13 @@ class GuiBackendBridge:
         window: Any,
         backend_client: BackendClient,
         initialize_live_hardware_on_connect: bool,
+        pending_start_run_payload: dict[str, Any] | None = None,
     ) -> None:
         self.window = window
         self.backend_client = backend_client
         self.initialize_live_hardware_on_connect = initialize_live_hardware_on_connect
+        self.pending_start_run_payload = dict(pending_start_run_payload or {}) or None
+        self._start_run_requested = False
         self.device_catalog = BackendDeviceCatalog()
 
         self._attach_backend_client()
@@ -147,6 +150,20 @@ class GuiBackendBridge:
         )
         setattr(self.window, "backend_connected", True)
         setattr(self.window, "backend_hello_ack", dict(payload))
+
+        if self.pending_start_run_payload is not None and not self._start_run_requested:
+            try:
+                self.backend_client.start_run(self.pending_start_run_payload)
+                self._start_run_requested = True
+                log.info("Requested backend start_run with checklist metadata: %s", self.pending_start_run_payload)
+            except Exception as exc:
+                log.error("Failed to request backend start_run: %s", exc)
+                QMessageBox.warning(
+                    None,
+                    "Backend Error",
+                    "Failed to request backend start_run.\n\n"
+                    f"Error: {exc}",
+                )
 
     def on_backend_status(self, payload: dict[str, Any]) -> None:
         setattr(self.window, "backend_status", dict(payload))
@@ -513,7 +530,12 @@ def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, te
     return exec_fn()
 
 
-def _run_live_gui_mode(app: QApplication, *, consolehandler: QLoggingHandler) -> int:
+def _run_live_gui_mode(
+    app: QApplication,
+    *,
+    consolehandler: QLoggingHandler,
+    start_run_payload: dict[str, Any] | None = None,
+) -> int:
     log.info("Starting live GUI client mode")
 
     window = window_manager(
@@ -528,6 +550,7 @@ def _run_live_gui_mode(app: QApplication, *, consolehandler: QLoggingHandler) ->
         window=window,
         backend_client=backend_client,
         initialize_live_hardware_on_connect=True,
+        pending_start_run_payload=start_run_payload,
     )
 
     try:
@@ -574,6 +597,7 @@ def main() -> int:
     return _run_live_gui_mode(
         app,
         consolehandler=consolehandler,
+        start_run_payload=checklist.live_run_metadata,
     )
 
 
