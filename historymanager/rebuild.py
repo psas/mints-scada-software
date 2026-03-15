@@ -12,6 +12,7 @@ from .integrity import RAW_STREAM_FILES, STRUCTURED_STREAM_FILES
 
 REBUILD_WORKSPACE_DIRNAME = ".rebuild_workspace"
 REBUILD_PREVIEW_FILENAME = "rebuild_preview.json"
+REBUILD_REPORT_FILENAME = "rebuild_report.json"
 
 _PASS_THROUGH_STREAMS = {"command_out", "operator_action", "system_event"}
 
@@ -116,6 +117,104 @@ def rebuild_run_archive(
         report["temp_workspace"] = None
 
     return report
+
+
+def publish_run_rebuild_artifacts(
+    run_ref: str | Path,
+    *,
+    project_root: str | Path = ".",
+) -> dict[str, Any]:
+    paths = _resolve_run_paths(run_ref, project_root=project_root)
+    report = rebuild_run_archive(run_ref, project_root=project_root, keep_workspace=True)
+
+    report_path = paths.history_dir / REBUILD_REPORT_FILENAME
+
+    if report.get("status") != "ready":
+        _atomic_write_json(report_path, report)
+        return report
+
+    workspace_path_value = report.get("temp_workspace")
+    if not isinstance(workspace_path_value, str) or not workspace_path_value:
+        report["status"] = "failed"
+        report["summary_message"] = "Rebuild failed, temp workspace was not created"
+        _atomic_write_json(report_path, report)
+        return report
+
+    workspace = Path(workspace_path_value).expanduser().resolve()
+    history_workspace = workspace / "history"
+    snapshots_workspace = history_workspace / "snapshots"
+
+    published_artifacts: list[str] = []
+    for stream_name, filename in STRUCTURED_STREAM_FILES.items():
+        source = history_workspace / filename
+        if source.is_file():
+            dest = paths.history_dir / filename.replace(".jsonl", ".rebuild.jsonl")
+            shutil.copy2(source, dest)
+            published_artifacts.append(str(dest))
+
+    merged_source = history_workspace / "merged.jsonl"
+    if merged_source.is_file():
+        merged_dest = paths.history_dir / "merged.rebuild.jsonl"
+        shutil.copy2(merged_source, merged_dest)
+        published_artifacts.append(str(merged_dest))
+
+    snapshots_dest = paths.history_dir / "snapshots_rebuild"
+    if snapshots_dest.exists():
+        shutil.rmtree(snapshots_dest, ignore_errors=True)
+    if snapshots_workspace.is_dir():
+        shutil.copytree(snapshots_workspace, snapshots_dest)
+        published_artifacts.append(str(snapshots_dest))
+
+    report["status"] = "published"
+    report["summary_message"] = "All data matches rebuild"
+    report["published_artifacts"] = published_artifacts
+    _atomic_write_json(report_path, report)
+    report["report_path"] = str(report_path)
+    return report
+
+
+def get_rebuild_artifact_status(
+    run_ref: str | Path,
+    *,
+    project_root: str | Path = ".",
+) -> dict[str, Any]:
+    paths = _resolve_run_paths(run_ref, project_root=project_root)
+    report_path = paths.history_dir / REBUILD_REPORT_FILENAME
+
+    available_streams: list[str] = []
+    for stream_name, filename in STRUCTURED_STREAM_FILES.items():
+        candidate = paths.history_dir / filename.replace(".jsonl", ".rebuild.jsonl")
+        if candidate.is_file():
+            available_streams.append(stream_name)
+
+    merged_path = paths.history_dir / "merged.rebuild.jsonl"
+    snapshots_dir = paths.history_dir / "snapshots_rebuild"
+
+    report_payload: dict[str, Any] | None = None
+    if report_path.is_file():
+        try:
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            report_payload = None
+
+    status = "missing"
+    summary_message = "Rebuild artifacts are not prepared for the selected run."
+    if isinstance(report_payload, dict):
+        status = str(report_payload.get("status") or status)
+        summary_message = str(report_payload.get("summary_message") or summary_message)
+
+    has_rebuild_artifacts = bool(available_streams) and merged_path.is_file()
+
+    return {
+        "has_rebuild_artifacts": has_rebuild_artifacts,
+        "status": status,
+        "summary_message": summary_message,
+        "report_path": str(report_path) if report_path.is_file() else None,
+        "available_streams": available_streams,
+        "merged_path": str(merged_path) if merged_path.is_file() else None,
+        "snapshots_dir": str(snapshots_dir) if snapshots_dir.is_dir() else None,
+        "generated_at": report_payload.get("generated_at") if isinstance(report_payload, dict) else None,
+    }
 
 
 def discard_rebuild_workspace(workspace_path: str | Path) -> None:

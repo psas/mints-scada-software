@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QFormLayout,
     QMessageBox,
+    QComboBox,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush
@@ -22,6 +23,7 @@ import qdarkstyle
 import logging
 
 from historymanager.integrity import scan_run_integrity
+from historymanager.rebuild import get_rebuild_artifact_status, publish_run_rebuild_artifacts
 from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 """
@@ -42,6 +44,10 @@ _INTEGRITY_ITEM_PREFIX: dict[str, str] = {
     "yellow": "[CHECK]",
     "red": "[MISMATCH]",
 }
+
+_PLAYBACK_SOURCE_NATIVE = "native"
+_PLAYBACK_SOURCE_REBUILD = "rebuild"
+_REBUILD_SELECTION_PREFIX = "rebuild::"
 
 
 class ChecklistItem(QWidget):
@@ -127,6 +133,8 @@ class ChecklistWindow(QDialog):
         self.live_run_metadata: dict[str, str] | None = None
         self.playback_integrity_reports: dict[str, dict[str, object]] = {}
         self.playback_run_summaries_by_dir: dict[str, object] = {}
+        self.playback_rebuild_status_by_dir: dict[str, dict[str, object]] = {}
+        self.selected_playback_source: str = _PLAYBACK_SOURCE_NATIVE
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
         self.setGeometry(100, 100, 640, 460)
@@ -385,6 +393,25 @@ class ChecklistWindow(QDialog):
         )
         integrity_layout.addWidget(self.integrity_details_box)
 
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Playback source"))
+
+        self.playback_source_combo = QComboBox()
+        self.playback_source_combo.addItem("Native archive", _PLAYBACK_SOURCE_NATIVE)
+        self.playback_source_combo.setEnabled(False)
+        source_row.addWidget(self.playback_source_combo, 1)
+
+        self.prepare_rebuild_button = QPushButton("Prepare Rebuild")
+        self.prepare_rebuild_button.setEnabled(False)
+        self.prepare_rebuild_button.clicked.connect(self.on_prepare_rebuild_clicked)
+        source_row.addWidget(self.prepare_rebuild_button)
+        integrity_layout.addLayout(source_row)
+
+        self.rebuild_status_label = QLabel("Rebuild artifacts are not prepared for the selected run.")
+        self.rebuild_status_label.setWordWrap(True)
+        self.rebuild_status_label.setStyleSheet("color: #999; margin-top: 4px;")
+        integrity_layout.addWidget(self.rebuild_status_label)
+
         playback_layout.addWidget(integrity_panel)
 
         self._load_available_tests()
@@ -471,6 +498,7 @@ class ChecklistWindow(QDialog):
         self.test_list.clear()
         self.playback_integrity_reports.clear()
         self.playback_run_summaries_by_dir.clear()
+        self.playback_rebuild_status_by_dir.clear()
 
         history_path = self._ignitionhistory_path()
 
@@ -499,6 +527,7 @@ class ChecklistWindow(QDialog):
 
                 report = self._scan_integrity_for_run(summary.run_dir)
                 self.playback_integrity_reports[run_dir_str] = report
+                self.playback_rebuild_status_by_dir[run_dir_str] = self._load_rebuild_status(summary.run_dir)
 
                 badge = str(report.get("badge") or "red")
                 prefix = _INTEGRITY_ITEM_PREFIX.get(badge, "[CHECK]")
@@ -538,6 +567,12 @@ class ChecklistWindow(QDialog):
 
         self._apply_integrity_report(report)
 
+        run_dir_str = current.data(Qt.UserRole)
+        rebuild_status = {}
+        if isinstance(run_dir_str, str):
+            rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {})
+        self._apply_rebuild_status(rebuild_status if isinstance(rebuild_status, dict) else {})
+
     def _scan_integrity_for_run(self, run_dir: Path) -> dict[str, object]:
         try:
             report = scan_run_integrity(run_dir, project_root=self._project_root())
@@ -567,7 +602,10 @@ class ChecklistWindow(QDialog):
         self.integrity_badge_label.setStyleSheet(
             f"padding: 8px; border-radius: 6px; color: {fg}; background-color: {bg}; font-weight: bold;"
         )
-        self.integrity_details_box.setPlainText(self._build_integrity_detail_text(report))
+        current_item = self.test_list.currentItem() if hasattr(self, "test_list") else None
+        run_dir_str = current_item.data(Qt.UserRole) if current_item is not None else None
+        rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {}) if isinstance(run_dir_str, str) else {}
+        self.integrity_details_box.setPlainText(self._build_integrity_detail_text(report, rebuild_status))
 
     def _set_integrity_placeholder(self, text: str) -> None:
         if hasattr(self, "integrity_badge_label"):
@@ -577,6 +615,16 @@ class ChecklistWindow(QDialog):
             )
         if hasattr(self, "integrity_details_box"):
             self.integrity_details_box.setPlainText("")
+        if hasattr(self, "playback_source_combo"):
+            self.playback_source_combo.blockSignals(True)
+            self.playback_source_combo.clear()
+            self.playback_source_combo.addItem("Native archive", _PLAYBACK_SOURCE_NATIVE)
+            self.playback_source_combo.setEnabled(False)
+            self.playback_source_combo.blockSignals(False)
+        if hasattr(self, "prepare_rebuild_button"):
+            self.prepare_rebuild_button.setEnabled(False)
+        if hasattr(self, "rebuild_status_label"):
+            self.rebuild_status_label.setText("Rebuild artifacts are not prepared for the selected run.")
 
     def _build_list_item_tooltip(self, base_tooltip: str, report: dict[str, object]) -> str:
         parts = [base_tooltip]
@@ -585,7 +633,7 @@ class ChecklistWindow(QDialog):
             parts.extend(["", f"Integrity: {summary_message.strip()}"])
         return "\n".join(parts)
 
-    def _build_integrity_detail_text(self, report: dict[str, object]) -> str:
+    def _build_integrity_detail_text(self, report: dict[str, object], rebuild_status: dict[str, object] | None = None) -> str:
         lines: list[str] = []
 
         overall_status = str(report.get("overall_status") or "unknown")
@@ -643,6 +691,9 @@ class ChecklistWindow(QDialog):
                             f"parse_errors={parse_errors}, missing_identity={missing_identity}"
                         )
 
+        if isinstance(rebuild_status, dict):
+            self._append_rebuild_detail_lines(lines, rebuild_status)
+
         return "\n".join(lines)
 
     def _integrity_qcolor(self, badge: str) -> QColor:
@@ -658,10 +709,127 @@ class ChecklistWindow(QDialog):
 
         if current_item and current_item.flags() & Qt.ItemIsEnabled:
             selected_path = current_item.data(Qt.UserRole)
-            self.selected_test = selected_path or current_item.text()
+            playback_source = self._current_playback_source()
+            if isinstance(selected_path, str) and playback_source == _PLAYBACK_SOURCE_REBUILD:
+                self.selected_test = f"{_REBUILD_SELECTION_PREFIX}{selected_path}"
+            else:
+                self.selected_test = selected_path or current_item.text()
+            self.selected_playback_source = playback_source
             self.playback_mode = True
-            log.info("Selected run for playback: %s", self.selected_test)
+            log.info("Selected run for playback: %s (source=%s)", self.selected_test, playback_source)
             self.accept()
+
+    def _load_rebuild_status(self, run_dir: Path) -> dict[str, object]:
+        try:
+            return get_rebuild_artifact_status(run_dir, project_root=self._project_root())
+        except Exception as exc:
+            log.error("Failed to load rebuild status for %s: %s", run_dir, exc)
+            return {
+                "has_rebuild_artifacts": False,
+                "status": "unknown",
+                "summary_message": f"Failed to inspect rebuild artifacts: {exc}",
+                "report_path": None,
+                "available_streams": [],
+            }
+
+    def _current_playback_source(self) -> str:
+        if hasattr(self, "playback_source_combo"):
+            value = self.playback_source_combo.currentData()
+            if isinstance(value, str) and value:
+                return value
+        return _PLAYBACK_SOURCE_NATIVE
+
+    def _apply_rebuild_status(self, rebuild_status: dict[str, object]) -> None:
+        if not hasattr(self, "playback_source_combo"):
+            return
+
+        self.playback_source_combo.blockSignals(True)
+        self.playback_source_combo.clear()
+        self.playback_source_combo.addItem("Native archive", _PLAYBACK_SOURCE_NATIVE)
+
+        has_rebuild = bool(rebuild_status.get("has_rebuild_artifacts"))
+        if has_rebuild:
+            self.playback_source_combo.addItem("Rebuild artifacts", _PLAYBACK_SOURCE_REBUILD)
+        self.playback_source_combo.setEnabled(True)
+        self.playback_source_combo.blockSignals(False)
+
+        self.prepare_rebuild_button.setEnabled(True)
+
+        summary_message = str(rebuild_status.get("summary_message") or "")
+        if has_rebuild:
+            self.rebuild_status_label.setText(f"Rebuild artifacts available. {summary_message}".strip())
+            if self.playback_source_combo.findData(_PLAYBACK_SOURCE_REBUILD) >= 0:
+                self.playback_source_combo.setCurrentIndex(0)
+        else:
+            self.rebuild_status_label.setText(summary_message or "Rebuild artifacts are not prepared for the selected run.")
+            self.playback_source_combo.setCurrentIndex(0)
+
+    def on_prepare_rebuild_clicked(self):
+        current_item = getattr(self, "test_list", None).currentItem() if hasattr(self, "test_list") else None
+        if current_item is None or not (current_item.flags() & Qt.ItemIsEnabled):
+            QMessageBox.information(self, "Prepare Rebuild", "Select a playback run first.")
+            return
+
+        run_dir_str = current_item.data(Qt.UserRole)
+        if not isinstance(run_dir_str, str):
+            QMessageBox.warning(self, "Prepare Rebuild", "Selected playback item is missing a valid run path.")
+            return
+
+        run_dir = Path(run_dir_str)
+        self.prepare_rebuild_button.setEnabled(False)
+        self.rebuild_status_label.setText("Preparing rebuild artifacts...")
+        QApplication.processEvents()
+
+        try:
+            report = publish_run_rebuild_artifacts(run_dir, project_root=self._project_root())
+        except Exception as exc:
+            log.error("Failed to prepare rebuild for %s: %s", run_dir, exc)
+            QMessageBox.critical(self, "Prepare Rebuild Failed", f"Failed to prepare rebuild artifacts.\n\nError: {exc}")
+            self.playback_rebuild_status_by_dir[run_dir_str] = {
+                "has_rebuild_artifacts": False,
+                "status": "failed",
+                "summary_message": f"Failed to prepare rebuild artifacts: {exc}",
+                "report_path": None,
+                "available_streams": [],
+            }
+        else:
+            self.playback_rebuild_status_by_dir[run_dir_str] = self._load_rebuild_status(run_dir)
+            if report.get("status") == "published":
+                QMessageBox.information(
+                    self,
+                    "Rebuild Ready",
+                    str(report.get("summary_message") or "Rebuild artifacts published."),
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Rebuild Failed",
+                    str(report.get("summary_message") or "Rebuild failed, please check data manually."),
+                )
+        finally:
+            self.prepare_rebuild_button.setEnabled(True)
+
+        rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {})
+        self._apply_rebuild_status(rebuild_status)
+        if bool(rebuild_status.get("has_rebuild_artifacts")):
+            rebuild_index = self.playback_source_combo.findData(_PLAYBACK_SOURCE_REBUILD)
+            if rebuild_index >= 0:
+                self.playback_source_combo.setCurrentIndex(rebuild_index)
+
+    def _append_rebuild_detail_lines(self, lines: list[str], rebuild_status: dict[str, object]) -> None:
+        status = str(rebuild_status.get("status") or "unknown")
+        summary_message = str(rebuild_status.get("summary_message") or "Rebuild artifacts unavailable.")
+        lines.append("")
+        lines.append(f"Rebuild status: {status}")
+        lines.append(f"Rebuild summary: {summary_message}")
+
+        report_path = rebuild_status.get("report_path")
+        if isinstance(report_path, str) and report_path:
+            lines.append(f"Rebuild report: {report_path}")
+
+        available_streams = rebuild_status.get("available_streams")
+        if isinstance(available_streams, list) and available_streams:
+            lines.append(f"Rebuild streams: {', '.join(str(item) for item in available_streams)}")
 
     def set_bus_status(self, success, message=""):
         """Update bus initialization status"""

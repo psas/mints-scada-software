@@ -31,6 +31,10 @@ from historymanager.paths import HISTORY_ROOT_DIRNAME  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+_PLAYBACK_SOURCE_NATIVE = "native"
+_PLAYBACK_SOURCE_REBUILD = "rebuild"
+_REBUILD_SELECTION_PREFIX = "rebuild::"
+
 
 def _project_root() -> Path:
     return PROJECT_ROOT
@@ -677,6 +681,18 @@ def _build_playback_timeline_label(event: dict[str, Any]) -> str | None:
     return None
 
 
+def _parse_playback_selection(selected_test: str) -> tuple[str, str]:
+    if isinstance(selected_test, str) and selected_test.startswith(_REBUILD_SELECTION_PREFIX):
+        return selected_test[len(_REBUILD_SELECTION_PREFIX):], _PLAYBACK_SOURCE_REBUILD
+    return selected_test, _PLAYBACK_SOURCE_NATIVE
+
+
+def _playback_artifact_paths(run_dir: Path, playback_source: str) -> tuple[Path, Path]:
+    if playback_source == _PLAYBACK_SOURCE_REBUILD:
+        return run_dir / "merged.rebuild.jsonl", run_dir / "snapshots_rebuild"
+    return run_dir / "merged.jsonl", run_dir / "snapshots"
+
+
 def _resolve_ignitionhistory_run_dir(selected_test: str) -> Path:
     candidate = Path(selected_test)
 
@@ -908,11 +924,11 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
 
 
 def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
-    run_dir = _resolve_ignitionhistory_run_dir(selected_test)
+    selected_run_ref, playback_source = _parse_playback_selection(selected_test)
+    run_dir = _resolve_ignitionhistory_run_dir(selected_run_ref)
 
     metadata_path = run_dir / "metadata.json"
-    merged_path = run_dir / "merged.jsonl"
-    snapshots_dir = run_dir / "snapshots"
+    merged_path, snapshots_dir = _playback_artifact_paths(run_dir, playback_source)
 
     if not metadata_path.exists():
         raise FileNotFoundError(f"Missing playback metadata file: {metadata_path}")
@@ -924,6 +940,7 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     setattr(window, "playback_history_dir", str(run_dir))
     setattr(window, "playback_run_id", metadata.get("run_id", run_dir.name))
     setattr(window, "playback_metadata", metadata)
+    setattr(window, "playback_source", playback_source)
     setattr(window, "playback_merged_events", merged_events)
     setattr(window, "playback_snapshot_files", [str(path) for path in snapshot_files])
 
@@ -977,6 +994,7 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     playback_payload = {
         "run_id": metadata.get("run_id", run_dir.name),
         "history_dir": str(run_dir),
+        "playback_source": playback_source,
         "metadata": dict(metadata),
         "merged_event_count": len(merged_events),
         "snapshot_count": len(snapshot_files),
@@ -1456,13 +1474,14 @@ def _run_live_window(args: argparse.Namespace) -> int:
 def _run_playback_window(args: argparse.Namespace) -> int:
     app = QApplication(sys.argv)
     consolehandler = _configure_logging(args.window_kind, "playback")
-    log.info("Starting playback window host for %s run=%s", args.window_kind, args.selected_test)
+    selected_run_ref, playback_source = _parse_playback_selection(args.selected_test)
+    log.info("Starting playback window host for %s run=%s source=%s", args.window_kind, selected_run_ref, playback_source)
 
     actual_window = _build_window(
         args.window_kind,
         consolehandler=consolehandler,
         playback_mode=True,
-        test_name=args.selected_test,
+        test_name=selected_run_ref,
     )
     facade = WindowHostFacade(window_kind=args.window_kind, window=actual_window)
     _apply_abort_relay_context(
@@ -1484,10 +1503,11 @@ def _run_playback_window(args: argparse.Namespace) -> int:
             _load_playback_device_proxies(facade)
             _load_ignitionhistory_playback(facade, args.selected_test)
         else:
-            run_dir = _resolve_ignitionhistory_run_dir(args.selected_test)
+            run_dir = _resolve_ignitionhistory_run_dir(selected_run_ref)
             metadata = _load_json_file(run_dir / "metadata.json")
             test_name = metadata.get("test_name") or metadata.get("run_id") or run_dir.name
-            actual_window.setWindowTitle(f"minTS SCADA - Playback - {test_name}")
+            source_suffix = " (Rebuild)" if playback_source == _PLAYBACK_SOURCE_REBUILD else ""
+            actual_window.setWindowTitle(f"minTS SCADA - Playback - {test_name}{source_suffix}")
     except Exception as exc:
         log.error("Failed to load playback window %s: %s", args.window_kind, exc)
         QMessageBox.critical(
