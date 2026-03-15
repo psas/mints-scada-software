@@ -16,11 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PyQt5.QtCore import QObject, QTimer, Qt  # noqa: E402
-from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PyQt5.QtCore import QObject, QTimer, Qt, QEvent  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 import settings  # noqa: E402
 from gui import QLoggingHandler  # noqa: E402
+from gui.abort_relay import send_abort_request  # noqa: E402
 from gui.backend_client import BackendClient  # noqa: E402
 from gui.controller_window import ControllerWindow  # noqa: E402
 from gui.device_catalog import BackendDeviceCatalog  # noqa: E402
@@ -927,6 +928,222 @@ def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback
     raise ValueError(f"Unsupported window kind: {window_kind}")
 
 
+
+class _AbortOverlayController(QObject):
+    def __init__(self, *, window: Any, button: QPushButton) -> None:
+        super().__init__(window)
+        self.window = window
+        self.button = button
+        window.installEventFilter(self)
+        self.reposition()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.window and event.type() in (
+            QEvent.Resize,
+            QEvent.Show,
+            QEvent.WindowStateChange,
+            QEvent.Move,
+        ):
+            self.reposition()
+        return False
+
+    def reposition(self) -> None:
+        margin = 18
+        width = max(120, self.button.sizeHint().width() + 18)
+        height = max(52, self.button.sizeHint().height() + 12)
+        self.button.resize(width, height)
+        target_x = max(margin, self.window.width() - width - margin)
+        target_y = margin
+        self.button.move(target_x, target_y)
+        self.button.raise_()
+
+
+def _abort_result_ok(reply: dict[str, Any]) -> bool:
+    if not isinstance(reply, dict):
+        return False
+    payload = reply.get("payload", {})
+    return isinstance(payload, dict) and bool(payload.get("ok"))
+
+
+def _abort_failure_text(reply: dict[str, Any] | None) -> str:
+    if not isinstance(reply, dict):
+        return "AbortRelay returned an invalid response."
+
+    payload = reply.get("payload", {})
+    if not isinstance(payload, dict):
+        return f"AbortRelay response payload is invalid: {reply!r}"
+
+    command_response = payload.get("command_response")
+    if isinstance(command_response, dict):
+        command_payload = command_response.get("payload", {})
+        if isinstance(command_payload, dict):
+            message = command_payload.get("message") or command_payload.get("error") or command_payload.get("reason")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+
+    operator_response = payload.get("operator_action_response")
+    if isinstance(operator_response, dict):
+        operator_payload = operator_response.get("payload", {})
+        if isinstance(operator_payload, dict):
+            message = operator_payload.get("message") or operator_payload.get("error")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+
+    return "Backend did not accept the abort request."
+
+
+def _make_abort_trigger(
+    *,
+    actual_window: Any,
+    facade: Any,
+    mode: str,
+    window_kind: str,
+) -> Any:
+    def trigger_abort() -> None:
+        relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
+        relay_available = bool(getattr(actual_window, "abort_relay_available", False))
+
+        if not relay_available or not relay_socket:
+            QMessageBox.critical(
+                actual_window,
+                "Abort Unavailable",
+                "AbortRelay is not available for this window.",
+            )
+            return
+
+        window_role = _workspace_role(mode, window_kind)
+
+        if hasattr(actual_window, "set_status"):
+            try:
+                actual_window.set_status("abort")
+            except Exception:
+                pass
+        if hasattr(actual_window, "set_script_state"):
+            try:
+                actual_window.set_script_state("pause")
+            except Exception:
+                pass
+
+        command_payload = {
+            "command_name": "abort",
+            "device_id": None,
+            "command_args": [],
+            "command_kwargs": {},
+        }
+        operator_action = {
+            "event_kind": "operator_action",
+            "action": "abort_pressed",
+            "source": "gui_abort_button",
+            "source_window_role": window_role,
+            "source_window_kind": window_kind,
+            "source_mode": mode,
+        }
+
+        try:
+            reply = send_abort_request(
+                relay_socket=relay_socket,
+                source_window_role=window_role,
+                source_window_kind=window_kind,
+                source_mode=mode,
+                command_payload=command_payload,
+                operator_action=operator_action,
+                timeout_s=4.0,
+            )
+        except Exception as exc:
+            log.exception("AbortRelay request failed for %s", window_role)
+            QMessageBox.critical(
+                actual_window,
+                "Abort Failed",
+                f"AbortRelay request failed.\n\nError: {exc}",
+            )
+            return
+
+        setattr(actual_window, "last_abort_relay_reply", dict(reply))
+        setattr(facade, "last_abort_relay_reply", dict(reply))
+
+        if _abort_result_ok(reply):
+            log.warning("Abort accepted via AbortRelay for %s", window_role)
+            return
+
+        failure_text = _abort_failure_text(reply)
+        log.error("Abort failed via AbortRelay for %s: %s", window_role, failure_text)
+        QMessageBox.critical(
+            actual_window,
+            "Abort Failed",
+            failure_text,
+        )
+
+    return trigger_abort
+
+
+def _wire_controller_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
+    button = getattr(actual_window, "btn_abort", None)
+    if not isinstance(button, QPushButton):
+        return False
+
+    try:
+        button.clicked.disconnect()
+    except Exception:
+        pass
+
+    button.clicked.connect(trigger_abort)
+    setattr(actual_window, "trigger_abort_via_relay", trigger_abort)
+    button.setToolTip("Send abort through AbortRelay and backend command dispatch")
+    return True
+
+
+def _install_scada_abort_overlay(*, actual_window: Any, trigger_abort: Any) -> None:
+    button = QPushButton("ABORT", actual_window)
+    button.setObjectName("abortRelayOverlayButton")
+    button.setCursor(Qt.PointingHandCursor)
+    button.setToolTip("Send abort through AbortRelay and backend command dispatch")
+    button.setStyleSheet(
+        """
+        QPushButton#abortRelayOverlayButton {
+            background-color: #b71c1c;
+            color: white;
+            border: 2px solid #ff8a80;
+            border-radius: 10px;
+            font-size: 20px;
+            font-weight: 700;
+            padding: 10px 18px;
+        }
+        QPushButton#abortRelayOverlayButton:hover {
+            background-color: #d32f2f;
+        }
+        QPushButton#abortRelayOverlayButton:pressed {
+            background-color: #7f0000;
+        }
+        """
+    )
+    button.clicked.connect(trigger_abort)
+    button.show()
+    controller = _AbortOverlayController(window=actual_window, button=button)
+    setattr(actual_window, "_abort_overlay_button", button)
+    setattr(actual_window, "_abort_overlay_controller", controller)
+    setattr(actual_window, "trigger_abort_via_relay", trigger_abort)
+
+
+def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_kind: str) -> None:
+    relay_available = bool(getattr(actual_window, "abort_relay_available", False))
+    relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
+    if mode != "live" or not relay_available or not relay_socket:
+        return
+
+    trigger_abort = _make_abort_trigger(
+        actual_window=actual_window,
+        facade=facade,
+        mode=mode,
+        window_kind=window_kind,
+    )
+
+    if window_kind == "controller":
+        if _wire_controller_abort_button(actual_window=actual_window, trigger_abort=trigger_abort):
+            return
+
+    _install_scada_abort_overlay(actual_window=actual_window, trigger_abort=trigger_abort)
+
+
 def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_socket: str | None) -> None:
     socket_path = abort_relay_socket or ""
     available = bool(socket_path)
@@ -958,6 +1175,12 @@ def _run_live_window(args: argparse.Namespace) -> int:
         actual_window=actual_window,
         facade=facade,
         abort_relay_socket=args.abort_relay_socket,
+    )
+    _setup_abort_controls(
+        actual_window=actual_window,
+        facade=facade,
+        mode="live",
+        window_kind=args.window_kind,
     )
 
     _setup_workspace_support(
