@@ -622,6 +622,7 @@ class BackendService:
         structured_event = self.structured_builder.build_structured_telemetry_event(
             meta=meta,
             reduction=reduction,
+            first_order_event=raw_event,
         )
 
         if self.history_manager.is_running:

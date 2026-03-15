@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -7,18 +8,36 @@ import queue
 import re
 import threading
 import time
+from collections.abc import Mapping as MappingABC
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .models import (
     ActiveRun,
+    FIRST_ORDER_EVENT_STREAMS,
     RAW_STREAM_FILENAMES,
     STRUCTURED_STREAM_FILENAMES,
     WriterStatsState,
 )
 from .paths import build_run_paths, ensure_base_dirs
 from .writers import WriterRuntime, create_raw_writer_runtime
+
+SHARED_EVENT_IDENTITY_FIELDS = (
+    "run_id",
+    "stream",
+    "recorded_at",
+    "event_uid",
+    "stream_seq",
+    "canonical_hash",
+)
+
+_CANONICAL_HASH_EXCLUDED_FIELDS = frozenset(
+    {
+        *SHARED_EVENT_IDENTITY_FIELDS,
+        "structured_at",
+    }
+)
 
 
 def utc_now() -> datetime:
@@ -27,20 +46,35 @@ def utc_now() -> datetime:
 
 def isoformat_z(dt: datetime | None = None) -> str:
     value = dt or utc_now()
-    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-
+    temp_path = path.with_name(f".{path.name}.tmp")
     with temp_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=True)
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+    os.replace(temp_path, path)
 
-    temp_path.replace(path)
+
+def _canonicalize_for_hash(value: Any) -> Any:
+    if isinstance(value, MappingABC):
+        return {
+            str(key): _canonicalize_for_hash(inner_value)
+            for key, inner_value in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, list):
+        return [_canonicalize_for_hash(item) for item in value]
+    if isinstance(value, tuple):
+        return [_canonicalize_for_hash(item) for item in value]
+    return value
 
 
 def _touch_file(path: Path) -> None:
@@ -118,7 +152,9 @@ class HistoryManager:
     ) -> str:
         with self._lock:
             if self.is_running or self.current_run is not None:
-                raise RuntimeError("HistoryManager.start_run() called while another run is active")
+                raise RuntimeError(
+                    "HistoryManager.start_run() called while another run is active"
+                )
 
             resolved_run_id = run_id or self._make_default_run_id(test_name)
             run_paths = build_run_paths(resolved_run_id, self.base_dirs.project_root)
@@ -156,7 +192,10 @@ class HistoryManager:
             )
             history_stats = WriterStatsState(
                 side_name="structured",
-                stream_counts={**{name: 0 for name in STRUCTURED_STREAM_FILENAMES}, "merged": 0},
+                stream_counts={
+                    **{name: 0 for name in STRUCTURED_STREAM_FILENAMES},
+                    "merged": 0,
+                },
             )
 
             self._write_initial_files(
@@ -176,6 +215,9 @@ class HistoryManager:
                 raw_stats=raw_stats,
                 rawbak_stats=rawbak_stats,
                 history_stats=history_stats,
+                stream_sequence_counters={
+                    stream_name: 0 for stream_name in FIRST_ORDER_EVENT_STREAMS
+                },
             )
 
             self.current_run = run
@@ -230,10 +272,13 @@ class HistoryManager:
             self._validate_raw_stream(stream_name)
             self._drain_writer_status_queues(run)
 
-            payload = dict(event)
-            payload.setdefault("run_id", run.run_id)
-            payload.setdefault("recorded_at", isoformat_z())
-            payload.setdefault("stream", stream_name)
+            payload = self._materialize_first_order_event_payload(
+                run, stream_name, event
+            )
+
+            if isinstance(event, dict):
+                event.clear()
+                event.update(payload)
 
             raw_ok = self._enqueue_raw_event(
                 runtime=self._raw_writer,
@@ -267,16 +312,20 @@ class HistoryManager:
             run = self._require_active_run()
             self._validate_structured_stream(stream_name)
 
-            payload = dict(event)
-            payload.setdefault("run_id", run.run_id)
-            payload.setdefault("recorded_at", isoformat_z())
-            payload.setdefault("stream", stream_name)
+            payload = self._materialize_first_order_event_payload(
+                run, stream_name, event
+            )
+
+            if isinstance(event, dict):
+                event.clear()
+                event.update(payload)
 
             _append_jsonl(
                 run.paths.structured_stream_paths[stream_name],
                 payload,
                 fsync=self.fsync_structured_writes,
             )
+
             run.history_stats.bump_stream(stream_name)
             run.history_stats.mark_flush(payload["recorded_at"])
 
@@ -302,10 +351,92 @@ class HistoryManager:
             payload.setdefault("recorded_at", isoformat_z())
 
             atomic_write_json(path, payload)
+
             run.history_stats.snapshots_written += 1
             run.history_stats.mark_flush(payload["recorded_at"])
             self._write_writer_stats_triplet(run)
+
             return path
+
+    def _materialize_first_order_event_payload(
+        self,
+        run: ActiveRun,
+        stream_name: str,
+        event: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(event)
+
+        payload.setdefault("run_id", run.run_id)
+        payload.setdefault("stream", stream_name)
+
+        recorded_at = payload.get("recorded_at")
+        if not isinstance(recorded_at, str) or not recorded_at.strip():
+            payload["recorded_at"] = isoformat_z()
+        else:
+            payload["recorded_at"] = recorded_at.strip()
+
+        stream_seq = payload.get("stream_seq")
+        if stream_seq is None:
+            payload["stream_seq"] = self._next_stream_seq(run, stream_name)
+        else:
+            if not isinstance(stream_seq, int) or stream_seq < 1:
+                raise ValueError(
+                    f"Event field 'stream_seq' must be a positive integer when provided; got {stream_seq!r}"
+                )
+            payload["stream_seq"] = int(stream_seq)
+            self._ensure_stream_counter_floor(run, stream_name, payload["stream_seq"])
+
+        event_uid = payload.get("event_uid")
+        if not isinstance(event_uid, str) or not event_uid.strip():
+            payload["event_uid"] = self._build_event_uid(
+                run_id=run.run_id,
+                stream_name=stream_name,
+                stream_seq=payload["stream_seq"],
+            )
+        else:
+            payload["event_uid"] = event_uid.strip()
+
+        canonical_hash = payload.get("canonical_hash")
+        if not isinstance(canonical_hash, str) or not canonical_hash.strip():
+            payload["canonical_hash"] = self._compute_canonical_hash(payload)
+        else:
+            payload["canonical_hash"] = canonical_hash.strip()
+
+        return payload
+
+    def _next_stream_seq(self, run: ActiveRun, stream_name: str) -> int:
+        if stream_name not in run.stream_sequence_counters:
+            run.stream_sequence_counters[stream_name] = 0
+
+        run.stream_sequence_counters[stream_name] += 1
+        return run.stream_sequence_counters[stream_name]
+
+    def _ensure_stream_counter_floor(
+        self, run: ActiveRun, stream_name: str, seq_value: int
+    ) -> None:
+        current = run.stream_sequence_counters.get(stream_name, 0)
+        if seq_value > current:
+            run.stream_sequence_counters[stream_name] = seq_value
+
+    def _build_event_uid(
+        self, *, run_id: str, stream_name: str, stream_seq: int
+    ) -> str:
+        return f"{run_id}:{stream_name}:{stream_seq:08d}"
+
+    def _compute_canonical_hash(self, payload: Mapping[str, Any]) -> str:
+        hash_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in _CANONICAL_HASH_EXCLUDED_FIELDS
+        }
+        canonical_payload = _canonicalize_for_hash(hash_payload)
+        serialized = json.dumps(
+            canonical_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _make_default_run_id(self, test_name: str) -> str:
         timestamp = utc_now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")
@@ -412,8 +543,12 @@ class HistoryManager:
 
     def _write_writer_stats_triplet(self, run: ActiveRun) -> None:
         atomic_write_json(run.paths.raw_writer_stats_path, run.raw_stats.to_dict())
-        atomic_write_json(run.paths.rawbak_writer_stats_path, run.rawbak_stats.to_dict())
-        atomic_write_json(run.paths.history_writer_stats_path, run.history_stats.to_dict())
+        atomic_write_json(
+            run.paths.rawbak_writer_stats_path, run.rawbak_stats.to_dict()
+        )
+        atomic_write_json(
+            run.paths.history_writer_stats_path, run.history_stats.to_dict()
+        )
 
     def _start_raw_writers(self, run: ActiveRun) -> None:
         self._raw_writer = create_raw_writer_runtime(
@@ -428,8 +563,7 @@ class HistoryManager:
                 "type": "start_run",
                 "run_id": run.run_id,
                 "stream_paths": {
-                    name: str(path)
-                    for name, path in run.paths.raw_stream_paths.items()
+                    name: str(path) for name, path in run.paths.raw_stream_paths.items()
                 },
             }
         )

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 RAW_STREAM_FILENAMES: dict[str, str] = {
     "telemetry_in": "telemetry_in.raw.jsonl",
     "command_out": "command_out.raw.jsonl",
@@ -19,9 +18,10 @@ STRUCTURED_STREAM_FILENAMES: dict[str, str] = {
     "system_event": "system_event.jsonl",
 }
 
+FIRST_ORDER_EVENT_STREAMS: tuple[str, ...] = tuple(RAW_STREAM_FILENAMES.keys())
+
 MERGED_FILENAME = "merged.jsonl"
 SNAPSHOTS_DIRNAME = "snapshots"
-
 METADATA_FILENAME = "metadata.json"
 WRITER_STATS_FILENAME = "writer_stats.json"
 COMPLETE_FILENAME = "complete.json"
@@ -173,3 +173,4 @@ class ActiveRun:
     raw_stats: WriterStatsState
     rawbak_stats: WriterStatsState
     history_stats: WriterStatsState
+    stream_sequence_counters: dict[str, int] = field(default_factory=dict)

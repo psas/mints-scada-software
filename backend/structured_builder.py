@@ -1,8 +1,29 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from historymanager.manager import isoformat_z
+
+_SHARED_EVENT_IDENTITY_FIELDS = (
+    "run_id",
+    "stream",
+    "recorded_at",
+    "event_uid",
+    "stream_seq",
+    "canonical_hash",
+)
+
+
+def _copy_shared_event_identity(first_order_event: Mapping[str, Any] | None) -> dict[str, Any]:
+    if first_order_event is None:
+        return {}
+
+    copied: dict[str, Any] = {}
+    for field_name in _SHARED_EVENT_IDENTITY_FIELDS:
+        value = first_order_event.get(field_name)
+        if value is not None:
+            copied[field_name] = value
+    return copied
 
 
 class StructuredEventBuilder:
@@ -42,8 +63,10 @@ class StructuredEventBuilder:
         *,
         meta: dict[str, Any],
         reduction: dict[str, Any],
+        first_order_event: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
+            **_copy_shared_event_identity(first_order_event),
             "event_kind": "telemetry_in",
             "structured_at": isoformat_z(),
             "device_id": meta["id"],
