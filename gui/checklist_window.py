@@ -17,10 +17,11 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QColor, QBrush
 import qdarkstyle
 import logging
 
+from historymanager.integrity import scan_run_integrity
 from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 """
@@ -29,6 +30,18 @@ Performs pre-flight checks before launching main application
 """
 
 log = logging.getLogger("checklist")
+
+_INTEGRITY_BADGE_STYLES: dict[str, tuple[str, str, str]] = {
+    "green": ("All data matches natively", "#4CAF50", "#16301b"),
+    "yellow": ("Missing source, but rest data matches", "#FFC107", "#3a3211"),
+    "red": ("Data does not match", "#F44336", "#3a1a1a"),
+}
+
+_INTEGRITY_ITEM_PREFIX: dict[str, str] = {
+    "green": "[OK]",
+    "yellow": "[CHECK]",
+    "red": "[MISMATCH]",
+}
 
 
 class ChecklistItem(QWidget):
@@ -112,6 +125,8 @@ class ChecklistWindow(QDialog):
         self.selected_test = None
         self.playback_mode = False
         self.live_run_metadata: dict[str, str] | None = None
+        self.playback_integrity_reports: dict[str, dict[str, object]] = {}
+        self.playback_run_summaries_by_dir: dict[str, object] = {}
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
         self.setGeometry(100, 100, 640, 460)
@@ -336,7 +351,9 @@ class ChecklistWindow(QDialog):
         title.setAlignment(Qt.AlignCenter)
         playback_layout.addWidget(title)
 
-        subtitle = QLabel(f"Choose a run from {HISTORY_ROOT_DIRNAME}")
+        subtitle = QLabel(
+            f"Choose a run from {HISTORY_ROOT_DIRNAME}. Integrity is checked automatically."
+        )
         subtitle.setFont(QFont("Arial", 10))
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
@@ -345,7 +362,30 @@ class ChecklistWindow(QDialog):
         self.test_list = QListWidget()
         self.test_list.setFont(QFont("Arial", 11))
         self.test_list.itemDoubleClicked.connect(self.on_test_selected)
+        self.test_list.currentItemChanged.connect(self.on_playback_item_changed)
         playback_layout.addWidget(self.test_list)
+
+        integrity_panel = QWidget()
+        integrity_layout = QVBoxLayout(integrity_panel)
+        integrity_layout.setContentsMargins(0, 8, 0, 0)
+
+        self.integrity_badge_label = QLabel("Integrity status will appear here.")
+        self.integrity_badge_label.setAlignment(Qt.AlignCenter)
+        self.integrity_badge_label.setWordWrap(True)
+        self.integrity_badge_label.setStyleSheet(
+            "padding: 8px; border-radius: 6px; color: #ddd; background-color: #1f1f1f;"
+        )
+        integrity_layout.addWidget(self.integrity_badge_label)
+
+        self.integrity_details_box = QPlainTextEdit()
+        self.integrity_details_box.setReadOnly(True)
+        self.integrity_details_box.setMinimumHeight(140)
+        self.integrity_details_box.setPlaceholderText(
+            "Select a run to view archive integrity details."
+        )
+        integrity_layout.addWidget(self.integrity_details_box)
+
+        playback_layout.addWidget(integrity_panel)
 
         self._load_available_tests()
 
@@ -372,6 +412,9 @@ class ChecklistWindow(QDialog):
 
         self.main_layout.addWidget(self.playback_widget)
         self.playback_widget.show()
+
+        if self.test_list.count() > 0 and self.test_list.item(0).flags() & Qt.ItemIsEnabled:
+            self.test_list.setCurrentRow(0)
 
     def show_checklist(self):
         """Switch back to the main checklist view."""
@@ -426,6 +469,9 @@ class ChecklistWindow(QDialog):
     def _load_available_tests(self):
         """Load available playback runs from ignitionhistory folder"""
         self.test_list.clear()
+        self.playback_integrity_reports.clear()
+        self.playback_run_summaries_by_dir.clear()
+
         history_path = self._ignitionhistory_path()
 
         if not history_path.exists():
@@ -433,6 +479,7 @@ class ChecklistWindow(QDialog):
             item.setFlags(Qt.NoItemFlags)
             self.test_list.addItem(item)
             log.info("%s folder does not exist", history_path)
+            self._set_integrity_placeholder("No playback runs available.")
             return
 
         try:
@@ -443,14 +490,25 @@ class ChecklistWindow(QDialog):
                 item.setFlags(Qt.NoItemFlags)
                 self.test_list.addItem(item)
                 log.info("No run directories with metadata.json found in %s", history_path)
+                self._set_integrity_placeholder("No playback runs available.")
                 return
 
             for summary in run_summaries:
+                run_dir_str = str(summary.run_dir)
+                self.playback_run_summaries_by_dir[run_dir_str] = summary
+
+                report = self._scan_integrity_for_run(summary.run_dir)
+                self.playback_integrity_reports[run_dir_str] = report
+
+                badge = str(report.get("badge") or "red")
+                prefix = _INTEGRITY_ITEM_PREFIX.get(badge, "[CHECK]")
                 item = QListWidgetItem(
-                    f"{summary.display_title}\n{summary.display_subtitle}"
+                    f"{prefix} {summary.display_title}\n{summary.display_subtitle}"
                 )
-                item.setData(Qt.UserRole, str(summary.run_dir))
-                item.setToolTip(summary.tooltip_text)
+                item.setData(Qt.UserRole, run_dir_str)
+                item.setData(Qt.UserRole + 1, report)
+                item.setToolTip(self._build_list_item_tooltip(summary.tooltip_text, report))
+                item.setForeground(QBrush(self._integrity_qcolor(badge)))
                 self.test_list.addItem(item)
 
             log.info("Found %d playback runs in %s", len(run_summaries), history_path)
@@ -460,6 +518,139 @@ class ChecklistWindow(QDialog):
             item = QListWidgetItem(f"Error loading playback runs: {e}")
             item.setFlags(Qt.NoItemFlags)
             self.test_list.addItem(item)
+            self._set_integrity_placeholder(f"Error loading playback runs: {e}")
+
+
+    def on_playback_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None = None):
+        del previous
+        if current is None or not (current.flags() & Qt.ItemIsEnabled):
+            self._set_integrity_placeholder("Select a run to view archive integrity details.")
+            return
+
+        report = current.data(Qt.UserRole + 1)
+        if not isinstance(report, dict):
+            run_dir_str = current.data(Qt.UserRole)
+            if isinstance(run_dir_str, str):
+                report = self.playback_integrity_reports.get(run_dir_str)
+        if not isinstance(report, dict):
+            self._set_integrity_placeholder("Integrity details are unavailable for this run.")
+            return
+
+        self._apply_integrity_report(report)
+
+    def _scan_integrity_for_run(self, run_dir: Path) -> dict[str, object]:
+        try:
+            report = scan_run_integrity(run_dir, project_root=self._project_root())
+            return report
+        except Exception as exc:
+            log.error("Integrity scan failed for %s: %s", run_dir, exc)
+            return {
+                "overall_status": "mismatch",
+                "badge": "red",
+                "summary_message": f"Integrity scan failed: {exc}",
+                "stream_reports": {},
+                "source_presence": {
+                    "raw": False,
+                    "rawbak": False,
+                    "history": False,
+                },
+            }
+
+    def _apply_integrity_report(self, report: dict[str, object]) -> None:
+        badge = str(report.get("badge") or "red")
+        summary_message = str(report.get("summary_message") or "Integrity result unavailable.")
+        badge_text, fg, bg = _INTEGRITY_BADGE_STYLES.get(
+            badge,
+            ("Integrity status unavailable", "#F44336", "#3a1a1a"),
+        )
+        self.integrity_badge_label.setText(f"{badge_text}\n{summary_message}")
+        self.integrity_badge_label.setStyleSheet(
+            f"padding: 8px; border-radius: 6px; color: {fg}; background-color: {bg}; font-weight: bold;"
+        )
+        self.integrity_details_box.setPlainText(self._build_integrity_detail_text(report))
+
+    def _set_integrity_placeholder(self, text: str) -> None:
+        if hasattr(self, "integrity_badge_label"):
+            self.integrity_badge_label.setText(text)
+            self.integrity_badge_label.setStyleSheet(
+                "padding: 8px; border-radius: 6px; color: #ddd; background-color: #1f1f1f;"
+            )
+        if hasattr(self, "integrity_details_box"):
+            self.integrity_details_box.setPlainText("")
+
+    def _build_list_item_tooltip(self, base_tooltip: str, report: dict[str, object]) -> str:
+        parts = [base_tooltip]
+        summary_message = report.get("summary_message")
+        if isinstance(summary_message, str) and summary_message.strip():
+            parts.extend(["", f"Integrity: {summary_message.strip()}"])
+        return "\n".join(parts)
+
+    def _build_integrity_detail_text(self, report: dict[str, object]) -> str:
+        lines: list[str] = []
+
+        overall_status = str(report.get("overall_status") or "unknown")
+        summary_message = str(report.get("summary_message") or "Integrity result unavailable.")
+        lines.append(f"Overall status: {overall_status}")
+        lines.append(f"Summary: {summary_message}")
+
+        source_presence = report.get("source_presence")
+        if isinstance(source_presence, dict):
+            present = [name for name, value in source_presence.items() if value]
+            missing = [name for name, value in source_presence.items() if not value]
+            lines.append(f"Sources present: {', '.join(present) if present else 'none'}")
+            if missing:
+                lines.append(f"Sources missing: {', '.join(missing)}")
+
+        stream_reports = report.get("stream_reports")
+        if isinstance(stream_reports, dict):
+            for stream_name in ("telemetry_in", "command_out", "operator_action", "system_event"):
+                stream_report = stream_reports.get(stream_name)
+                if not isinstance(stream_report, dict):
+                    continue
+
+                lines.append("")
+                lines.append(f"[{stream_name}]")
+                lines.append(f"Status: {stream_report.get('status', 'unknown')}")
+                lines.append(f"Message: {stream_report.get('message', '')}")
+
+                missing_map = stream_report.get("missing_event_uid_sample_by_source")
+                if isinstance(missing_map, dict) and missing_map:
+                    missing_sources = ", ".join(sorted(missing_map.keys()))
+                    lines.append(f"Missing event coverage in: {missing_sources}")
+
+                if stream_report.get("hash_mismatch_count"):
+                    lines.append(
+                        f"Hash mismatches: {stream_report.get('hash_mismatch_count')}"
+                    )
+
+                if stream_report.get("stream_seq_mismatch_count"):
+                    lines.append(
+                        f"Sequence mismatches: {stream_report.get('stream_seq_mismatch_count')}"
+                    )
+
+                source_summaries = stream_report.get("source_summaries")
+                if isinstance(source_summaries, dict):
+                    for source_name in ("raw", "rawbak", "history"):
+                        source_summary = source_summaries.get(source_name)
+                        if not isinstance(source_summary, dict):
+                            continue
+                        present = source_summary.get("present", False)
+                        count = source_summary.get("count", 0)
+                        parse_errors = source_summary.get("parse_error_count", 0)
+                        missing_identity = source_summary.get("missing_identity_count", 0)
+                        lines.append(
+                            f"  - {source_name}: present={present}, count={count}, "
+                            f"parse_errors={parse_errors}, missing_identity={missing_identity}"
+                        )
+
+        return "\n".join(lines)
+
+    def _integrity_qcolor(self, badge: str) -> QColor:
+        if badge == "green":
+            return QColor("#4CAF50")
+        if badge == "yellow":
+            return QColor("#FFC107")
+        return QColor("#F44336")
 
     def on_test_selected(self):
         """Handle playback run selection"""
