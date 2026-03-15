@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from pathlib import Path
@@ -12,7 +13,6 @@ from PyQt5.QtCore import QObject, pyqtSignal
 class BackendClient(QObject):
     connected = pyqtSignal()
     disconnected = pyqtSignal()
-
     hello_ack_received = pyqtSignal(dict)
     backend_status_received = pyqtSignal(dict)
     state_snapshot_received = pyqtSignal(dict)
@@ -24,7 +24,6 @@ class BackendClient(QObject):
     command_result_received = pyqtSignal(dict)
     script_status_received = pyqtSignal(dict)
     error_received = pyqtSignal(dict)
-
     raw_message_received = pyqtSignal(str, dict)
 
     def __init__(self, *, socket_path: str | Path) -> None:
@@ -38,20 +37,38 @@ class BackendClient(QObject):
         self._reader_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._is_connected = False
+        self._last_hello_payload: dict[str, Any] | None = None
 
     @property
     def is_connected(self) -> bool:
         with self._lock:
             return self._is_connected
 
-    def connect_to_backend(self, *, client_name: str = "user-gui") -> None:
+    @property
+    def last_hello_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._last_hello_payload) if self._last_hello_payload is not None else None
+
+    def connect_to_backend(
+        self,
+        *,
+        client_name: str = "user-gui",
+        logical_client_id: str | None = None,
+        window_role: str | None = None,
+        session_id: str | None = None,
+        mode: str | None = None,
+        window_kind: str | None = None,
+        pid: int | None = None,
+        launcher_pid: int | None = None,
+        selected_test: str | None = None,
+        hello_extra: Mapping[str, Any] | None = None,
+    ) -> None:
         with self._lock:
             if self._is_connected:
                 return
 
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.connect(str(self.socket_path))
-
             reader = sock.makefile("r", encoding="utf-8")
             writer = sock.makefile("w", encoding="utf-8")
 
@@ -68,13 +85,22 @@ class BackendClient(QObject):
             )
             self._reader_thread.start()
 
+            hello_payload = self._build_hello_payload(
+                client_name=client_name,
+                logical_client_id=logical_client_id,
+                window_role=window_role,
+                session_id=session_id,
+                mode=mode,
+                window_kind=window_kind,
+                pid=pid,
+                launcher_pid=launcher_pid,
+                selected_test=selected_test,
+                hello_extra=hello_extra,
+            )
+            self._last_hello_payload = dict(hello_payload)
+
         self.connected.emit()
-        self.send_message(
-            "hello",
-            {
-                "client_name": client_name,
-            },
-        )
+        self.send_message("hello", hello_payload)
 
     def disconnect_from_backend(self) -> None:
         self._stop_event.set()
@@ -90,7 +116,6 @@ class BackendClient(QObject):
                 "type": message_type,
                 "payload": dict(payload or {}),
             }
-
             self._writer.write(json.dumps(message, ensure_ascii=False, sort_keys=False))
             self._writer.write("\n")
             self._writer.flush()
@@ -114,12 +139,7 @@ class BackendClient(QObject):
         self.send_message("start_run", payload)
 
     def finish_run(self, *, reason: str = "operator_stop") -> None:
-        self.send_message(
-            "finish_run",
-            {
-                "reason": reason,
-            },
-        )
+        self.send_message("finish_run", {"reason": reason})
 
     def ingest_mock_telemetry(self, payload: Mapping[str, Any]) -> None:
         self.send_message("ingest_mock_telemetry", payload)
@@ -134,12 +154,48 @@ class BackendClient(QObject):
         self.send_message("start_script", payload)
 
     def stop_script(self, *, reason: str = "operator_stop") -> None:
-        self.send_message(
-            "stop_script",
-            {
-                "reason": reason,
-            },
-        )
+        self.send_message("stop_script", {"reason": reason})
+
+    def _build_hello_payload(
+        self,
+        *,
+        client_name: str,
+        logical_client_id: str | None,
+        window_role: str | None,
+        session_id: str | None,
+        mode: str | None,
+        window_kind: str | None,
+        pid: int | None,
+        launcher_pid: int | None,
+        selected_test: str | None,
+        hello_extra: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "client_name": client_name,
+            "pid": int(os.getpid() if pid is None else pid),
+        }
+
+        if logical_client_id:
+            payload["logical_client_id"] = logical_client_id
+        if window_role:
+            payload["window_role"] = window_role
+        if session_id:
+            payload["session_id"] = session_id
+        if mode:
+            payload["mode"] = mode
+        if window_kind:
+            payload["window_kind"] = window_kind
+        if launcher_pid is not None:
+            payload["launcher_pid"] = int(launcher_pid)
+        if selected_test:
+            payload["selected_test"] = selected_test
+
+        if hello_extra is not None:
+            for key, value in hello_extra.items():
+                if key not in payload:
+                    payload[key] = value
+
+        return payload
 
     def _reader_loop(self) -> None:
         try:
@@ -179,6 +235,7 @@ class BackendClient(QObject):
 
                 message_type = decoded.get("type")
                 payload = decoded.get("payload", {})
+
                 if not isinstance(message_type, str):
                     self.error_received.emit(
                         {
@@ -188,12 +245,12 @@ class BackendClient(QObject):
                         }
                     )
                     continue
+
                 if not isinstance(payload, dict):
                     payload = {}
 
                 self.raw_message_received.emit(message_type, dict(payload))
                 self._dispatch_message(message_type, dict(payload))
-
         except Exception as exc:
             self.error_received.emit(
                 {
@@ -239,27 +296,26 @@ class BackendClient(QObject):
             self._reader = None
             self._socket = None
 
-            try:
-                if writer is not None:
-                    writer.close()
-            except Exception:
-                pass
+        try:
+            if writer is not None:
+                writer.close()
+        except Exception:
+            pass
 
-            try:
-                if reader is not None:
-                    reader.close()
-            except Exception:
-                pass
+        try:
+            if reader is not None:
+                reader.close()
+        except Exception:
+            pass
 
-            try:
-                if sock is not None:
-                    sock.close()
-            except Exception:
-                pass
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
 
     def _emit_disconnected_once(self) -> None:
         should_emit = False
-
         with self._lock:
             if self._is_connected:
                 self._is_connected = False

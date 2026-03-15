@@ -89,6 +89,7 @@ class BackendService:
 
         self._lock = threading.RLock()
         self._connected_clients: set[str] = set()
+        self._client_sessions_by_connection_id: dict[str, dict[str, Any]] = {}
 
         self.supported_messages = [
             "hello",
@@ -150,30 +151,64 @@ class BackendService:
         self.health.record_system_event(
             "gui_client_connected",
             severity="info",
-            client_id=client_id,
+            connection_id=client_id,
             connected_clients=connected_count,
         )
 
     def on_client_disconnected(self, client_id: str) -> None:
         with self._lock:
             self._connected_clients.discard(client_id)
+            session = self._client_sessions_by_connection_id.pop(client_id, None)
             connected_count = len(self._connected_clients)
             self.state_store.set_connected_clients(connected_count)
+
+        disconnect_payload: dict[str, Any] = {
+            "connection_id": client_id,
+            "connected_clients": connected_count,
+        }
+        if session is not None:
+            disconnect_payload.update(
+                {
+                    "logical_client_id": session.get("logical_client_id"),
+                    "window_role": session.get("window_role"),
+                    "session_id": session.get("session_id"),
+                    "mode": session.get("mode"),
+                    "window_kind": session.get("window_kind"),
+                    "pid": session.get("pid"),
+                    "launcher_pid": session.get("launcher_pid"),
+                }
+            )
 
         self.health.record_system_event(
             "gui_client_disconnected",
             severity="info",
-            client_id=client_id,
-            connected_clients=connected_count,
+            **disconnect_payload,
         )
 
     def handle_message(self, client_id: str, message: IPCMessage) -> Iterable[IPCMessage]:
         if message.type == "hello":
+            client_session = self._register_client_hello(client_id, message.payload)
+
+            self.health.record_system_event(
+                "gui_client_hello",
+                severity="info",
+                connection_id=client_id,
+                logical_client_id=client_session.get("logical_client_id"),
+                window_role=client_session.get("window_role"),
+                session_id=client_session.get("session_id"),
+                mode=client_session.get("mode"),
+                window_kind=client_session.get("window_kind"),
+                pid=client_session.get("pid"),
+                launcher_pid=client_session.get("launcher_pid"),
+            )
+
             yield hello_ack_message(
                 service_name=self.service_name,
                 backend_started_at=self.started_at,
                 connected_clients=self.connected_client_count,
                 supported_messages=self.supported_messages,
+                client_session=client_session,
+                connected_client_sessions=self.connected_client_sessions,
             )
             yield self._build_backend_status_message()
             return
@@ -566,6 +601,20 @@ class BackendService:
         with self._lock:
             return len(self._connected_clients)
 
+    @property
+    def connected_client_sessions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            sessions = [dict(session) for session in self._client_sessions_by_connection_id.values()]
+
+        sessions.sort(
+            key=lambda session: (
+                str(session.get("window_role") or ""),
+                str(session.get("logical_client_id") or ""),
+                str(session.get("connection_id") or ""),
+            )
+        )
+        return sessions
+
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         self._process_telemetry_packet(
             meta=meta,
@@ -689,7 +738,46 @@ class BackendService:
             connected_clients=status["connected_clients"],
             active_run_id=status["active_run_id"],
             is_running=status["is_running"],
+            connected_client_sessions=self.connected_client_sessions,
         )
+
+    def _register_client_hello(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_client_session(connection_id, payload)
+
+        with self._lock:
+            previous = self._client_sessions_by_connection_id.get(connection_id)
+            if previous is not None:
+                normalized["connected_at"] = previous.get("connected_at") or normalized["connected_at"]
+            self._client_sessions_by_connection_id[connection_id] = dict(normalized)
+
+        return dict(normalized)
+
+    def _normalize_client_session(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        client_name = self._get_optional_string(payload, "client_name") or "user-gui"
+        logical_client_id = self._get_optional_string(payload, "logical_client_id") or f"gui:{connection_id}"
+        window_role = self._get_optional_string(payload, "window_role")
+        session_id = self._get_optional_string(payload, "session_id") or connection_id
+        mode = self._get_optional_string(payload, "mode")
+        window_kind = self._get_optional_string(payload, "window_kind")
+        selected_test = self._get_optional_string(payload, "selected_test")
+        pid = self._get_optional_int(payload, "pid")
+        launcher_pid = self._get_optional_int(payload, "launcher_pid")
+        wall_time = isoformat_z()
+
+        return {
+            "connection_id": connection_id,
+            "client_name": client_name,
+            "logical_client_id": logical_client_id,
+            "window_role": window_role,
+            "session_id": session_id,
+            "mode": mode,
+            "window_kind": window_kind,
+            "selected_test": selected_test,
+            "pid": pid,
+            "launcher_pid": launcher_pid,
+            "connected_at": wall_time,
+            "last_hello_wall_time": wall_time,
+        }
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return dict(payload)

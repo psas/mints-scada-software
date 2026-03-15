@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -807,6 +808,21 @@ def _layout_profile(mode: str) -> str:
     return f"{mode}_split_window"
 
 
+def _build_backend_client_identity(*, mode: str, window_kind: str, selected_test: str | None) -> dict[str, Any]:
+    window_role = _workspace_role(mode, window_kind)
+    return {
+        "client_name": f"{window_kind}-window",
+        "logical_client_id": f"gui:{mode}:{window_kind}",
+        "window_role": window_role,
+        "session_id": uuid4().hex,
+        "mode": mode,
+        "window_kind": window_kind,
+        "pid": os.getpid(),
+        "launcher_pid": os.getppid(),
+        "selected_test": selected_test,
+    }
+
+
 def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback_mode: bool, test_name: str | None) -> Any:
     if window_kind == "controller":
         return ControllerWindow(
@@ -855,7 +871,14 @@ def _run_live_window(args: argparse.Namespace) -> int:
     )
 
     try:
-        backend_client.connect_to_backend(client_name=f"{args.window_kind}-window")
+        backend_identity = _build_backend_client_identity(
+            mode="live",
+            window_kind=args.window_kind,
+            selected_test=None,
+        )
+        setattr(actual_window, "backend_client_identity", dict(backend_identity))
+        setattr(facade, "backend_client_identity", dict(backend_identity))
+        backend_client.connect_to_backend(**backend_identity)
     except Exception as exc:
         QMessageBox.critical(
             None,

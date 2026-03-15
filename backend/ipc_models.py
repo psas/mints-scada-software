@@ -47,6 +47,8 @@ def hello_ack_message(
     backend_started_at: str,
     connected_clients: int,
     supported_messages: list[str],
+    client_session: Mapping[str, Any] | None = None,
+    connected_client_sessions: list[Mapping[str, Any]] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="hello_ack",
@@ -55,6 +57,8 @@ def hello_ack_message(
             "backend_started_at": backend_started_at,
             "connected_clients": connected_clients,
             "supported_messages": list(supported_messages),
+            "client_session": dict(client_session or {}),
+            "connected_client_sessions": [dict(item) for item in list(connected_client_sessions or [])],
         },
     )
 
@@ -65,6 +69,7 @@ def backend_status_message(
     connected_clients: int,
     active_run_id: str | None,
     is_running: bool,
+    connected_client_sessions: list[Mapping[str, Any]] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="backend_status",
@@ -73,6 +78,7 @@ def backend_status_message(
             "connected_clients": connected_clients,
             "active_run_id": active_run_id,
             "is_running": is_running,
+            "connected_client_sessions": [dict(item) for item in list(connected_client_sessions or [])],
         },
     )
 
@@ -104,24 +110,15 @@ def run_status_message(
 
 
 def state_snapshot_message(snapshot: Mapping[str, Any]) -> IPCMessage:
-    return IPCMessage(
-        type="state_snapshot",
-        payload=dict(snapshot),
-    )
+    return IPCMessage(type="state_snapshot", payload=dict(snapshot))
 
 
 def structured_event_message(event: Mapping[str, Any]) -> IPCMessage:
-    return IPCMessage(
-        type="structured_event",
-        payload=dict(event),
-    )
+    return IPCMessage(type="structured_event", payload=dict(event))
 
 
 def operator_action_recorded_message(action: Mapping[str, Any]) -> IPCMessage:
-    return IPCMessage(
-        type="operator_action_recorded",
-        payload=dict(action),
-    )
+    return IPCMessage(type="operator_action_recorded", payload=dict(action))
 
 
 def command_result_message(
