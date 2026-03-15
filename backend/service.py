@@ -77,7 +77,11 @@ class BackendService:
             device_registry=self.device_registry,
             bus_manager=self.bus_manager,
         )
-        self.script_runner = ScriptRunner()
+        self.script_runner = ScriptRunner(
+            command_dispatcher=self._dispatch_script_command,
+            state_snapshot_getter=self.state_store.get_snapshot,
+            progress_callback=self._handle_script_progress,
+        )
         self.health_monitor = BackendHealthMonitor(
             history_manager=self.history_manager,
             state_store=self.state_store,
@@ -468,18 +472,7 @@ class BackendService:
         if message.type == "command_request":
             try:
                 payload = self._normalize_mapping_payload(message.payload)
-
-                operator_action_payload = self._get_optional_mapping(payload, "operator_action")
-                if operator_action_payload is not None:
-                    action_event = self._build_operator_action_event(operator_action_payload)
-                    self._record_operator_action_if_running(action_event)
-
-                dispatch_result = self.command_router.route_command(payload)
-
-                self._record_command_out_if_running(
-                    dispatch_result.command_event,
-                    result_summary=dispatch_result.result_summary,
-                )
+                dispatch_info = self._dispatch_script_command(payload)
             except Exception as exc:
                 command_name = None
                 device_id = None
@@ -506,10 +499,10 @@ class BackendService:
 
             yield command_result_message(
                 success=True,
-                command_name=dispatch_result.command_name,
-                device_id=dispatch_result.device_id,
-                dispatched_via=dispatch_result.dispatched_via,
-                result_summary=dispatch_result.result_summary,
+                command_name=dispatch_info["command_name"],
+                device_id=dispatch_info.get("device_id"),
+                dispatched_via=dispatch_info["dispatched_via"],
+                result_summary=dispatch_info.get("result_summary"),
             )
             return
 
@@ -532,6 +525,12 @@ class BackendService:
                     command=start_result.command,
                     cwd=start_result.cwd,
                     started_wall_time=isoformat_z(),
+                    current_step_index=start_result.current_step_index,
+                    total_steps=start_result.total_steps,
+                    current_step_name=start_result.current_step_name,
+                    current_step_type=start_result.current_step_type,
+                    current_step_status=start_result.current_step_status,
+                    plan_steps_summary=start_result.plan_steps_summary,
                 )
 
                 self.health.record_system_event(
@@ -563,6 +562,12 @@ class BackendService:
                 launch_mode=start_result.launch_mode,
                 command=start_result.command,
                 cwd=start_result.cwd,
+                current_step_index=start_result.current_step_index,
+                total_steps=start_result.total_steps,
+                current_step_name=start_result.current_step_name,
+                current_step_type=start_result.current_step_type,
+                current_step_status=start_result.current_step_status,
+                plan_steps_summary=start_result.plan_steps_summary,
             )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -636,6 +641,42 @@ class BackendService:
         )
         return sessions
 
+    def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_mapping_payload(payload)
+        operator_action_payload = self._get_optional_mapping(normalized, "operator_action")
+        if operator_action_payload is not None:
+            action_event = self._build_operator_action_event(operator_action_payload)
+            self._record_operator_action_if_running(action_event)
+
+        dispatch_result = self.command_router.route_command(normalized)
+        self._record_command_out_if_running(
+            dispatch_result.command_event,
+            result_summary=dispatch_result.result_summary,
+        )
+        return {
+            "success": True,
+            "command_name": dispatch_result.command_name,
+            "device_id": dispatch_result.device_id,
+            "dispatched_via": dispatch_result.dispatched_via,
+            "result_summary": dispatch_result.result_summary,
+        }
+
+    def _handle_script_progress(self, info: Mapping[str, Any]) -> None:
+        progress_wall_time = info.get("progress_wall_time")
+        if not isinstance(progress_wall_time, str) or not progress_wall_time.strip():
+            progress_wall_time = isoformat_z()
+
+        self.state_store.update_script_progress(
+            current_step_index=info.get("current_step_index") if isinstance(info.get("current_step_index"), int) else None,
+            total_steps=info.get("total_steps") if isinstance(info.get("total_steps"), int) else None,
+            current_step_name=info.get("current_step_name") if isinstance(info.get("current_step_name"), str) else None,
+            current_step_type=info.get("current_step_type") if isinstance(info.get("current_step_type"), str) else None,
+            current_step_status=info.get("current_step_status") if isinstance(info.get("current_step_status"), str) else None,
+            progress_wall_time=progress_wall_time,
+            plan_steps_summary=list(info.get("plan_steps_summary", [])) if isinstance(info.get("plan_steps_summary"), list) else None,
+        )
+        self.health_monitor.sample_once()
+
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         self._process_telemetry_packet(
             meta=meta,
@@ -663,6 +704,12 @@ class BackendService:
             command=list(info.get("command", [])),
             cwd=info.get("cwd"),
             returncode=returncode,
+            current_step_index=info.get("current_step_index"),
+            total_steps=info.get("total_steps"),
+            current_step_name=info.get("current_step_name"),
+            current_step_type=info.get("current_step_type"),
+            current_step_status=info.get("current_step_status"),
+            failure_message=info.get("failure_message"),
         )
         self.health_monitor.sample_once()
 

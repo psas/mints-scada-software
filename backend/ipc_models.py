@@ -156,6 +156,12 @@ def script_status_message(
     cwd: str | None = None,
     returncode: int | None = None,
     reason: str | None = None,
+    current_step_index: int | None = None,
+    total_steps: int | None = None,
+    current_step_name: str | None = None,
+    current_step_type: str | None = None,
+    current_step_status: str | None = None,
+    plan_steps_summary: list[str] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="script_status",
@@ -169,6 +175,12 @@ def script_status_message(
             "cwd": cwd,
             "returncode": returncode,
             "reason": reason,
+            "current_step_index": current_step_index,
+            "total_steps": total_steps,
+            "current_step_name": current_step_name,
+            "current_step_type": current_step_type,
+            "current_step_status": current_step_status,
+            "plan_steps_summary": list(plan_steps_summary or []),
         },
     )
 

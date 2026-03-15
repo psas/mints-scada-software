@@ -79,6 +79,13 @@ class ScriptRunnerState:
     finished_wall_time: str | None = None
     last_exit_code: int | None = None
     last_stop_reason: str | None = None
+    current_step_index: int | None = None
+    total_steps: int | None = None
+    current_step_name: str | None = None
+    current_step_type: str | None = None
+    current_step_status: str | None = None
+    last_progress_wall_time: str | None = None
+    plan_steps_summary: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

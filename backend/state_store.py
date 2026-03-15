@@ -151,6 +151,12 @@ class StateStore:
         command: list[str],
         cwd: str | None,
         started_wall_time: str,
+        current_step_index: int | None = None,
+        total_steps: int | None = None,
+        current_step_name: str | None = None,
+        current_step_type: str | None = None,
+        current_step_status: str | None = None,
+        plan_steps_summary: list[str] | None = None,
     ) -> None:
         with self._lock:
             self._state.script_runner.is_running = True
@@ -164,6 +170,13 @@ class StateStore:
             self._state.script_runner.finished_wall_time = None
             self._state.script_runner.last_exit_code = None
             self._state.script_runner.last_stop_reason = None
+            self._state.script_runner.current_step_index = current_step_index
+            self._state.script_runner.total_steps = total_steps
+            self._state.script_runner.current_step_name = current_step_name
+            self._state.script_runner.current_step_type = current_step_type
+            self._state.script_runner.current_step_status = current_step_status
+            self._state.script_runner.last_progress_wall_time = started_wall_time
+            self._state.script_runner.plan_steps_summary = list(plan_steps_summary or [])
 
     def mark_script_finished(
         self,
@@ -178,6 +191,28 @@ class StateStore:
             self._state.script_runner.last_exit_code = return_code
             self._state.script_runner.last_stop_reason = reason
 
+
+    def update_script_progress(
+        self,
+        *,
+        current_step_index: int | None,
+        total_steps: int | None,
+        current_step_name: str | None,
+        current_step_type: str | None,
+        current_step_status: str | None,
+        progress_wall_time: str,
+        plan_steps_summary: list[str] | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.current_step_index = current_step_index
+            self._state.script_runner.total_steps = total_steps
+            self._state.script_runner.current_step_name = current_step_name
+            self._state.script_runner.current_step_type = current_step_type
+            self._state.script_runner.current_step_status = current_step_status
+            self._state.script_runner.last_progress_wall_time = progress_wall_time
+            if plan_steps_summary is not None:
+                self._state.script_runner.plan_steps_summary = list(plan_steps_summary)
+
     def clear_script_running_state(self) -> None:
         with self._lock:
             self._state.script_runner.is_running = False
@@ -187,6 +222,13 @@ class StateStore:
             self._state.script_runner.launch_mode = None
             self._state.script_runner.command = []
             self._state.script_runner.cwd = None
+            self._state.script_runner.current_step_index = None
+            self._state.script_runner.total_steps = None
+            self._state.script_runner.current_step_name = None
+            self._state.script_runner.current_step_type = None
+            self._state.script_runner.current_step_status = None
+            self._state.script_runner.last_progress_wall_time = None
+            self._state.script_runner.plan_steps_summary = []
 
     def set_health_snapshot(
         self,
