@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -414,6 +414,194 @@ def _dispatch_playback_loaded(window: Any, payload: dict[str, Any]) -> None:
             handler(dict(payload))
 
 
+def _dispatch_playback_seek_bootstrap(window: Any, payload: dict[str, Any]) -> None:
+    setattr(window, "playback_seek_summary", dict(payload))
+
+    targets = [window]
+    for child_name in ("controller", "scada", "script"):
+        child = getattr(window, child_name, None)
+        if child is not None:
+            targets.append(child)
+
+    for target in targets:
+        handler = getattr(target, "handle_playback_seek_bootstrap", None)
+        if callable(handler):
+            handler(dict(payload))
+
+
+def _build_playback_snapshot_index(
+    *,
+    snapshot_files: list[Path],
+    start_dt: datetime | None,
+) -> list[dict[str, Any]]:
+    index_entries: list[dict[str, Any]] = []
+
+    for path in snapshot_files:
+        try:
+            payload = _load_json_file(path)
+        except Exception as exc:
+            log.warning("Failed to parse playback snapshot %s: %s", path, exc)
+            continue
+
+        snapshot_dt = _parse_iso_wall_time(payload.get("recorded_at"))
+        snapshot_index = payload.get("snapshot_index")
+        if not isinstance(snapshot_index, int):
+            try:
+                snapshot_index = int(path.stem)
+            except ValueError:
+                snapshot_index = 0
+
+        relative_seconds: float
+        if snapshot_dt is not None and start_dt is not None:
+            relative_seconds = max(0.0, (snapshot_dt - start_dt).total_seconds())
+        else:
+            relative_seconds = float(max(0, snapshot_index))
+
+        index_entries.append(
+            {
+                "path": str(path),
+                "snapshot_index": snapshot_index,
+                "recorded_at": payload.get("recorded_at"),
+                "relative_seconds": relative_seconds,
+                "has_state": isinstance(payload.get("state"), dict),
+            }
+        )
+
+    index_entries.sort(key=lambda entry: (entry["relative_seconds"], entry["snapshot_index"]))
+    return index_entries
+
+
+def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
+    return _load_json_file(Path(snapshot_path))
+
+
+def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
+    snapshot_state = snapshot_payload.get("state")
+    if not isinstance(snapshot_state, dict):
+        return False
+
+    catalog = getattr(window, "backend_device_catalog", None)
+    if catalog is None:
+        return False
+
+    catalog.apply_state_snapshot(snapshot_state)
+    setattr(window, "backend_device_presentation", catalog.to_presentation_snapshot())
+    setattr(window, "playback_active_snapshot", dict(snapshot_payload))
+
+    targets = [window]
+    for child_name in ("controller", "scada"):
+        child = getattr(window, child_name, None)
+        if child is not None:
+            targets.append(child)
+
+    for target in targets:
+        handler = getattr(target, "apply_backend_state_snapshot", None)
+        if callable(handler):
+            handler(dict(snapshot_state))
+
+    return True
+
+
+def _slice_playback_tail_events(
+    merged_events: list[dict[str, Any]],
+    *,
+    replay_start_dt: datetime | None,
+    seek_dt: datetime | None,
+) -> list[dict[str, Any]]:
+    if replay_start_dt is None or seek_dt is None:
+        return []
+
+    tail_events: list[dict[str, Any]] = []
+    for event in merged_events:
+        event_dt = _extract_event_wall_time(event)
+        if event_dt is None:
+            continue
+        if event_dt < replay_start_dt:
+            continue
+        if event_dt > seek_dt:
+            continue
+        tail_events.append(event)
+
+    return tail_events
+
+
+def _find_nearest_snapshot_entry(
+    snapshot_index: list[dict[str, Any]],
+    seek_time: float,
+) -> dict[str, Any] | None:
+    if not snapshot_index:
+        return None
+
+    best_entry: dict[str, Any] | None = None
+    for entry in snapshot_index:
+        if entry["relative_seconds"] <= seek_time:
+            best_entry = entry
+        else:
+            break
+
+    if best_entry is not None:
+        return best_entry
+
+    return snapshot_index[0]
+
+
+def _handle_playback_seek(window: Any, seek_time: float) -> None:
+    snapshot_index = getattr(window, "playback_snapshot_index", [])
+    merged_events = getattr(window, "playback_merged_events", [])
+    start_dt = getattr(window, "playback_start_dt", None)
+
+    seek_dt = None
+    if isinstance(start_dt, datetime):
+        seek_dt = start_dt + timedelta(seconds=max(0.0, seek_time))
+
+    selected_snapshot = _find_nearest_snapshot_entry(snapshot_index, seek_time)
+    replay_start_dt = start_dt
+    restored_from_snapshot = False
+
+    if selected_snapshot is not None:
+        try:
+            snapshot_payload = _load_playback_snapshot_payload(selected_snapshot["path"])
+            restored_from_snapshot = _apply_playback_state_snapshot(window, snapshot_payload)
+            snapshot_recorded_at = _parse_iso_wall_time(snapshot_payload.get("recorded_at"))
+            if snapshot_recorded_at is not None:
+                replay_start_dt = snapshot_recorded_at
+            elif isinstance(start_dt, datetime):
+                replay_start_dt = start_dt + timedelta(seconds=float(selected_snapshot["relative_seconds"]))
+        except Exception as exc:
+            log.warning("Failed to restore playback snapshot during seek from %s: %s", selected_snapshot["path"], exc)
+
+    tail_events = _slice_playback_tail_events(
+        merged_events,
+        replay_start_dt=replay_start_dt,
+        seek_dt=seek_dt,
+    )
+
+    payload = {
+        "seek_time_seconds": seek_time,
+        "selected_snapshot": dict(selected_snapshot) if selected_snapshot is not None else None,
+        "restored_from_snapshot": restored_from_snapshot,
+        "tail_event_count": len(tail_events),
+        "replay_start_recorded_at": replay_start_dt.isoformat() if isinstance(replay_start_dt, datetime) else None,
+        "seek_recorded_at": seek_dt.isoformat() if isinstance(seek_dt, datetime) else None,
+    }
+    setattr(window, "playback_seek_tail_events", tail_events)
+    _dispatch_playback_seek_bootstrap(window, payload)
+
+    if selected_snapshot is not None:
+        log.info(
+            "Playback seek %.3fs bootstrapped from snapshot %s with %s tail events",
+            seek_time,
+            selected_snapshot.get("path"),
+            len(tail_events),
+        )
+    else:
+        log.info(
+            "Playback seek %.3fs has no snapshot bootstrap; tail events=%s",
+            seek_time,
+            len(tail_events),
+        )
+
+
 def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     run_dir = _resolve_ignitionhistory_run_dir(selected_test)
 
@@ -434,20 +622,6 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     setattr(window, "playback_merged_events", merged_events)
     setattr(window, "playback_snapshot_files", [str(path) for path in snapshot_files])
 
-    # If snapshots exist and contain a state object, seed the GUI-side device catalog.
-    if snapshot_files:
-        try:
-            first_snapshot = _load_json_file(snapshot_files[0])
-            setattr(window, "playback_initial_snapshot", first_snapshot)
-
-            snapshot_state = first_snapshot.get("state")
-            catalog = getattr(window, "backend_device_catalog", None)
-            if isinstance(snapshot_state, dict) and catalog is not None:
-                catalog.apply_state_snapshot(snapshot_state)
-                setattr(window, "backend_device_presentation", catalog.to_presentation_snapshot())
-        except Exception as exc:
-            log.warning("Failed to load initial playback snapshot: %s", exc)
-
     start_dt = _parse_iso_wall_time(metadata.get("start_wall_time"))
     end_dt = _parse_iso_wall_time(metadata.get("end_wall_time"))
 
@@ -464,6 +638,24 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         end_dt = start_dt
 
     duration_s = max(0.0, (end_dt - start_dt).total_seconds())
+
+    playback_snapshot_index = _build_playback_snapshot_index(
+        snapshot_files=snapshot_files,
+        start_dt=start_dt,
+    )
+    setattr(window, "playback_start_dt", start_dt)
+    setattr(window, "playback_end_dt", end_dt)
+    setattr(window, "playback_duration_seconds", duration_s)
+    setattr(window, "playback_snapshot_index", playback_snapshot_index)
+    setattr(window, "playback_seek_handler", lambda seek_time: _handle_playback_seek(window, seek_time))
+
+    if snapshot_files:
+        try:
+            first_snapshot = _load_playback_snapshot_payload(str(snapshot_files[0]))
+            setattr(window, "playback_initial_snapshot", first_snapshot)
+            _apply_playback_state_snapshot(window, first_snapshot)
+        except Exception as exc:
+            log.warning("Failed to load initial playback snapshot: %s", exc)
 
     window.timeline.min_time = 0.0
     window.timeline.set_total_duration(duration_s)
@@ -492,6 +684,7 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         "metadata": dict(metadata),
         "merged_event_count": len(merged_events),
         "snapshot_count": len(snapshot_files),
+        "snapshot_index_count": len(playback_snapshot_index),
         "timeline_label_count": added_labels,
         "duration_seconds": duration_s,
         "duration_text": duration_text,

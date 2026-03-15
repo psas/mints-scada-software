@@ -1970,6 +1970,10 @@ class ControllerWindow(QMainWindow):
         self.timeline.set_current_time(seek_time)
         self._update_mission_time_label(seek_time)
 
+        handler = getattr(self.manager, "playback_seek_handler", None)
+        if callable(handler):
+            handler(seek_time)
+
     # =========================================================
     # Buttons (placeholder behavior)
     # =========================================================
