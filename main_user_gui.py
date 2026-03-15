@@ -15,6 +15,7 @@ from gui import ChecklistWindow, QLoggingHandler
 from gui.backend_client import BackendClient
 from gui.device_catalog import BackendDeviceCatalog
 from gui.window_manager import window_manager
+from gui.workspace_metadata import attach_workspace_persistence, prepare_workspace_window
 from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 log = logging.getLogger(__name__)
@@ -722,6 +723,50 @@ def _configure_logging() -> QLoggingHandler:
     return consolehandler
 
 
+
+def _setup_workspace_support(
+    app: QApplication,
+    *,
+    window: Any,
+    window_role: str,
+    playback_mode: bool,
+    layout_profile: str,
+) -> Any:
+    project_root = _project_root()
+    prepare_workspace_window(
+        window,
+        project_root=project_root,
+        window_role=window_role,
+        playback_mode=playback_mode,
+        layout_profile=layout_profile,
+    )
+    controller = attach_workspace_persistence(
+        window,
+        project_root=project_root,
+        window_role=window_role,
+        playback_mode=playback_mode,
+        layout_profile=layout_profile,
+    )
+    about_to_quit = getattr(app, "aboutToQuit", None)
+    if about_to_quit is not None:
+        try:
+            about_to_quit.connect(controller.save_now)
+        except Exception:
+            pass
+    return controller
+
+
+def _show_window_for_workspace(window: Any) -> None:
+    show_mode = getattr(window, "_workspace_show_mode", "normal")
+    if show_mode == "fullscreen" and hasattr(window, "showFullScreen"):
+        window.showFullScreen()
+        return
+    if show_mode == "maximized" and hasattr(window, "showMaximized"):
+        window.showMaximized()
+        return
+    window.show()
+
+
 def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, test_name: str) -> int:
     log.info("Starting playback mode with run: %s", test_name)
     window = window_manager(
@@ -730,6 +775,14 @@ def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, te
         playback_mode=True,
         test_name=test_name,
     )
+    workspace_controller = _setup_workspace_support(
+        app,
+        window=window,
+        window_role="playback_main",
+        playback_mode=True,
+        layout_profile="playback_single_window",
+    )
+    setattr(window, "_workspace_controller", workspace_controller)
 
     _load_playback_device_proxies(window)
 
@@ -746,7 +799,7 @@ def _run_playback_mode(app: QApplication, *, consolehandler: QLoggingHandler, te
         )
         return 1
 
-    window.show()
+    _show_window_for_workspace(window)
     exec_fn = getattr(app, "exec", app.exec_)
     return exec_fn()
 
@@ -764,6 +817,14 @@ def _run_live_gui_mode(
         autopoller=None,
         playback_mode=False,
     )
+    workspace_controller = _setup_workspace_support(
+        app,
+        window=window,
+        window_role="live_main",
+        playback_mode=False,
+        layout_profile="live_single_window",
+    )
+    setattr(window, "_workspace_controller", workspace_controller)
 
     socket_path = Path(__file__).resolve().parent / ".backend_service.sock"
     backend_client = BackendClient(socket_path=socket_path)
@@ -788,7 +849,7 @@ def _run_live_gui_mode(
         )
         return 1
 
-    window.show()
+    _show_window_for_workspace(window)
     exec_fn = getattr(app, "exec", app.exec_)
 
     try:
