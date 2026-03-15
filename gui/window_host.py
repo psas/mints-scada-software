@@ -927,6 +927,21 @@ def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback
     raise ValueError(f"Unsupported window kind: {window_kind}")
 
 
+def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_socket: str | None) -> None:
+    socket_path = abort_relay_socket or ""
+    available = bool(socket_path)
+
+    for target in (actual_window, facade):
+        setattr(target, "abort_relay_socket_path", socket_path)
+        setattr(target, "abort_relay_available", available)
+
+    for child_name in ("controller", "scada", "script"):
+        child = getattr(actual_window, child_name, None)
+        if child is not None:
+            setattr(child, "abort_relay_socket_path", socket_path)
+            setattr(child, "abort_relay_available", available)
+
+
 def _run_live_window(args: argparse.Namespace) -> int:
     app = QApplication(sys.argv)
     consolehandler = _configure_logging(args.window_kind, "live")
@@ -939,6 +954,11 @@ def _run_live_window(args: argparse.Namespace) -> int:
         test_name=None,
     )
     facade = WindowHostFacade(window_kind=args.window_kind, window=actual_window)
+    _apply_abort_relay_context(
+        actual_window=actual_window,
+        facade=facade,
+        abort_relay_socket=args.abort_relay_socket,
+    )
 
     _setup_workspace_support(
         app,
@@ -1011,6 +1031,11 @@ def _run_playback_window(args: argparse.Namespace) -> int:
         test_name=args.selected_test,
     )
     facade = WindowHostFacade(window_kind=args.window_kind, window=actual_window)
+    _apply_abort_relay_context(
+        actual_window=actual_window,
+        facade=facade,
+        abort_relay_socket=args.abort_relay_socket,
+    )
 
     _setup_workspace_support(
         app,
@@ -1073,6 +1098,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--selected-test")
     parser.add_argument("--start-run-payload-b64")
     parser.add_argument("--supervisor-socket")
+    parser.add_argument("--abort-relay-socket")
     return parser
 
 

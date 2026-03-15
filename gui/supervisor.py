@@ -237,6 +237,7 @@ def _spawn_window_process(
     window_kind: str,
     backend_socket: str,
     supervisor_socket: str,
+    abort_relay_socket: str | None = None,
     selected_test: str | None = None,
     start_run_payload: dict[str, Any] | None = None,
 ) -> subprocess.Popen[str]:
@@ -257,6 +258,9 @@ def _spawn_window_process(
 
     if selected_test:
         cmd.extend(["--selected-test", selected_test])
+
+    if abort_relay_socket:
+        cmd.extend(["--abort-relay-socket", abort_relay_socket])
 
     if start_run_payload:
         raw = json.dumps(start_run_payload, ensure_ascii=False, sort_keys=False).encode("utf-8")
@@ -282,6 +286,7 @@ def _monitor_session(
     mode: str,
     backend_socket: str,
     supervisor_socket: str,
+    abort_relay_socket: str | None,
     selected_test: str | None,
     start_run_payload: dict[str, Any] | None,
     child_map: dict[str, subprocess.Popen[str]],
@@ -340,6 +345,7 @@ def _monitor_session(
             window_kind=window_kind,
             backend_socket=backend_socket,
             supervisor_socket=supervisor_socket,
+            abort_relay_socket=abort_relay_socket,
             selected_test=selected_test,
             start_run_payload=payload_for_spawn,
         )
@@ -563,6 +569,7 @@ def _spawn_window_for_role(
     window_kind: str,
     backend_socket: str,
     supervisor_socket: str,
+    abort_relay_socket: str | None,
     selected_test: str | None,
     start_run_payload: dict[str, Any] | None,
 ) -> subprocess.Popen[str]:
@@ -571,6 +578,7 @@ def _spawn_window_for_role(
         window_kind=window_kind,
         backend_socket=backend_socket,
         supervisor_socket=supervisor_socket,
+        abort_relay_socket=abort_relay_socket,
         selected_test=selected_test,
         start_run_payload=start_run_payload,
     )
@@ -598,6 +606,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend-socket", required=True)
     parser.add_argument("--selected-test")
     parser.add_argument("--start-run-payload-b64")
+    parser.add_argument("--abort-relay-socket")
     return parser
 
 
@@ -623,6 +632,7 @@ def main() -> int:
             window_kind="controller",
             backend_socket=args.backend_socket,
             supervisor_socket=str(supervisor_socket_path),
+            abort_relay_socket=args.abort_relay_socket,
             selected_test=args.selected_test,
             start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.mode == "live" else None,
         )
@@ -631,6 +641,7 @@ def main() -> int:
             window_kind="scada",
             backend_socket=args.backend_socket,
             supervisor_socket=str(supervisor_socket_path),
+            abort_relay_socket=args.abort_relay_socket,
             selected_test=args.selected_test,
             start_run_payload=None,
         )
@@ -639,6 +650,7 @@ def main() -> int:
             mode=args.mode,
             backend_socket=args.backend_socket,
             supervisor_socket=str(supervisor_socket_path),
+            abort_relay_socket=args.abort_relay_socket,
             selected_test=args.selected_test,
             start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.mode == "live" else None,
             child_map=processes,

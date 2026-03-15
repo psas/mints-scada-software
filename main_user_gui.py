@@ -4,8 +4,10 @@ import base64
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -57,12 +59,94 @@ def _supervisor_script() -> Path:
         raise FileNotFoundError(f"Missing GUI supervisor script: {script_path}")
     return script_path
 
+def _abort_relay_script() -> Path:
+    script_path = _project_root() / "gui" / "abort_relay.py"
+    if not script_path.is_file():
+        raise FileNotFoundError(f"Missing AbortRelay script: {script_path}")
+    return script_path
+
+
+def _ping_abort_relay(socket_path: Path, *, timeout_s: float = 0.75) -> bool:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout_s)
+            sock.connect(str(socket_path))
+            wire = json.dumps({"type": "ping", "payload": {}}, ensure_ascii=False, sort_keys=False) + "\n"
+            sock.sendall(wire.encode("utf-8"))
+            buffer = ""
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    decoded = json.loads(line)
+                    if isinstance(decoded, dict) and decoded.get("type") == "pong":
+                        return True
+    except Exception:
+        return False
+    return False
+
+
+def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
+    script_path = _abort_relay_script()
+    backend_socket = _project_root() / ".backend_service.sock"
+
+    socket_dir = Path(tempfile.gettempdir()) / "mints_scada_abort"
+    socket_dir.mkdir(parents=True, exist_ok=True)
+    relay_socket = socket_dir / f"gui_abort_relay_{os.getpid()}.sock"
+    if relay_socket.exists():
+        relay_socket.unlink()
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--backend-socket",
+        str(backend_socket),
+        "--relay-socket",
+        str(relay_socket),
+    ]
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(_project_root()),
+        env=env,
+        text=True,
+        start_new_session=False,
+    )
+    log.info("Spawned AbortRelay pid=%s socket=%s", process.pid, relay_socket)
+
+    deadline = time.monotonic() + 4.0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"AbortRelay exited early with code {process.poll()}")
+        if relay_socket.exists() and _ping_abort_relay(relay_socket):
+            return process, relay_socket
+        time.sleep(0.1)
+
+    _terminate_process(process, label="abort relay")
+    _wait_for_process_exit(process, timeout_s=1.0)
+    if process.poll() is None:
+        _kill_process(process, label="abort relay")
+        _wait_for_process_exit(process, timeout_s=1.0)
+    raise RuntimeError(f"AbortRelay did not become ready at {relay_socket}")
+
+
 
 def _spawn_supervisor(
     *,
     mode: str,
     selected_test: str | None = None,
     start_run_payload: dict[str, Any] | None = None,
+    abort_relay_socket: str | None = None,
 ) -> int:
     script_path = _supervisor_script()
     socket_path = _project_root() / ".backend_service.sock"
@@ -78,6 +162,9 @@ def _spawn_supervisor(
 
     if selected_test:
         cmd.extend(["--selected-test", selected_test])
+
+    if abort_relay_socket:
+        cmd.extend(["--abort-relay-socket", abort_relay_socket])
 
     encoded_payload = _encode_json_arg(start_run_payload)
     if encoded_payload:
@@ -162,7 +249,37 @@ def main() -> int:
 
     start_run_payload = dict(checklist.live_run_metadata or {}) or None
     log.info("Launching GUI supervisor for live session with metadata: %s", start_run_payload)
-    return _spawn_supervisor(mode="live", start_run_payload=start_run_payload)
+
+    abort_relay_process: subprocess.Popen[str] | None = None
+    abort_relay_socket: Path | None = None
+    try:
+        abort_relay_process, abort_relay_socket = _spawn_abort_relay()
+        return _spawn_supervisor(
+            mode="live",
+            start_run_payload=start_run_payload,
+            abort_relay_socket=str(abort_relay_socket),
+        )
+    except Exception as exc:
+        QMessageBox.critical(
+            None,
+            "Abort Relay Launch Error",
+            "Failed to launch AbortRelay for the live GUI session.\n\n"
+            f"Error: {exc}",
+        )
+        return 1
+    finally:
+        if abort_relay_process is not None:
+            _terminate_process(abort_relay_process, label="abort relay")
+            _wait_for_process_exit(abort_relay_process, timeout_s=2.0)
+            if abort_relay_process.poll() is None:
+                _kill_process(abort_relay_process, label="abort relay")
+                _wait_for_process_exit(abort_relay_process, timeout_s=1.0)
+        if abort_relay_socket is not None:
+            try:
+                if abort_relay_socket.exists():
+                    abort_relay_socket.unlink()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
