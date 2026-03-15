@@ -21,7 +21,11 @@ from .models import (
     WriterStatsState,
 )
 from .paths import build_run_paths, ensure_base_dirs
-from .writers import WriterRuntime, create_raw_writer_runtime
+from .writers import (
+    WriterRuntime,
+    create_raw_writer_runtime,
+    create_structured_writer_runtime,
+)
 
 SHARED_EVENT_IDENTITY_FIELDS = (
     "run_id",
@@ -108,6 +112,8 @@ class HistoryManager:
         *,
         raw_queue_maxsize: int = 2000,
         raw_enqueue_timeout_s: float = 0.05,
+        structured_queue_maxsize: int = 2000,
+        structured_enqueue_timeout_s: float = 0.05,
         writer_start_timeout_s: float = 5.0,
         writer_finish_timeout_s: float = 5.0,
         writer_shutdown_timeout_s: float = 3.0,
@@ -118,6 +124,8 @@ class HistoryManager:
 
         self.raw_queue_maxsize = raw_queue_maxsize
         self.raw_enqueue_timeout_s = raw_enqueue_timeout_s
+        self.structured_queue_maxsize = structured_queue_maxsize
+        self.structured_enqueue_timeout_s = structured_enqueue_timeout_s
         self.writer_start_timeout_s = writer_start_timeout_s
         self.writer_finish_timeout_s = writer_finish_timeout_s
         self.writer_shutdown_timeout_s = writer_shutdown_timeout_s
@@ -132,6 +140,7 @@ class HistoryManager:
 
         self._raw_writer: WriterRuntime | None = None
         self._rawbak_writer: WriterRuntime | None = None
+        self._structured_writer: WriterRuntime | None = None
 
     def start_run(
         self,
@@ -224,7 +233,7 @@ class HistoryManager:
             self.is_running = True
 
             try:
-                self._start_raw_writers(run)
+                self._start_writers(run)
             except Exception:
                 self._best_effort_shutdown_writers(run)
                 self.current_run = None
@@ -239,7 +248,7 @@ class HistoryManager:
             run = self._require_active_run()
 
             self._drain_writer_status_queues(run)
-            self._finish_raw_writers(run)
+            self._finish_writers(run)
 
             end_wall_time = isoformat_z()
             end_mono_ns = time.monotonic_ns()
@@ -311,6 +320,7 @@ class HistoryManager:
         with self._lock:
             run = self._require_active_run()
             self._validate_structured_stream(stream_name)
+            self._drain_writer_status_queues(run)
 
             payload = self._materialize_first_order_event_payload(
                 run, stream_name, event
@@ -320,29 +330,24 @@ class HistoryManager:
                 event.clear()
                 event.update(payload)
 
-            _append_jsonl(
-                run.paths.structured_stream_paths[stream_name],
-                payload,
-                fsync=self.fsync_structured_writes,
+            ok = self._enqueue_structured_event(
+                runtime=self._structured_writer,
+                stats=run.history_stats,
+                stream_name=stream_name,
+                payload=payload,
+                write_merged=write_merged,
             )
 
-            run.history_stats.bump_stream(stream_name)
-            run.history_stats.mark_flush(payload["recorded_at"])
-
-            if write_merged:
-                _append_jsonl(
-                    run.paths.merged_path,
-                    payload,
-                    fsync=self.fsync_structured_writes,
+            if not ok:
+                self._write_writer_stats_triplet(run)
+                raise RuntimeError(
+                    "record_structured_event() failed to enqueue structured event"
                 )
-                run.history_stats.bump_stream("merged")
-                run.history_stats.mark_flush(payload["recorded_at"])
-
-            self._write_writer_stats_triplet(run)
 
     def write_snapshot(self, snapshot_index: int, snapshot: Mapping[str, Any]) -> Path:
         with self._lock:
             run = self._require_active_run()
+            self._drain_writer_status_queues(run)
 
             path = run.paths.snapshots_dir / f"{snapshot_index:06d}.json"
             payload = dict(snapshot)
@@ -350,11 +355,15 @@ class HistoryManager:
             payload.setdefault("snapshot_index", snapshot_index)
             payload.setdefault("recorded_at", isoformat_z())
 
-            atomic_write_json(path, payload)
-
-            run.history_stats.snapshots_written += 1
-            run.history_stats.mark_flush(payload["recorded_at"])
-            self._write_writer_stats_triplet(run)
+            ok = self._enqueue_snapshot(
+                runtime=self._structured_writer,
+                stats=run.history_stats,
+                snapshot_index=snapshot_index,
+                payload=payload,
+            )
+            if not ok:
+                self._write_writer_stats_triplet(run)
+                raise RuntimeError("write_snapshot() failed to enqueue snapshot")
 
             return path
 
@@ -550,7 +559,7 @@ class HistoryManager:
             run.paths.history_writer_stats_path, run.history_stats.to_dict()
         )
 
-    def _start_raw_writers(self, run: ActiveRun) -> None:
+    def _start_writers(self, run: ActiveRun) -> None:
         self._raw_writer = create_raw_writer_runtime(
             mp_context=self._mp_context,
             side_name="raw",
@@ -594,6 +603,32 @@ class HistoryManager:
         self._wait_for_expected_status(
             runtime=self._rawbak_writer,
             stats=run.rawbak_stats,
+            expected_type="started",
+            timeout_s=self.writer_start_timeout_s,
+        )
+
+        self._structured_writer = create_structured_writer_runtime(
+            mp_context=self._mp_context,
+            side_name="structured",
+            queue_maxsize=self.structured_queue_maxsize,
+            fsync_every_event=self.fsync_structured_writes,
+        )
+        self._structured_writer.process.start()
+        self._structured_writer.command_queue.put(
+            {
+                "type": "start_run",
+                "run_id": run.run_id,
+                "stream_paths": {
+                    name: str(path)
+                    for name, path in run.paths.structured_stream_paths.items()
+                },
+                "merged_path": str(run.paths.merged_path),
+                "snapshots_dir": str(run.paths.snapshots_dir),
+            }
+        )
+        self._wait_for_expected_status(
+            runtime=self._structured_writer,
+            stats=run.history_stats,
             expected_type="started",
             timeout_s=self.writer_start_timeout_s,
         )
@@ -651,10 +686,122 @@ class HistoryManager:
             )
             return False
 
-    def _finish_raw_writers(self, run: ActiveRun) -> None:
-        for runtime, stats in (
-            (self._raw_writer, run.raw_stats),
-            (self._rawbak_writer, run.rawbak_stats),
+
+    def _enqueue_structured_event(
+        self,
+        *,
+        runtime: WriterRuntime | None,
+        stats: WriterStatsState,
+        stream_name: str,
+        payload: Mapping[str, Any],
+        write_merged: bool,
+    ) -> bool:
+        now = isoformat_z()
+
+        if runtime is None:
+            stats.dropped_events += 1
+            stats.add_error(wall_time=now, message="structured writer runtime is missing")
+            return False
+
+        if not runtime.process.is_alive():
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer process is not alive",
+            )
+            return False
+
+        try:
+            runtime.command_queue.put(
+                {
+                    "type": "event",
+                    "stream_name": stream_name,
+                    "event": dict(payload),
+                    "write_merged": bool(write_merged),
+                },
+                timeout=self.structured_enqueue_timeout_s,
+            )
+            stats.bump_stream(stream_name)
+            if write_merged:
+                stats.bump_stream("merged")
+            stats.set_status("running", pid=runtime.process.pid)
+            stats.update_queue_max_depth(self._safe_queue_depth(runtime.command_queue))
+            return True
+
+        except queue.Full:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer queue is full",
+            )
+            return False
+
+        except Exception as exc:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} enqueue failed: {exc}",
+            )
+            return False
+
+    def _enqueue_snapshot(
+        self,
+        *,
+        runtime: WriterRuntime | None,
+        stats: WriterStatsState,
+        snapshot_index: int,
+        payload: Mapping[str, Any],
+    ) -> bool:
+        now = isoformat_z()
+
+        if runtime is None:
+            stats.dropped_events += 1
+            stats.add_error(wall_time=now, message="structured writer runtime is missing")
+            return False
+
+        if not runtime.process.is_alive():
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer process is not alive",
+            )
+            return False
+
+        try:
+            runtime.command_queue.put(
+                {
+                    "type": "snapshot",
+                    "snapshot_index": snapshot_index,
+                    "snapshot": dict(payload),
+                },
+                timeout=self.structured_enqueue_timeout_s,
+            )
+            stats.snapshots_written += 1
+            stats.set_status("running", pid=runtime.process.pid)
+            stats.update_queue_max_depth(self._safe_queue_depth(runtime.command_queue))
+            return True
+
+        except queue.Full:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} writer queue is full",
+            )
+            return False
+
+        except Exception as exc:
+            stats.dropped_events += 1
+            stats.add_error(
+                wall_time=now,
+                message=f"{runtime.side_name} enqueue failed: {exc}",
+            )
+            return False
+
+    def _finish_writers(self, run: ActiveRun) -> None:
+        for runtime, stats, timeout_s in (
+            (self._raw_writer, run.raw_stats, self.raw_enqueue_timeout_s),
+            (self._rawbak_writer, run.rawbak_stats, self.raw_enqueue_timeout_s),
+            (self._structured_writer, run.history_stats, self.structured_enqueue_timeout_s),
         ):
             if runtime is None:
                 continue
@@ -668,7 +815,7 @@ class HistoryManager:
                             "type": "finish_run",
                             "wall_time": finish_wall_time,
                         },
-                        timeout=self.raw_enqueue_timeout_s,
+                        timeout=timeout_s,
                     )
                     self._wait_for_expected_status(
                         runtime=runtime,
@@ -686,7 +833,7 @@ class HistoryManager:
                     if runtime.process.is_alive():
                         runtime.command_queue.put(
                             {"type": "shutdown"},
-                            timeout=self.raw_enqueue_timeout_s,
+                            timeout=timeout_s,
                         )
                         self._wait_for_expected_status(
                             runtime=runtime,
@@ -720,11 +867,13 @@ class HistoryManager:
 
         self._raw_writer = None
         self._rawbak_writer = None
+        self._structured_writer = None
 
     def _best_effort_shutdown_writers(self, run: ActiveRun) -> None:
         for runtime, stats in (
             (self._raw_writer, run.raw_stats),
             (self._rawbak_writer, run.rawbak_stats),
+            (self._structured_writer, run.history_stats),
         ):
             if runtime is None:
                 continue
@@ -749,6 +898,7 @@ class HistoryManager:
 
         self._raw_writer = None
         self._rawbak_writer = None
+        self._structured_writer = None
         self._write_writer_stats_triplet(run)
 
     def _wait_for_expected_status(
@@ -789,6 +939,7 @@ class HistoryManager:
         for runtime, stats in (
             (self._raw_writer, run.raw_stats),
             (self._rawbak_writer, run.rawbak_stats),
+            (self._structured_writer, run.history_stats),
         ):
             if runtime is None:
                 continue
@@ -820,6 +971,10 @@ class HistoryManager:
         elif message_type == "finished":
             stats.mark_flush(wall_time)
             stats.set_status("finished", pid=pid)
+
+        elif message_type == "snapshot_written":
+            stats.mark_flush(wall_time)
+            stats.set_status("running", pid=pid)
 
         elif message_type == "shutdown_ack":
             stats.set_status("stopped", pid=pid)
