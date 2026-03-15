@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import QEvent, QObject, QTimer
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget
+from PyQt5.QtGui import QGuiApplication
+from PyQt5.QtWidgets import QApplication, QWidget
 
 log = logging.getLogger(__name__)
 
 GUI_WORKSPACE_FILENAME = ".guiworkspace.json"
-GUI_WORKSPACE_SCHEMA_VERSION = 1
+GUI_WORKSPACE_SCHEMA_VERSION = 2
 _WORKSPACE_SAVE_DEBOUNCE_MS = 750
 
 
@@ -64,8 +65,10 @@ class WindowWorkspaceState:
     is_maximized: bool
     is_fullscreen: bool
     screen_name: str | None = None
+    screen_index: int | None = None
     qt_geometry_b64: str | None = None
     qt_state_b64: str | None = None
+    extras: dict[str, Any] = field(default_factory=dict)
     updated_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,14 +83,24 @@ class WindowWorkspaceState:
             "is_maximized": self.is_maximized,
             "is_fullscreen": self.is_fullscreen,
             "screen_name": self.screen_name,
+            "screen_index": self.screen_index,
             "qt_geometry_b64": self.qt_geometry_b64,
             "qt_state_b64": self.qt_state_b64,
+            "extras": dict(self.extras),
             "updated_at": self.updated_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WindowWorkspaceState | None":
         try:
+            extras = data.get("extras", {})
+            if not isinstance(extras, dict):
+                extras = {}
+
+            screen_index = data.get("screen_index")
+            if screen_index is not None:
+                screen_index = int(screen_index)
+
             return cls(
                 window_role=str(data["window_role"]),
                 layout_profile=str(data.get("layout_profile") or "default"),
@@ -99,8 +112,10 @@ class WindowWorkspaceState:
                 is_maximized=bool(data.get("is_maximized", False)),
                 is_fullscreen=bool(data.get("is_fullscreen", False)),
                 screen_name=(str(data["screen_name"]) if data.get("screen_name") else None),
+                screen_index=screen_index,
                 qt_geometry_b64=(str(data["qt_geometry_b64"]) if data.get("qt_geometry_b64") else None),
                 qt_state_b64=(str(data["qt_state_b64"]) if data.get("qt_state_b64") else None),
+                extras=extras,
                 updated_at=(str(data["updated_at"]) if data.get("updated_at") else None),
             )
         except Exception:
@@ -124,14 +139,23 @@ class GuiWorkspaceDocument:
     def from_dict(cls, data: dict[str, Any]) -> "GuiWorkspaceDocument":
         windows_payload = data.get("windows", {})
         windows: dict[str, WindowWorkspaceState] = {}
+
         if isinstance(windows_payload, dict):
             for role, payload in windows_payload.items():
-                if isinstance(payload, dict):
-                    state = WindowWorkspaceState.from_dict(payload)
-                    if state is not None:
-                        windows[str(role)] = state
+                if not isinstance(payload, dict):
+                    continue
+                state = WindowWorkspaceState.from_dict(payload)
+                if state is not None:
+                    windows[str(role)] = state
+
+        schema_version = data.get("schema_version", GUI_WORKSPACE_SCHEMA_VERSION)
+        try:
+            schema_version = int(schema_version)
+        except Exception:
+            schema_version = GUI_WORKSPACE_SCHEMA_VERSION
+
         return cls(
-            schema_version=int(data.get("schema_version", GUI_WORKSPACE_SCHEMA_VERSION)),
+            schema_version=schema_version,
             updated_at=(str(data["updated_at"]) if data.get("updated_at") else None),
             windows=windows,
         )
@@ -143,37 +167,149 @@ def workspace_metadata_path(project_root: str | Path) -> Path:
 
 def load_workspace_document(project_root: str | Path) -> GuiWorkspaceDocument:
     path = workspace_metadata_path(project_root)
-    if not path.exists():
+    if not path.is_file():
         return GuiWorkspaceDocument()
+
     try:
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if not isinstance(payload, dict):
-            raise ValueError("workspace metadata root is not a JSON object")
-        return GuiWorkspaceDocument.from_dict(payload)
+            raise ValueError("Workspace metadata root must be an object")
+        document = GuiWorkspaceDocument.from_dict(payload)
+        if document.schema_version > GUI_WORKSPACE_SCHEMA_VERSION:
+            log.warning(
+                "Workspace metadata schema version %s is newer than supported version %s; "
+                "falling back to safe defaults",
+                document.schema_version,
+                GUI_WORKSPACE_SCHEMA_VERSION,
+            )
+            return GuiWorkspaceDocument()
+        return document
     except Exception as exc:
         log.warning("Failed to load GUI workspace metadata from %s: %s", path, exc)
         return GuiWorkspaceDocument()
 
 
-def save_workspace_document(project_root: str | Path, document: GuiWorkspaceDocument) -> Path:
+def save_workspace_document(project_root: str | Path, document: GuiWorkspaceDocument) -> None:
     path = workspace_metadata_path(project_root)
+    document.schema_version = GUI_WORKSPACE_SCHEMA_VERSION
     document.updated_at = _utc_now_iso()
     _atomic_write_json(path, document.to_dict())
-    return path
+
+
+def _sorted_screens() -> list[Any]:
+    app = QGuiApplication.instance() or QApplication.instance()
+    screens = app.screens() if app is not None else []
+    return sorted(screens, key=lambda screen: (screen.geometry().x(), screen.geometry().y()))
+
+
+def _window_screen(window: QWidget):
+    handle = window.windowHandle()
+    if handle is not None and handle.screen() is not None:
+        return handle.screen()
+    return window.screen()
 
 
 def _window_screen_name(window: QWidget) -> str | None:
-    screen = None
-    handle = window.windowHandle()
-    if handle is not None:
-        screen = handle.screen()
-    if screen is None:
-        screen = window.screen()
+    screen = _window_screen(window)
     if screen is None:
         return None
-    name = screen.name()
-    return name or None
+    try:
+        return screen.name() or None
+    except Exception:
+        return None
+
+
+def _window_screen_index(window: QWidget) -> int | None:
+    screen = _window_screen(window)
+    if screen is None:
+        return None
+    screens = _sorted_screens()
+    for idx, candidate in enumerate(screens):
+        if candidate is screen:
+            return idx
+        try:
+            if candidate.name() == screen.name():
+                return idx
+        except Exception:
+            continue
+    return None
+
+
+def _find_target_screen(*, screen_name: str | None, screen_index: int | None):
+    screens = _sorted_screens()
+    if not screens:
+        return None
+
+    if screen_name:
+        for screen in screens:
+            try:
+                if screen.name() == screen_name:
+                    return screen
+            except Exception:
+                continue
+
+    if screen_index is not None and 0 <= screen_index < len(screens):
+        return screens[screen_index]
+
+    return None
+
+
+def _move_window_to_screen(window: QWidget, target_screen: Any) -> None:
+    if target_screen is None:
+        return
+
+    try:
+        target_geometry = target_screen.availableGeometry()
+    except Exception:
+        return
+
+    frame = window.frameGeometry()
+    width = max(640, frame.width() if frame.width() > 0 else window.width())
+    height = max(480, frame.height() if frame.height() > 0 else window.height())
+
+    width = min(width, max(640, target_geometry.width()))
+    height = min(height, max(480, target_geometry.height()))
+
+    x = target_geometry.x() + max(0, (target_geometry.width() - width) // 2)
+    y = target_geometry.y() + max(0, (target_geometry.height() - height) // 2)
+
+    window.setGeometry(x, y, width, height)
+
+    handle = window.windowHandle()
+    if handle is not None:
+        try:
+            handle.setScreen(target_screen)
+        except Exception:
+            pass
+
+
+def _capture_window_extras(window: QWidget) -> dict[str, Any]:
+    handler = getattr(window, "capture_workspace_extras", None)
+    if not callable(handler):
+        return {}
+
+    try:
+        payload = handler()
+        if isinstance(payload, dict):
+            return payload
+    except Exception as exc:
+        log.debug("Failed to capture workspace extras for %s: %s", type(window).__name__, exc)
+    return {}
+
+
+def _apply_window_extras(window: QWidget, extras: dict[str, Any]) -> None:
+    if not extras:
+        return
+
+    handler = getattr(window, "apply_workspace_extras", None)
+    if not callable(handler):
+        return
+
+    try:
+        handler(dict(extras))
+    except Exception as exc:
+        log.debug("Failed to apply workspace extras for %s: %s", type(window).__name__, exc)
 
 
 def capture_window_workspace_state(
@@ -211,8 +347,10 @@ def capture_window_workspace_state(
         is_maximized=window.isMaximized(),
         is_fullscreen=window.isFullScreen(),
         screen_name=_window_screen_name(window),
+        screen_index=_window_screen_index(window),
         qt_geometry_b64=qt_geometry_b64,
         qt_state_b64=qt_state_b64,
+        extras=_capture_window_extras(window),
         updated_at=_utc_now_iso(),
     )
 
@@ -243,20 +381,38 @@ def _restore_qt_state(window: QWidget, payload_b64: str | None) -> bool:
         return False
 
 
-def _apply_fallback_geometry(window: QWidget, state: WindowWorkspaceState) -> None:
-    window.resize(max(640, state.width), max(480, state.height))
-    window.move(state.x, state.y)
+def _apply_fallback_geometry(window: QWidget, state: WindowWorkspaceState, target_screen: Any) -> None:
+    if target_screen is not None:
+        _move_window_to_screen(window, target_screen)
+
+    target_geometry = target_screen.availableGeometry() if target_screen is not None else None
+
+    width = max(640, state.width)
+    height = max(480, state.height)
+    x = state.x
+    y = state.y
+
+    if target_geometry is not None:
+        width = min(width, max(640, target_geometry.width()))
+        height = min(height, max(480, target_geometry.height()))
+        x = min(max(x, target_geometry.left()), max(target_geometry.left(), target_geometry.right() - width + 1))
+        y = min(max(y, target_geometry.top()), max(target_geometry.top(), target_geometry.bottom() - height + 1))
+
+    window.setGeometry(x, y, width, height)
 
 
-def _clamp_window_to_visible_area(window: QWidget) -> None:
-    app = QApplication.instance()
-    screens = app.screens() if app is not None else []
+def _clamp_window_to_visible_area(window: QWidget, *, preferred_screen: Any = None) -> None:
+    screens = _sorted_screens()
     if not screens:
         return
 
+    screen = preferred_screen or _window_screen(window) or screens[0]
+    try:
+        available = screen.availableGeometry()
+    except Exception:
+        available = screens[0].availableGeometry()
+
     frame = window.frameGeometry()
-    screen = window.screen() or screens[0]
-    available = screen.availableGeometry()
 
     x = frame.x()
     y = frame.y()
@@ -289,20 +445,40 @@ def prepare_workspace_window(
 ) -> WindowWorkspaceState | None:
     document = load_workspace_document(project_root)
     state = document.windows.get(window_role)
+
     setattr(window, "_workspace_role", window_role)
     setattr(window, "_workspace_playback_mode", playback_mode)
     setattr(window, "_workspace_layout_profile", layout_profile)
     setattr(window, "_workspace_show_mode", "normal")
+    setattr(window, "_workspace_restored", False)
+    setattr(window, "_workspace_target_screen_name", None)
+    setattr(window, "_workspace_target_screen_index", None)
 
     if state is None:
         return None
 
+    target_screen = _find_target_screen(
+        screen_name=state.screen_name,
+        screen_index=state.screen_index,
+    )
+
+    setattr(window, "_workspace_target_screen_name", state.screen_name)
+    setattr(window, "_workspace_target_screen_index", state.screen_index)
+
     restored_geometry = _restore_qt_geometry(window, state.qt_geometry_b64)
     if not restored_geometry:
-        _apply_fallback_geometry(window, state)
+        _apply_fallback_geometry(window, state, target_screen)
+    elif target_screen is not None:
+        handle = window.windowHandle()
+        if handle is not None:
+            try:
+                handle.setScreen(target_screen)
+            except Exception:
+                pass
 
     _restore_qt_state(window, state.qt_state_b64)
-    _clamp_window_to_visible_area(window)
+    _apply_window_extras(window, state.extras)
+    _clamp_window_to_visible_area(window, preferred_screen=target_screen)
 
     if state.is_fullscreen:
         setattr(window, "_workspace_show_mode", "fullscreen")
@@ -311,6 +487,7 @@ def prepare_workspace_window(
     else:
         setattr(window, "_workspace_show_mode", "normal")
 
+    setattr(window, "_workspace_restored", True)
     return state
 
 

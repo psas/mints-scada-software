@@ -754,11 +754,16 @@ def _setup_workspace_support(
 
 def _show_window_for_workspace(window: Any, *, window_kind: str) -> None:
     restored_mode = getattr(window, "_workspace_show_mode", "normal")
-    if restored_mode == "fullscreen" and hasattr(window, "showFullScreen"):
-        window.showFullScreen()
-        return
-    if restored_mode == "maximized" and hasattr(window, "showMaximized"):
-        window.showMaximized()
+    restored = bool(getattr(window, "_workspace_restored", False))
+
+    if restored:
+        if restored_mode == "fullscreen" and hasattr(window, "showFullScreen"):
+            window.showFullScreen()
+            return
+        if restored_mode == "maximized" and hasattr(window, "showMaximized"):
+            window.showMaximized()
+            return
+        window.show()
         return
 
     app = QApplication.instance()
