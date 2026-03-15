@@ -25,6 +25,10 @@ log = logging.getLogger(__name__)
 _HEARTBEAT_INTERVAL_S = 1.0
 _HEARTBEAT_STALE_AFTER_S = 2.5
 _MONITOR_POLL_S = 0.25
+_BACKEND_STATE_POLL_S = 1.0
+_RESPAWN_KILL_TIMEOUT_S = 2.0
+_RESPAWN_LIMIT_WINDOW_S = 60.0
+_RESPAWN_LIMIT_COUNT = 8
 
 
 def _project_root() -> Path:
@@ -111,6 +115,10 @@ class HeartbeatRegistry:
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(record) for _, record in sorted(self._windows.items())]
+
+    def forget_role(self, window_role: str) -> None:
+        with self._lock:
+            self._windows.pop(window_role, None)
 
 
 class HeartbeatServer:
@@ -272,13 +280,88 @@ def _spawn_window_process(
 def _monitor_session(
     *,
     mode: str,
+    backend_socket: str,
+    supervisor_socket: str,
+    selected_test: str | None,
+    start_run_payload: dict[str, Any] | None,
     child_map: dict[str, subprocess.Popen[str]],
     registry: HeartbeatRegistry,
 ) -> int:
     stale_log_times: dict[str, float] = {}
+    respawn_times: dict[str, list[float]] = {
+        "controller": [],
+        "scada": [],
+    }
+    last_recording_state: bool = (mode == "live")
+    last_backend_poll_monotonic = 0.0
+    initial_start_run_consumed = False
+
+    def refresh_recording_state(force: bool = False) -> bool:
+        nonlocal last_recording_state, last_backend_poll_monotonic
+        now = time.monotonic()
+        if not force and now - last_backend_poll_monotonic < _BACKEND_STATE_POLL_S:
+            return last_recording_state
+
+        snapshot = _request_backend_state_snapshot(backend_socket)
+        extracted = _extract_recording_active_from_snapshot(snapshot)
+        if extracted is not None:
+            if extracted != last_recording_state:
+                log.info(
+                    "GuiSupervisor recording_active changed: %s -> %s",
+                    last_recording_state,
+                    extracted,
+                )
+            last_recording_state = extracted
+        last_backend_poll_monotonic = now
+        return last_recording_state
+
+    def respawn_window(window_kind: str, *, reason: str) -> bool:
+        nonlocal initial_start_run_consumed
+        now = time.monotonic()
+        respawn_times[window_kind] = _prune_respawn_times(respawn_times[window_kind], now=now)
+        if len(respawn_times[window_kind]) >= _RESPAWN_LIMIT_COUNT:
+            log.error(
+                "GuiSupervisor refusing to respawn %s window; respawn limit exceeded in %.0fs window",
+                window_kind,
+                _RESPAWN_LIMIT_WINDOW_S,
+            )
+            return False
+
+        window_role = _window_role_for(mode, window_kind)
+        registry.forget_role(window_role)
+
+        payload_for_spawn = None
+        if mode == "live" and window_kind == "controller" and not initial_start_run_consumed:
+            payload_for_spawn = start_run_payload
+            initial_start_run_consumed = True
+
+        process = _spawn_window_for_role(
+            mode=mode,
+            window_kind=window_kind,
+            backend_socket=backend_socket,
+            supervisor_socket=supervisor_socket,
+            selected_test=selected_test,
+            start_run_payload=payload_for_spawn,
+        )
+        child_map[window_kind] = process
+        respawn_times[window_kind].append(now)
+        log.warning(
+            "GuiSupervisor respawned %s window pid=%s because %s",
+            window_kind,
+            process.pid,
+            reason,
+        )
+        return True
 
     try:
+        # Mark the start_run payload as already consumed once the initial live controller
+        # window has been launched from main().
+        if mode == "live":
+            initial_start_run_consumed = True
+
         while True:
+            recording_active = refresh_recording_state()
+
             exited_name = None
             exited_code = None
 
@@ -290,6 +373,29 @@ def _monitor_session(
                     break
 
             if exited_name is not None:
+                if _window_respawn_allowed(mode=mode, recording_active=recording_active):
+                    log.warning(
+                        "%s window exited with code=%s while recording is active; respawning",
+                        exited_name,
+                        exited_code,
+                    )
+                    if not respawn_window(exited_name, reason=f"exit code {exited_code}"):
+                        log.error(
+                            "GuiSupervisor falling back to full session shutdown because %s could not be respawned",
+                            exited_name,
+                        )
+                        for name, process in child_map.items():
+                            if name == exited_name:
+                                continue
+                            _terminate_process(process, label=f"{name} window")
+                            _wait_for_process_exit(process, timeout_s=2.0)
+                            if process.poll() is None:
+                                _kill_process(process, label=f"{name} window")
+                                _wait_for_process_exit(process, timeout_s=1.0)
+                        return int(exited_code or 1)
+                    time.sleep(_MONITOR_POLL_S)
+                    continue
+
                 log.info(
                     "%s window exited with code=%s; shutting down remaining GUI windows for this %s session",
                     exited_name,
@@ -309,9 +415,11 @@ def _monitor_session(
             now = time.monotonic()
             for record in registry.snapshot():
                 window_role = str(record.get("window_role") or "")
+                window_kind = str(record.get("window_kind") or "")
                 last_monotonic = record.get("last_monotonic")
-                if not window_role or not isinstance(last_monotonic, (int, float)):
+                if not window_role or not window_kind or not isinstance(last_monotonic, (int, float)):
                     continue
+
                 age = now - float(last_monotonic)
                 if age >= _HEARTBEAT_STALE_AFTER_S:
                     previous_log_time = stale_log_times.get(window_role, 0.0)
@@ -325,6 +433,38 @@ def _monitor_session(
                             record.get("session_id"),
                         )
 
+                    if _window_respawn_allowed(mode=mode, recording_active=recording_active):
+                        process = child_map.get(window_kind)
+                        if process is None:
+                            continue
+
+                        log.warning(
+                            "GuiSupervisor terminating stale %s window pid=%s so it can be respawned",
+                            window_kind,
+                            process.pid,
+                        )
+                        _terminate_process(process, label=f"{window_kind} window")
+                        _wait_for_process_exit(process, timeout_s=_RESPAWN_KILL_TIMEOUT_S)
+                        if process.poll() is None:
+                            _kill_process(process, label=f"{window_kind} window")
+                            _wait_for_process_exit(process, timeout_s=1.0)
+
+                        if not respawn_window(window_kind, reason=f"stale heartbeat age={age:.2f}s"):
+                            log.error(
+                                "GuiSupervisor could not respawn stale %s window; shutting down session",
+                                window_kind,
+                            )
+                            for name, other_process in child_map.items():
+                                if name == window_kind:
+                                    continue
+                                _terminate_process(other_process, label=f"{name} window")
+                                _wait_for_process_exit(other_process, timeout_s=2.0)
+                                if other_process.poll() is None:
+                                    _kill_process(other_process, label=f"{name} window")
+                                    _wait_for_process_exit(other_process, timeout_s=1.0)
+                            return 1
+                        break
+
             time.sleep(_MONITOR_POLL_S)
     except KeyboardInterrupt:
         log.info("GuiSupervisor interrupted; terminating child GUI windows")
@@ -336,6 +476,120 @@ def _monitor_session(
             if process.poll() is None:
                 _kill_process(process, label=f"{name} window")
         return 130
+
+
+def _request_backend_state_snapshot(backend_socket: str) -> dict[str, Any] | None:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.5)
+            sock.connect(backend_socket)
+            request = {"type": "request_full_state", "payload": {}}
+            wire = json.dumps(request, ensure_ascii=False, sort_keys=False) + "\n"
+            sock.sendall(wire.encode("utf-8"))
+
+            buffer = ""
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    decoded = json.loads(line)
+                    if not isinstance(decoded, dict):
+                        continue
+                    message_type = decoded.get("type")
+                    payload = decoded.get("payload", {})
+                    if message_type == "state_snapshot" and isinstance(payload, dict):
+                        return payload
+    except Exception as exc:
+        log.debug("GuiSupervisor backend state query failed: %s", exc)
+    return None
+
+
+def _extract_recording_active_from_snapshot(snapshot: dict[str, Any] | None) -> bool | None:
+    if not isinstance(snapshot, dict):
+        return None
+
+    candidate_paths = [
+        ("run", "is_running"),
+        ("run_state", "is_running"),
+        ("run_controller", "is_running"),
+    ]
+    for path in candidate_paths:
+        cursor: Any = snapshot
+        valid_path = True
+        for key in path:
+            if isinstance(cursor, dict) and key in cursor:
+                cursor = cursor[key]
+            else:
+                valid_path = False
+                break
+        if valid_path and isinstance(cursor, bool):
+            return cursor
+
+    run_section = snapshot.get("run")
+    if isinstance(run_section, dict):
+        status = run_section.get("status")
+        if isinstance(status, str):
+            lowered = status.strip().lower()
+            if lowered in {"running", "active", "recording"}:
+                return True
+            if lowered in {"idle", "completed", "stopped", "not_running"}:
+                return False
+
+        current_run_id = run_section.get("run_id")
+        if isinstance(current_run_id, str) and current_run_id.strip():
+            completed = run_section.get("completed")
+            if isinstance(completed, bool):
+                return not completed
+
+    current_run = snapshot.get("current_run")
+    if isinstance(current_run, dict):
+        run_id = current_run.get("run_id")
+        if isinstance(run_id, str) and run_id.strip():
+            return True
+
+    return None
+
+
+def _spawn_window_for_role(
+    *,
+    mode: str,
+    window_kind: str,
+    backend_socket: str,
+    supervisor_socket: str,
+    selected_test: str | None,
+    start_run_payload: dict[str, Any] | None,
+) -> subprocess.Popen[str]:
+    return _spawn_window_process(
+        mode=mode,
+        window_kind=window_kind,
+        backend_socket=backend_socket,
+        supervisor_socket=supervisor_socket,
+        selected_test=selected_test,
+        start_run_payload=start_run_payload,
+    )
+
+
+def _window_role_for(mode: str, window_kind: str) -> str:
+    return f"{mode}_{window_kind}"
+
+
+def _window_respawn_allowed(
+    *,
+    mode: str,
+    recording_active: bool,
+) -> bool:
+    return mode == "live" and recording_active
+
+
+def _prune_respawn_times(respawn_times: list[float], *, now: float) -> list[float]:
+    return [value for value in respawn_times if now - value <= _RESPAWN_LIMIT_WINDOW_S]
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -381,7 +635,15 @@ def main() -> int:
             start_run_payload=None,
         )
 
-        return _monitor_session(mode=args.mode, child_map=processes, registry=registry)
+        return _monitor_session(
+            mode=args.mode,
+            backend_socket=args.backend_socket,
+            supervisor_socket=str(supervisor_socket_path),
+            selected_test=args.selected_test,
+            start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.mode == "live" else None,
+            child_map=processes,
+            registry=registry,
+        )
     finally:
         heartbeat_server.stop()
         for name, process in processes.items():
