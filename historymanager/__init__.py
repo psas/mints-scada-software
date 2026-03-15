@@ -5,6 +5,12 @@ from .integrity import (
     scan_run_integrity,
     write_run_integrity_report,
 )
+from .rebuild import (
+    REBUILD_PREVIEW_FILENAME,
+    REBUILD_WORKSPACE_DIRNAME,
+    discard_rebuild_workspace,
+    rebuild_run_archive,
+)
 
 __all__ = [
     "HistoryManager",
@@ -12,4 +18,8 @@ __all__ = [
     "scan_run_integrity",
     "write_run_integrity_report",
     "scan_and_write_run_integrity",
+    "REBUILD_PREVIEW_FILENAME",
+    "REBUILD_WORKSPACE_DIRNAME",
+    "rebuild_run_archive",
+    "discard_rebuild_workspace",
 ]
