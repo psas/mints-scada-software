@@ -399,6 +399,21 @@ def _load_playback_device_proxies(window: Any) -> None:
         window.addDevice(proxy, proxy.meta)
 
 
+def _dispatch_playback_loaded(window: Any, payload: dict[str, Any]) -> None:
+    setattr(window, "playback_load_summary", dict(payload))
+
+    targets = [window]
+    for child_name in ("controller", "scada", "script"):
+        child = getattr(window, child_name, None)
+        if child is not None:
+            targets.append(child)
+
+    for target in targets:
+        handler = getattr(target, "handle_playback_loaded", None)
+        if callable(handler):
+            handler(dict(payload))
+
+
 def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     run_dir = _resolve_ignitionhistory_run_dir(selected_test)
 
@@ -469,6 +484,19 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
 
     window.timeline.set_current_time(0.0)
     window.playback_time = 0.0
+
+    duration_text = f"{duration_s:.3f} s"
+    playback_payload = {
+        "run_id": metadata.get("run_id", run_dir.name),
+        "history_dir": str(run_dir),
+        "metadata": dict(metadata),
+        "merged_event_count": len(merged_events),
+        "snapshot_count": len(snapshot_files),
+        "timeline_label_count": added_labels,
+        "duration_seconds": duration_s,
+        "duration_text": duration_text,
+    }
+    _dispatch_playback_loaded(window, playback_payload)
 
     log.info(
         "Loaded ignitionhistory playback run %s from %s with %s merged events, %s timeline labels, %s snapshots",

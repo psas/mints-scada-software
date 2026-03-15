@@ -1327,6 +1327,7 @@ class TelemetryWidget(QWidget):
         self.info_label.setText(text)
 
 
+
 class ControllerWindow(QMainWindow):
     STATUS_STYLE = {
         "idle": ("Idle", "#616161", "#ffffff"),
@@ -1920,6 +1921,20 @@ class ControllerWindow(QMainWindow):
 
     def _on_tank_clicked(self, name: str):
         self.set_tank_info(f"{name} tank selected. (put more details here)")
+
+    def handle_playback_loaded(self, payload: dict):
+        if not self.playback_mode:
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        metadata = payload.get("metadata", {})
+        if isinstance(metadata, dict):
+            test_name = metadata.get("test_name") or payload.get("run_id")
+            if test_name:
+                self.setWindowTitle(f"minTS Controller - Playback - {test_name}")
+
 
     # =========================================================
     # Timer update
