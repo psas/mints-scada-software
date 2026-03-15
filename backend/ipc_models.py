@@ -70,6 +70,7 @@ def backend_status_message(
     active_run_id: str | None,
     is_running: bool,
     connected_client_sessions: list[Mapping[str, Any]] | None = None,
+    health_summary: Mapping[str, Any] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="backend_status",
@@ -79,6 +80,7 @@ def backend_status_message(
             "active_run_id": active_run_id,
             "is_running": is_running,
             "connected_client_sessions": [dict(item) for item in list(connected_client_sessions or [])],
+            "health_summary": dict(health_summary or {}),
         },
     )
 

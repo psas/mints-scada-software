@@ -85,6 +85,28 @@ class ScriptRunnerState:
 
 
 @dataclass
+class HealthRuntimeState:
+    sampled_at: str | None = None
+    overall_status: str = "unknown"
+    active_warning_count: int = 0
+    active_warnings: list[str] = field(default_factory=list)
+    writers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    bus: dict[str, Any] = field(default_factory=dict)
+    script: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sampled_at": self.sampled_at,
+            "overall_status": self.overall_status,
+            "active_warning_count": self.active_warning_count,
+            "active_warnings": list(self.active_warnings),
+            "writers": {name: dict(value) for name, value in self.writers.items()},
+            "bus": dict(self.bus),
+            "script": dict(self.script),
+        }
+
+
+@dataclass
 class BackendRuntimeState:
     service_name: str
     backend_started_at: str
@@ -94,6 +116,7 @@ class BackendRuntimeState:
     device_registry: DeviceRegistryState = field(default_factory=DeviceRegistryState)
     device_runtime: DeviceRuntimeState = field(default_factory=DeviceRuntimeState)
     script_runner: ScriptRunnerState = field(default_factory=ScriptRunnerState)
+    health: HealthRuntimeState = field(default_factory=HealthRuntimeState)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,4 +128,5 @@ class BackendRuntimeState:
             "device_registry": self.device_registry.to_dict(),
             "device_runtime": self.device_runtime.to_dict(),
             "script_runner": self.script_runner.to_dict(),
+            "health": self.health.to_dict(),
         }

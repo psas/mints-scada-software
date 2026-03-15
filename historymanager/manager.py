@@ -986,6 +986,87 @@ class HistoryManager:
                 detail = f"{detail} (command_type={command_type})"
             stats.add_error(wall_time=wall_time, message=detail)
 
+
+    def get_health_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            run = self.current_run
+            if run is not None:
+                self._drain_writer_status_queues(run)
+
+            return {
+                "sampled_at": isoformat_z(),
+                "active_run_id": run.run_id if run is not None else None,
+                "writers": {
+                    "raw": self._build_writer_health_snapshot(
+                        runtime=self._raw_writer,
+                        stats=run.raw_stats if run is not None else None,
+                        side_name="raw",
+                        queue_limit=self.raw_queue_maxsize,
+                    ),
+                    "rawbak": self._build_writer_health_snapshot(
+                        runtime=self._rawbak_writer,
+                        stats=run.rawbak_stats if run is not None else None,
+                        side_name="rawbak",
+                        queue_limit=self.raw_queue_maxsize,
+                    ),
+                    "structured": self._build_writer_health_snapshot(
+                        runtime=self._structured_writer,
+                        stats=run.history_stats if run is not None else None,
+                        side_name="structured",
+                        queue_limit=self.structured_queue_maxsize,
+                    ),
+                },
+            }
+
+    def _build_writer_health_snapshot(
+        self,
+        *,
+        runtime: WriterRuntime | None,
+        stats: WriterStatsState | None,
+        side_name: str,
+        queue_limit: int,
+    ) -> dict[str, Any]:
+        queue_depth = self._safe_queue_depth(runtime.command_queue) if runtime is not None else None
+        process_alive = bool(runtime is not None and runtime.process.is_alive())
+        pid = runtime.process.pid if runtime is not None else None
+
+        if stats is None:
+            return {
+                "side_name": side_name,
+                "configured": False,
+                "process_alive": process_alive,
+                "pid": pid,
+                "writer_status": "idle",
+                "queue_depth": queue_depth,
+                "queue_limit": queue_limit,
+                "queue_max_depth": 0,
+                "dropped_events": 0,
+                "flush_count": 0,
+                "last_flush_wall_time": None,
+                "last_error_wall_time": None,
+                "error_count": 0,
+                "snapshots_written": 0,
+                "stream_counts": {},
+            }
+
+        return {
+            "side_name": side_name,
+            "configured": runtime is not None,
+            "process_alive": process_alive,
+            "pid": pid or stats.writer_pid,
+            "writer_status": stats.writer_status,
+            "queue_depth": queue_depth,
+            "queue_limit": queue_limit,
+            "queue_max_depth": stats.queue_max_depth,
+            "dropped_events": stats.dropped_events,
+            "flush_count": stats.flush_count,
+            "last_flush_wall_time": stats.last_flush_wall_time,
+            "last_error_wall_time": stats.last_error_wall_time,
+            "error_count": len(stats.errors),
+            "snapshots_written": stats.snapshots_written,
+            "stream_counts": dict(stats.stream_counts),
+        }
+
     def _safe_queue_depth(self, queue_obj: Any) -> int | None:
         try:
             return int(queue_obj.qsize())

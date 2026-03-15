@@ -188,6 +188,28 @@ class StateStore:
             self._state.script_runner.command = []
             self._state.script_runner.cwd = None
 
+    def set_health_snapshot(
+        self,
+        *,
+        sampled_at: str,
+        overall_status: str,
+        active_warnings: list[str],
+        writers: Mapping[str, Any],
+        bus: Mapping[str, Any],
+        script: Mapping[str, Any],
+    ) -> None:
+        with self._lock:
+            self._state.health.sampled_at = sampled_at
+            self._state.health.overall_status = overall_status
+            self._state.health.active_warnings = list(active_warnings)
+            self._state.health.active_warning_count = len(active_warnings)
+            self._state.health.writers = {
+                str(name): dict(value)
+                for name, value in writers.items()
+            }
+            self._state.health.bus = dict(bus)
+            self._state.health.script = dict(script)
+
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
             return deepcopy(self._state.to_dict())
@@ -199,4 +221,10 @@ class StateStore:
                 "connected_clients": self._state.connected_clients,
                 "active_run_id": self._state.run.active_run_id,
                 "is_running": self._state.run.is_running,
+                "health_summary": {
+                    "sampled_at": self._state.health.sampled_at,
+                    "overall_status": self._state.health.overall_status,
+                    "active_warning_count": self._state.health.active_warning_count,
+                    "active_warnings": list(self._state.health.active_warnings),
+                },
             }

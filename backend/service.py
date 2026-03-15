@@ -12,7 +12,7 @@ from nexus import DataPacket
 from .bus_manager import BusManager
 from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
-from .health import HealthPublisher
+from .health import BackendHealthMonitor, HealthPublisher
 from .ipc_models import (
     IPCMessage,
     backend_status_message,
@@ -78,6 +78,12 @@ class BackendService:
             bus_manager=self.bus_manager,
         )
         self.script_runner = ScriptRunner()
+        self.health_monitor = BackendHealthMonitor(
+            history_manager=self.history_manager,
+            state_store=self.state_store,
+            health_publisher=self.health,
+        )
+        self.health_monitor.start()
 
         if socket_path is None:
             if self.project_root is None:
@@ -140,7 +146,13 @@ class BackendService:
             devices=self.device_registry.get_gui_device_presentations(),
             load_errors=self.device_registry.get_load_errors(),
         )
+        try:
+            self.health_monitor.sample_once()
+        except Exception:
+            pass
+
         self.server.stop()
+        self.health_monitor.stop()
 
     def on_client_connected(self, client_id: str) -> None:
         with self._lock:
@@ -271,6 +283,7 @@ class BackendService:
                 registered_count=result.registered_count,
                 skipped_count=result.skipped_count,
             )
+            self.health_monitor.sample_once()
 
             yield hardware_status_message(
                 connected=True,
@@ -303,6 +316,7 @@ class BackendService:
                 sender=self.bus_manager.sender,
                 bitrate=self.bus_manager.bitrate,
             )
+            self.health_monitor.sample_once()
 
             yield hardware_status_message(
                 connected=False,
@@ -347,6 +361,7 @@ class BackendService:
                 operator=run_result.get("operator"),
                 profile_name=run_result.get("profile_name"),
             )
+            self.health_monitor.sample_once()
 
             yield run_status_message(
                 run_id=run_result["run_id"],
@@ -381,6 +396,8 @@ class BackendService:
             except Exception as exc:
                 yield error_message("finish_run_failed", str(exc))
                 return
+
+            self.health_monitor.sample_once()
 
             yield run_status_message(
                 run_id=finish_result["run_id"],
@@ -536,6 +553,8 @@ class BackendService:
                 yield error_message("start_script_failed", str(exc))
                 return
 
+            self.health_monitor.sample_once()
+
             yield script_status_message(
                 status="started",
                 script_id=start_result.script_id,
@@ -579,6 +598,8 @@ class BackendService:
                 )
                 yield error_message("stop_script_failed", str(exc))
                 return
+
+            self.health_monitor.sample_once()
 
             yield script_status_message(
                 status="stopped",
@@ -643,6 +664,7 @@ class BackendService:
             cwd=info.get("cwd"),
             returncode=returncode,
         )
+        self.health_monitor.sample_once()
 
     def _process_telemetry_packet(
         self,
@@ -739,6 +761,7 @@ class BackendService:
             active_run_id=status["active_run_id"],
             is_running=status["is_running"],
             connected_client_sessions=self.connected_client_sessions,
+            health_summary=status.get("health_summary"),
         )
 
     def _register_client_hello(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
