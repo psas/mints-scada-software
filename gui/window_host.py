@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PyQt5.QtCore import QObject, QTimer, Qt, QEvent  # noqa: E402
-from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
+from PyQt5.QtCore import QObject, QTimer, Qt, QEvent, QRect  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton, QFrame, QLabel  # noqa: E402
 
 import settings  # noqa: E402
 from gui import QLoggingHandler  # noqa: E402
@@ -67,6 +67,167 @@ def _supervisor_message_payload(
         "pid": os.getpid(),
         "wall_time": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
     }
+
+
+
+def _coerce_health_warnings(value: Any) -> list[str]:
+    warnings: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                warnings.append(item.strip())
+            elif isinstance(item, dict):
+                message = item.get("message") or item.get("warning") or item.get("detail")
+                if isinstance(message, str) and message.strip():
+                    warnings.append(message.strip())
+    return warnings
+
+
+def _normalize_health_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    summary = dict(payload or {})
+    overall_status = str(summary.get("overall_status") or "unknown").strip().lower() or "unknown"
+    active_warnings = _coerce_health_warnings(summary.get("active_warnings"))
+    if not active_warnings:
+        writer_section = summary.get("writers")
+        if isinstance(writer_section, dict):
+            for writer_name, writer_payload in writer_section.items():
+                if not isinstance(writer_payload, dict):
+                    continue
+                writer_status = str(writer_payload.get("status") or "unknown").strip().lower()
+                if writer_status not in {"ok", "healthy", "running", "idle"}:
+                    active_warnings.append(f"{writer_name} writer: {writer_status}")
+        bus_section = summary.get("bus")
+        if isinstance(bus_section, dict):
+            bus_status = str(bus_section.get("status") or "unknown").strip().lower()
+            if bus_status not in {"ok", "healthy", "connected", "idle"}:
+                active_warnings.append(f"bus: {bus_status}")
+        script_section = summary.get("script")
+        if isinstance(script_section, dict):
+            script_status = str(script_section.get("status") or "unknown").strip().lower()
+            if script_status not in {"ok", "healthy", "idle", "stopped"}:
+                active_warnings.append(f"script: {script_status}")
+
+    return {
+        "sampled_at": summary.get("sampled_at"),
+        "overall_status": overall_status,
+        "active_warning_count": int(summary.get("active_warning_count") or len(active_warnings)),
+        "active_warnings": active_warnings,
+    }
+
+
+class WindowHealthBannerController(QObject):
+    _STYLE_BY_SEVERITY = {
+        "warning": ("#f9a825", "#1f1f1f"),
+        "error": ("#c62828", "#ffffff"),
+    }
+
+    def __init__(self, *, window: Any) -> None:
+        super().__init__(window)
+        self.window = window
+        self.frame = QFrame(window)
+        self.frame.setObjectName("windowHealthBanner")
+        self.frame.hide()
+
+        self.title_label = QLabel(self.frame)
+        self.title_label.setText("")
+        self.title_label.setWordWrap(False)
+        self.title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+
+        self.detail_label = QLabel(self.frame)
+        self.detail_label.setText("")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+
+        window.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.window and event.type() in (
+            QEvent.Resize,
+            QEvent.Show,
+            QEvent.WindowStateChange,
+            QEvent.Move,
+        ):
+            self.reposition()
+        return False
+
+    def clear(self) -> None:
+        self.frame.hide()
+
+    def show_backend_disconnected(self, *, reason_text: str | None) -> None:
+        detail = reason_text or "The GUI window is disconnected from backend."
+        self._show_banner(
+            severity="error",
+            title="BACKEND DISCONNECTED",
+            detail=detail,
+        )
+
+    def show_health_summary(self, summary: dict[str, Any]) -> None:
+        normalized = _normalize_health_payload(summary)
+        overall = normalized["overall_status"]
+        warnings = normalized["active_warnings"]
+
+        if overall in {"ok", "healthy", "idle"} and not warnings:
+            self.clear()
+            return
+
+        severity = "error" if overall in {"error", "failed", "dead", "disconnected"} else "warning"
+        title = "BACKEND DEGRADED" if severity == "error" else "BACKEND WARNING"
+        detail = "; ".join(warnings[:3]) if warnings else f"overall_status={overall}"
+        self._show_banner(
+            severity=severity,
+            title=title,
+            detail=detail,
+        )
+
+    def show_backend_error(self, *, code: str | None, message: str | None) -> None:
+        detail_parts = []
+        if code:
+            detail_parts.append(f"code={code}")
+        if message:
+            detail_parts.append(message)
+        detail = " - ".join(detail_parts) if detail_parts else "Backend reported an error."
+        self._show_banner(
+            severity="error",
+            title="BACKEND ERROR",
+            detail=detail,
+        )
+
+    def _show_banner(self, *, severity: str, title: str, detail: str) -> None:
+        border, fg = self._STYLE_BY_SEVERITY.get(severity, self._STYLE_BY_SEVERITY["warning"])
+        self.frame.setStyleSheet(
+            """
+            QFrame#windowHealthBanner {
+                background-color: rgba(18, 18, 18, 225);
+                border: 2px solid BORDER_COLOR;
+                border-radius: 10px;
+            }
+            """.replace("BORDER_COLOR", border)
+        )
+        self.title_label.setStyleSheet(
+            f"color: {border}; font-size: 16px; font-weight: 700; background: transparent;"
+        )
+        self.detail_label.setStyleSheet(
+            f"color: {fg}; font-size: 12px; background: transparent;"
+        )
+        self.title_label.setText(title)
+        self.detail_label.setText(detail)
+        self.frame.show()
+        self.reposition()
+
+    def reposition(self) -> None:
+        if self.frame.isHidden():
+            return
+
+        margin = 14
+        frame_width = max(320, self.window.width() - (margin * 2))
+        title_height = 26
+        detail_height = 40
+        frame_height = title_height + detail_height + 18
+
+        self.frame.setGeometry(QRect(margin, margin, frame_width, frame_height))
+        self.title_label.setGeometry(14, 8, frame_width - 28, title_height)
+        self.detail_label.setGeometry(14, 30, frame_width - 28, detail_height)
+        self.frame.raise_()
 
 
 class SupervisorHeartbeatClient(QObject):
@@ -140,6 +301,7 @@ class WindowHostFacade:
         self.window = window
         self.controller = window if window_kind == "controller" else None
         self.scada = window if window_kind == "scada" else None
+        self.health_banner_controller = WindowHealthBannerController(window=window)
 
     @property
     def timeline(self):
@@ -177,6 +339,22 @@ class WindowHostFacade:
         if callable(handler):
             handler(dict(payload))
 
+    def update_health_summary(self, summary: dict[str, Any]) -> None:
+        setattr(self.window, "backend_health_summary", dict(summary))
+        self.health_banner_controller.show_health_summary(dict(summary))
+
+    def show_backend_disconnected(self, reason_payload: dict[str, Any] | None) -> None:
+        detail = None
+        if isinstance(reason_payload, dict):
+            detail = reason_payload.get("message") or reason_payload.get("code")
+        self.health_banner_controller.show_backend_disconnected(reason_text=detail)
+
+    def show_backend_error_banner(self, payload: dict[str, Any]) -> None:
+        self.health_banner_controller.show_backend_error(
+            code=str(payload.get("code") or "") or None,
+            message=str(payload.get("message") or "") or None,
+        )
+
 
 class GuiBackendBridge:
     """Bind backend IPC messages into a single GUI window process."""
@@ -195,6 +373,10 @@ class GuiBackendBridge:
         self.pending_start_run_payload = dict(pending_start_run_payload or {}) or None
         self._start_run_requested = False
         self.device_catalog = BackendDeviceCatalog()
+        self._last_disconnect_reason: dict[str, Any] | None = None
+        self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
+        self._health_poll_timer.setInterval(1000)
+        self._health_poll_timer.timeout.connect(self._poll_backend_health)
 
         self._attach_backend_client()
         self._connect_signals()
@@ -220,6 +402,7 @@ class GuiBackendBridge:
     def _connect_signals(self) -> None:
         self.backend_client.connected.connect(self.on_connected)
         self.backend_client.disconnected.connect(self.on_disconnected)
+        self.backend_client.disconnected_with_reason.connect(self.on_disconnected_with_reason)
         self.backend_client.hello_ack_received.connect(self.on_hello_ack)
         self.backend_client.backend_status_received.connect(self.on_backend_status)
         self.backend_client.state_snapshot_received.connect(self.on_state_snapshot)
@@ -231,6 +414,14 @@ class GuiBackendBridge:
         self.backend_client.command_result_received.connect(self.on_command_result)
         self.backend_client.script_status_received.connect(self.on_script_status)
         self.backend_client.error_received.connect(self.on_error)
+
+    def _poll_backend_health(self) -> None:
+        if not self.backend_client.is_connected:
+            return
+        try:
+            self.backend_client.request_backend_status()
+        except Exception as exc:
+            log.debug("Failed to request backend status for health polling: %s", exc)
 
     def send_operator_action(self, action: str, **extra: Any) -> None:
         payload = {"action": action, **extra}
@@ -285,8 +476,12 @@ class GuiBackendBridge:
 
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
+        self._last_disconnect_reason = None
         self.backend_client.list_devices()
         self.backend_client.request_full_state()
+        self._poll_backend_health()
+        if not self._health_poll_timer.isActive():
+            self._health_poll_timer.start()
 
         if self.initialize_live_hardware_on_connect:
             try:
@@ -297,6 +492,14 @@ class GuiBackendBridge:
     def on_disconnected(self) -> None:
         log.warning("Disconnected from backend")
         setattr(self.window, "backend_connected", False)
+        if self._health_poll_timer.isActive():
+            self._health_poll_timer.stop()
+        if hasattr(self.window, "show_backend_disconnected"):
+            self.window.show_backend_disconnected(self._last_disconnect_reason)
+
+    def on_disconnected_with_reason(self, payload: dict[str, Any]) -> None:
+        self._last_disconnect_reason = dict(payload)
+        setattr(self.window, "backend_disconnect_reason", dict(payload))
 
     def on_hello_ack(self, payload: dict[str, Any]) -> None:
         log.info(
@@ -323,6 +526,9 @@ class GuiBackendBridge:
 
     def on_backend_status(self, payload: dict[str, Any]) -> None:
         setattr(self.window, "backend_status", dict(payload))
+        health_summary = payload.get("health_summary")
+        if isinstance(health_summary, dict) and hasattr(self.window, "update_health_summary"):
+            self.window.update_health_summary(dict(health_summary))
         handler = getattr(self.window, "handle_backend_status", None)
         if callable(handler):
             handler(dict(payload))
@@ -331,6 +537,9 @@ class GuiBackendBridge:
         self.device_catalog.apply_state_snapshot(snapshot)
         setattr(self.window, "backend_state_snapshot", dict(snapshot))
         setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
+        health_snapshot = snapshot.get("health")
+        if isinstance(health_snapshot, dict) and hasattr(self.window, "update_health_summary"):
+            self.window.update_health_summary(dict(health_snapshot))
 
         handler = getattr(self.window, "apply_backend_state_snapshot", None)
         if callable(handler):
@@ -406,6 +615,8 @@ class GuiBackendBridge:
         message = payload.get("message", "Unknown backend error")
         log.error("Backend error [%s]: %s", code, message)
         setattr(self.window, "backend_last_error", dict(payload))
+        if hasattr(self.window, "show_backend_error_banner"):
+            self.window.show_backend_error_banner(dict(payload))
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:

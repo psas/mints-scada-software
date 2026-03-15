@@ -13,6 +13,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 class BackendClient(QObject):
     connected = pyqtSignal()
     disconnected = pyqtSignal()
+    disconnected_with_reason = pyqtSignal(dict)
     hello_ack_received = pyqtSignal(dict)
     backend_status_received = pyqtSignal(dict)
     state_snapshot_received = pyqtSignal(dict)
@@ -38,6 +39,7 @@ class BackendClient(QObject):
         self._stop_event = threading.Event()
         self._is_connected = False
         self._last_hello_payload: dict[str, Any] | None = None
+        self._last_disconnect_payload: dict[str, Any] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -48,6 +50,12 @@ class BackendClient(QObject):
     def last_hello_payload(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._last_hello_payload) if self._last_hello_payload is not None else None
+
+
+    @property
+    def last_disconnect_payload(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._last_disconnect_payload) if self._last_disconnect_payload is not None else None
 
     def connect_to_backend(
         self,
@@ -105,7 +113,12 @@ class BackendClient(QObject):
     def disconnect_from_backend(self) -> None:
         self._stop_event.set()
         self._close_io()
-        self._emit_disconnected_once()
+        self._emit_disconnected_once(
+            {
+                "code": "client_disconnect",
+                "message": "BackendClient disconnected locally",
+            }
+        )
 
     def send_message(self, message_type: str, payload: Mapping[str, Any] | None = None) -> None:
         with self._lock:
@@ -122,6 +135,9 @@ class BackendClient(QObject):
 
     def ping(self) -> None:
         self.send_message("ping", {})
+
+    def request_backend_status(self) -> None:
+        self.send_message("status_request", {})
 
     def request_full_state(self) -> None:
         self.send_message("request_full_state", {})
@@ -252,15 +268,19 @@ class BackendClient(QObject):
                 self.raw_message_received.emit(message_type, dict(payload))
                 self._dispatch_message(message_type, dict(payload))
         except Exception as exc:
-            self.error_received.emit(
-                {
-                    "code": "backend_reader_failed",
-                    "message": str(exc),
-                }
-            )
+            disconnect_reason = {
+                "code": "backend_reader_failed",
+                "message": str(exc),
+            }
+            self.error_received.emit(dict(disconnect_reason))
         finally:
             self._close_io()
-            self._emit_disconnected_once()
+            if 'disconnect_reason' not in locals():
+                disconnect_reason = {
+                    "code": "backend_connection_closed",
+                    "message": "Backend connection closed",
+                }
+            self._emit_disconnected_once(disconnect_reason)
 
     def _dispatch_message(self, message_type: str, payload: dict[str, Any]) -> None:
         if message_type == "hello_ack":
@@ -314,12 +334,15 @@ class BackendClient(QObject):
         except Exception:
             pass
 
-    def _emit_disconnected_once(self) -> None:
+    def _emit_disconnected_once(self, reason: Mapping[str, Any] | None = None) -> None:
         should_emit = False
+        payload = dict(reason or {})
         with self._lock:
             if self._is_connected:
                 self._is_connected = False
+                self._last_disconnect_payload = dict(payload)
                 should_emit = True
 
         if should_emit:
             self.disconnected.emit()
+            self.disconnected_with_reason.emit(dict(payload))
