@@ -4,7 +4,6 @@ import base64
 import json
 import logging
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -52,21 +51,20 @@ def _configure_logging() -> QLoggingHandler:
     return consolehandler
 
 
-def _window_host_script() -> Path:
-    script_path = _project_root() / "gui" / "window_host.py"
+def _supervisor_script() -> Path:
+    script_path = _project_root() / "gui" / "supervisor.py"
     if not script_path.is_file():
-        raise FileNotFoundError(f"Missing window host script: {script_path}")
+        raise FileNotFoundError(f"Missing GUI supervisor script: {script_path}")
     return script_path
 
 
-def _spawn_window_process(
+def _spawn_supervisor(
     *,
     mode: str,
-    window_kind: str,
     selected_test: str | None = None,
     start_run_payload: dict[str, Any] | None = None,
-) -> subprocess.Popen[str]:
-    script_path = _window_host_script()
+) -> int:
+    script_path = _supervisor_script()
     socket_path = _project_root() / ".backend_service.sock"
 
     cmd = [
@@ -74,8 +72,6 @@ def _spawn_window_process(
         str(script_path),
         "--mode",
         mode,
-        "--window-kind",
-        window_kind,
         "--backend-socket",
         str(socket_path),
     ]
@@ -97,87 +93,18 @@ def _spawn_window_process(
         text=True,
         start_new_session=False,
     )
-    log.info(
-        "Spawned %s %s window host pid=%s",
-        mode,
-        window_kind,
-        process.pid,
-    )
-    return process
+    log.info("Spawned GUI supervisor pid=%s for mode=%s", process.pid, mode)
 
-
-def _spawn_live_windows(*, start_run_payload: dict[str, Any] | None) -> int:
-    processes: list[subprocess.Popen[str]] = []
     try:
-        controller_process = _spawn_window_process(
-            mode="live",
-            window_kind="controller",
-            start_run_payload=start_run_payload,
-        )
-        processes.append(controller_process)
-
-        scada_process = _spawn_window_process(
-            mode="live",
-            window_kind="scada",
-            start_run_payload=None,
-        )
-        processes.append(scada_process)
-
-        return _run_window_session(
-            mode="live",
-            controller_process=controller_process,
-            scada_process=scada_process,
-        )
-    except Exception as exc:
-        for process in processes:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-        QMessageBox.critical(
-            None,
-            "GUI Launch Error",
-            "Failed to launch split live GUI windows.\n\n"
-            f"Error: {exc}",
-        )
-        return 1
-
-
-def _spawn_playback_windows(*, selected_test: str) -> int:
-    processes: list[subprocess.Popen[str]] = []
-    try:
-        controller_process = _spawn_window_process(
-            mode="playback",
-            window_kind="controller",
-            selected_test=selected_test,
-        )
-        processes.append(controller_process)
-
-        scada_process = _spawn_window_process(
-            mode="playback",
-            window_kind="scada",
-            selected_test=selected_test,
-        )
-        processes.append(scada_process)
-
-        return _run_window_session(
-            mode="playback",
-            controller_process=controller_process,
-            scada_process=scada_process,
-        )
-    except Exception as exc:
-        for process in processes:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-        QMessageBox.critical(
-            None,
-            "Playback Launch Error",
-            "Failed to launch split playback GUI windows.\n\n"
-            f"Error: {exc}",
-        )
-        return 1
+        return process.wait()
+    except KeyboardInterrupt:
+        log.info("Launcher interrupted; terminating GUI supervisor pid=%s", process.pid)
+        _terminate_process(process, label="gui supervisor")
+        _wait_for_process_exit(process, timeout_s=2.0)
+        if process.poll() is None:
+            _kill_process(process, label="gui supervisor")
+            _wait_for_process_exit(process, timeout_s=1.0)
+        return 130
 
 
 def _terminate_process(process: subprocess.Popen[str], *, label: str) -> None:
@@ -209,68 +136,6 @@ def _wait_for_process_exit(process: subprocess.Popen[str], *, timeout_s: float) 
         pass
 
 
-def _run_window_session(
-    *,
-    mode: str,
-    controller_process: subprocess.Popen[str],
-    scada_process: subprocess.Popen[str],
-) -> int:
-    child_map = {
-        "controller": controller_process,
-        "scada": scada_process,
-    }
-
-    log.info(
-        "Entering split-window session coordinator for mode=%s (controller pid=%s, scada pid=%s)",
-        mode,
-        controller_process.pid,
-        scada_process.pid,
-    )
-
-    try:
-        while True:
-            exited_name = None
-            exited_code = None
-
-            for name, process in child_map.items():
-                return_code = process.poll()
-                if return_code is not None:
-                    exited_name = name
-                    exited_code = return_code
-                    break
-
-            if exited_name is None:
-                time.sleep(0.2)
-                continue
-
-            log.info(
-                "%s window process exited with code=%s; shutting down remaining GUI windows for this session",
-                exited_name,
-                exited_code,
-            )
-
-            for name, process in child_map.items():
-                if name == exited_name:
-                    continue
-                _terminate_process(process, label=f"{name} window")
-                _wait_for_process_exit(process, timeout_s=2.0)
-                if process.poll() is None:
-                    _kill_process(process, label=f"{name} window")
-                    _wait_for_process_exit(process, timeout_s=1.0)
-
-            return int(exited_code or 0)
-
-    except KeyboardInterrupt:
-        log.info("Launcher interrupted; terminating child GUI windows")
-        for name, process in child_map.items():
-            _terminate_process(process, label=f"{name} window")
-        for process in child_map.values():
-            _wait_for_process_exit(process, timeout_s=2.0)
-        for name, process in child_map.items():
-            if process.poll() is None:
-                _kill_process(process, label=f"{name} window")
-        return 130
-
 
 def main() -> int:
     app = QApplication(sys.argv)
@@ -292,12 +157,12 @@ def main() -> int:
                 "Playback mode was selected, but no playback run was provided.",
             )
             return 1
-        log.info("Launching split playback windows for run: %s", selected_test)
-        return _spawn_playback_windows(selected_test=selected_test)
+        log.info("Launching GUI supervisor for playback run: %s", selected_test)
+        return _spawn_supervisor(mode="playback", selected_test=selected_test)
 
     start_run_payload = dict(checklist.live_run_metadata or {}) or None
-    log.info("Launching split live windows with metadata: %s", start_run_payload)
-    return _spawn_live_windows(start_run_payload=start_run_payload)
+    log.info("Launching GUI supervisor for live session with metadata: %s", start_run_payload)
+    return _spawn_supervisor(mode="live", start_run_payload=start_run_payload)
 
 
 if __name__ == "__main__":

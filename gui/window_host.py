@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import socket
 import sys
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -15,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PyQt5.QtCore import Qt  # noqa: E402
+from PyQt5.QtCore import QObject, QTimer, Qt  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import settings  # noqa: E402
@@ -45,6 +46,91 @@ def _decode_json_arg(value: str | None) -> dict[str, Any] | None:
     except Exception as exc:
         raise ValueError(f"Failed to decode JSON argument: {exc}") from exc
     return None
+
+
+
+def _supervisor_message_payload(
+    *,
+    message_type: str,
+    mode: str,
+    window_kind: str,
+    window_role: str,
+    session_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "type": message_type,
+        "mode": mode,
+        "window_kind": window_kind,
+        "window_role": window_role,
+        "session_id": session_id,
+        "pid": os.getpid(),
+        "wall_time": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+    }
+
+
+class SupervisorHeartbeatClient(QObject):
+    def __init__(
+        self,
+        *,
+        socket_path: str | None,
+        mode: str,
+        window_kind: str,
+        window_role: str,
+        session_id: str | None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.socket_path = socket_path or ""
+        self.mode = mode
+        self.window_kind = window_kind
+        self.window_role = window_role
+        self.session_id = session_id
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self.send_heartbeat)
+
+    def start(self) -> None:
+        if not self.socket_path:
+            return
+        self._send("hello")
+        self._timer.start()
+        log.info(
+            "Started supervisor heartbeat for %s via %s",
+            self.window_role,
+            self.socket_path,
+        )
+
+    def stop(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+        if self.socket_path:
+            self._send("goodbye")
+
+    def send_heartbeat(self) -> None:
+        if not self.socket_path:
+            return
+        self._send("heartbeat")
+
+    def _send(self, message_type: str) -> None:
+        payload = _supervisor_message_payload(
+            message_type=message_type,
+            mode=self.mode,
+            window_kind=self.window_kind,
+            window_role=self.window_role,
+            session_id=self.session_id,
+        )
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.connect(self.socket_path)
+                wire = json.dumps(payload, ensure_ascii=False, sort_keys=False) + "\n"
+                sock.sendall(wire.encode("utf-8"))
+        except Exception as exc:
+            log.debug(
+                "Supervisor heartbeat send failed for %s (%s): %s",
+                self.window_role,
+                message_type,
+                exc,
+            )
 
 
 class WindowHostFacade:
@@ -870,6 +956,7 @@ def _run_live_window(args: argparse.Namespace) -> int:
         pending_start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.window_kind == "controller" else None,
     )
 
+    heartbeat_client = None
     try:
         backend_identity = _build_backend_client_identity(
             mode="live",
@@ -879,6 +966,17 @@ def _run_live_window(args: argparse.Namespace) -> int:
         setattr(actual_window, "backend_client_identity", dict(backend_identity))
         setattr(facade, "backend_client_identity", dict(backend_identity))
         backend_client.connect_to_backend(**backend_identity)
+
+        heartbeat_client = SupervisorHeartbeatClient(
+            socket_path=args.supervisor_socket,
+            mode="live",
+            window_kind=args.window_kind,
+            window_role=str(backend_identity.get("window_role")),
+            session_id=str(backend_identity.get("session_id")),
+            parent=app,
+        )
+        heartbeat_client.start()
+        app.aboutToQuit.connect(heartbeat_client.stop)
     except Exception as exc:
         QMessageBox.critical(
             None,
@@ -896,6 +994,8 @@ def _run_live_window(args: argparse.Namespace) -> int:
     try:
         return exec_fn()
     finally:
+        if heartbeat_client is not None:
+            heartbeat_client.stop()
         backend_client.disconnect_from_backend()
 
 
@@ -941,9 +1041,28 @@ def _run_playback_window(args: argparse.Namespace) -> int:
         )
         return 1
 
+    playback_identity = _build_backend_client_identity(
+        mode="playback",
+        window_kind=args.window_kind,
+        selected_test=args.selected_test,
+    )
+    heartbeat_client = SupervisorHeartbeatClient(
+        socket_path=args.supervisor_socket,
+        mode="playback",
+        window_kind=args.window_kind,
+        window_role=str(playback_identity.get("window_role")),
+        session_id=str(playback_identity.get("session_id")),
+        parent=app,
+    )
+    heartbeat_client.start()
+    app.aboutToQuit.connect(heartbeat_client.stop)
+
     _show_window_for_workspace(actual_window, window_kind=args.window_kind)
     exec_fn = getattr(app, "exec", app.exec_)
-    return exec_fn()
+    try:
+        return exec_fn()
+    finally:
+        heartbeat_client.stop()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -953,6 +1072,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend-socket", required=True)
     parser.add_argument("--selected-test")
     parser.add_argument("--start-run-payload-b64")
+    parser.add_argument("--supervisor-socket")
     return parser
 
 
