@@ -116,6 +116,8 @@ class BackendService:
             "command_request",
             "start_script",
             "stop_script",
+            "hold_script",
+            "continue_script",
         ]
 
         self.server = IPCServer(
@@ -531,6 +533,8 @@ class BackendService:
                     current_step_type=start_result.current_step_type,
                     current_step_status=start_result.current_step_status,
                     plan_steps_summary=start_result.plan_steps_summary,
+                    is_held=False,
+                    hold_requested=False,
                 )
 
                 self.health.record_system_event(
@@ -568,6 +572,8 @@ class BackendService:
                 current_step_type=start_result.current_step_type,
                 current_step_status=start_result.current_step_status,
                 plan_steps_summary=start_result.plan_steps_summary,
+                is_held=False,
+                hold_requested=False,
             )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -613,6 +619,138 @@ class BackendService:
                 pid=stop_result.get("pid"),
                 returncode=stop_result.get("returncode"),
                 reason=reason,
+                is_held=False,
+                hold_requested=False,
+            )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "hold_script":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                reason = self._get_optional_string(payload, "reason") or "operator_hold"
+                hold_result = self.script_runner.hold_script(reason=reason)
+                wall_time = isoformat_z()
+
+                if hold_result.get("status") == "held":
+                    self.state_store.mark_script_held(
+                        wall_time=wall_time,
+                        current_step_index=hold_result.get("current_step_index"),
+                        total_steps=hold_result.get("total_steps"),
+                        current_step_name=hold_result.get("current_step_name"),
+                        current_step_type=hold_result.get("current_step_type"),
+                    )
+                    self.health.record_system_event(
+                        "script_held",
+                        severity="info",
+                        script_id=hold_result.get("script_id"),
+                        name=hold_result.get("name"),
+                        pid=hold_result.get("pid"),
+                        reason=reason,
+                        current_step_index=hold_result.get("current_step_index"),
+                        current_step_name=hold_result.get("current_step_name"),
+                        current_step_type=hold_result.get("current_step_type"),
+                    )
+                else:
+                    self.state_store.mark_script_hold_requested(
+                        wall_time=wall_time,
+                        current_step_index=hold_result.get("current_step_index"),
+                        total_steps=hold_result.get("total_steps"),
+                        current_step_name=hold_result.get("current_step_name"),
+                        current_step_type=hold_result.get("current_step_type"),
+                    )
+                    self.health.record_system_event(
+                        "script_hold_requested",
+                        severity="info",
+                        script_id=hold_result.get("script_id"),
+                        name=hold_result.get("name"),
+                        pid=hold_result.get("pid"),
+                        reason=reason,
+                        current_step_index=hold_result.get("current_step_index"),
+                        current_step_name=hold_result.get("current_step_name"),
+                        current_step_type=hold_result.get("current_step_type"),
+                    )
+            except Exception as exc:
+                self.health.record_system_event(
+                    "script_hold_failed",
+                    severity="error",
+                    message=str(exc),
+                )
+                yield error_message("hold_script_failed", str(exc))
+                return
+
+            self.health_monitor.sample_once()
+
+            yield script_status_message(
+                status=hold_result.get("status", "hold_requested"),
+                script_id=hold_result.get("script_id"),
+                name=hold_result.get("name"),
+                pid=hold_result.get("pid"),
+                launch_mode=hold_result.get("launch_mode"),
+                reason=reason,
+                current_step_index=hold_result.get("current_step_index"),
+                total_steps=hold_result.get("total_steps"),
+                current_step_name=hold_result.get("current_step_name"),
+                current_step_type=hold_result.get("current_step_type"),
+                current_step_status=hold_result.get("current_step_status"),
+                plan_steps_summary=hold_result.get("plan_steps_summary"),
+                is_held=hold_result.get("is_held"),
+                hold_requested=hold_result.get("hold_requested"),
+            )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "continue_script":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                reason = self._get_optional_string(payload, "reason") or "operator_continue"
+                continue_result = self.script_runner.continue_script(reason=reason)
+                wall_time = isoformat_z()
+
+                self.state_store.mark_script_continued(
+                    wall_time=wall_time,
+                    current_step_index=continue_result.get("current_step_index"),
+                    total_steps=continue_result.get("total_steps"),
+                    current_step_name=continue_result.get("current_step_name"),
+                    current_step_type=continue_result.get("current_step_type"),
+                )
+                self.health.record_system_event(
+                    "script_continued",
+                    severity="info",
+                    script_id=continue_result.get("script_id"),
+                    name=continue_result.get("name"),
+                    pid=continue_result.get("pid"),
+                    reason=reason,
+                    current_step_index=continue_result.get("current_step_index"),
+                    current_step_name=continue_result.get("current_step_name"),
+                    current_step_type=continue_result.get("current_step_type"),
+                )
+            except Exception as exc:
+                self.health.record_system_event(
+                    "script_continue_failed",
+                    severity="error",
+                    message=str(exc),
+                )
+                yield error_message("continue_script_failed", str(exc))
+                return
+
+            self.health_monitor.sample_once()
+
+            yield script_status_message(
+                status=continue_result.get("status", "continued"),
+                script_id=continue_result.get("script_id"),
+                name=continue_result.get("name"),
+                pid=continue_result.get("pid"),
+                launch_mode=continue_result.get("launch_mode"),
+                reason=reason,
+                current_step_index=continue_result.get("current_step_index"),
+                total_steps=continue_result.get("total_steps"),
+                current_step_name=continue_result.get("current_step_name"),
+                current_step_type=continue_result.get("current_step_type"),
+                current_step_status=continue_result.get("current_step_status"),
+                plan_steps_summary=continue_result.get("plan_steps_summary"),
+                is_held=continue_result.get("is_held"),
+                hold_requested=continue_result.get("hold_requested"),
             )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -674,6 +812,8 @@ class BackendService:
             current_step_status=info.get("current_step_status") if isinstance(info.get("current_step_status"), str) else None,
             progress_wall_time=progress_wall_time,
             plan_steps_summary=list(info.get("plan_steps_summary", [])) if isinstance(info.get("plan_steps_summary"), list) else None,
+            is_held=bool(info.get("is_held")) if info.get("is_held") is not None else None,
+            hold_requested=bool(info.get("hold_requested")) if info.get("hold_requested") is not None else None,
         )
         self.health_monitor.sample_once()
 
@@ -710,6 +850,8 @@ class BackendService:
             current_step_type=info.get("current_step_type"),
             current_step_status=info.get("current_step_status"),
             failure_message=info.get("failure_message"),
+            is_held=info.get("is_held"),
+            hold_requested=info.get("hold_requested"),
         )
         self.health_monitor.sample_once()
 

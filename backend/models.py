@@ -86,6 +86,10 @@ class ScriptRunnerState:
     current_step_status: str | None = None
     last_progress_wall_time: str | None = None
     plan_steps_summary: list[str] = field(default_factory=list)
+    is_held: bool = False
+    hold_requested: bool = False
+    last_hold_wall_time: str | None = None
+    last_continue_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

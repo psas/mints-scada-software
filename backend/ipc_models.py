@@ -162,6 +162,8 @@ def script_status_message(
     current_step_type: str | None = None,
     current_step_status: str | None = None,
     plan_steps_summary: list[str] | None = None,
+    is_held: bool | None = None,
+    hold_requested: bool | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="script_status",
@@ -181,6 +183,8 @@ def script_status_message(
             "current_step_type": current_step_type,
             "current_step_status": current_step_status,
             "plan_steps_summary": list(plan_steps_summary or []),
+            "is_held": is_held,
+            "hold_requested": hold_requested,
         },
     )
 

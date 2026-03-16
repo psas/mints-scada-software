@@ -52,6 +52,8 @@ class ScriptRunner:
         self._process: subprocess.Popen[str] | None = None
         self._plan_thread: threading.Thread | None = None
         self._plan_stop = threading.Event()
+        self._plan_hold_requested = threading.Event()
+        self._plan_resume = threading.Event()
         self._script_id: str | None = None
         self._script_name: str | None = None
         self._launch_mode: str | None = None
@@ -69,6 +71,7 @@ class ScriptRunner:
         self._current_step_type: str | None = None
         self._current_step_status: str | None = None
         self._plan_steps_summary: list[str] = []
+        self._is_held = False
 
     @property
     def is_running(self) -> bool:
@@ -261,6 +264,9 @@ class ScriptRunner:
         self._process = None
         self._plan_thread = None
         self._plan_stop.clear()
+        self._plan_hold_requested.clear()
+        self._plan_resume.clear()
+        self._is_held = False
         self._stop_watcher.clear()
         self._script_id = script_id
         self._script_name = name
@@ -443,6 +449,8 @@ class ScriptRunner:
         current_step_type: str | None,
         current_step_status: str | None,
         plan_steps_summary: list[str],
+        is_held: bool,
+        hold_requested: bool,
     ) -> None:
         with self._lock:
             self._current_step_index = current_step_index
@@ -462,6 +470,8 @@ class ScriptRunner:
                 "current_step_type": current_step_type,
                 "current_step_status": current_step_status,
                 "plan_steps_summary": list(plan_steps_summary),
+                "is_held": is_held,
+                "hold_requested": hold_requested,
                 "progress_wall_time": self._utc_now_iso(),
             }
         if callable(self._progress_callback):
@@ -516,7 +526,10 @@ class ScriptRunner:
             self._current_step_type = None
             self._current_step_status = None
             self._plan_steps_summary = []
+            self._is_held = False
             self._plan_stop.clear()
+            self._plan_hold_requested.clear()
+            self._plan_resume.clear()
 
     def _build_command(self, payload: Mapping[str, Any]) -> list[str]:
         if "command" in payload:

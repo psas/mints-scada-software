@@ -157,6 +157,8 @@ class StateStore:
         current_step_type: str | None = None,
         current_step_status: str | None = None,
         plan_steps_summary: list[str] | None = None,
+        is_held: bool = False,
+        hold_requested: bool = False,
     ) -> None:
         with self._lock:
             self._state.script_runner.is_running = True
@@ -177,6 +179,10 @@ class StateStore:
             self._state.script_runner.current_step_status = current_step_status
             self._state.script_runner.last_progress_wall_time = started_wall_time
             self._state.script_runner.plan_steps_summary = list(plan_steps_summary or [])
+            self._state.script_runner.is_held = is_held
+            self._state.script_runner.hold_requested = hold_requested
+            self._state.script_runner.last_hold_wall_time = None
+            self._state.script_runner.last_continue_wall_time = None
 
     def mark_script_finished(
         self,
@@ -202,6 +208,8 @@ class StateStore:
         current_step_status: str | None,
         progress_wall_time: str,
         plan_steps_summary: list[str] | None = None,
+        is_held: bool | None = None,
+        hold_requested: bool | None = None,
     ) -> None:
         with self._lock:
             self._state.script_runner.current_step_index = current_step_index
@@ -212,6 +220,80 @@ class StateStore:
             self._state.script_runner.last_progress_wall_time = progress_wall_time
             if plan_steps_summary is not None:
                 self._state.script_runner.plan_steps_summary = list(plan_steps_summary)
+            if is_held is not None:
+                self._state.script_runner.is_held = bool(is_held)
+            if hold_requested is not None:
+                self._state.script_runner.hold_requested = bool(hold_requested)
+
+    def mark_script_hold_requested(
+        self,
+        *,
+        wall_time: str,
+        current_step_index: int | None = None,
+        total_steps: int | None = None,
+        current_step_name: str | None = None,
+        current_step_type: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.hold_requested = True
+            self._state.script_runner.current_step_status = "hold_requested"
+            self._state.script_runner.last_progress_wall_time = wall_time
+            if current_step_index is not None:
+                self._state.script_runner.current_step_index = current_step_index
+            if total_steps is not None:
+                self._state.script_runner.total_steps = total_steps
+            if current_step_name is not None:
+                self._state.script_runner.current_step_name = current_step_name
+            if current_step_type is not None:
+                self._state.script_runner.current_step_type = current_step_type
+
+    def mark_script_held(
+        self,
+        *,
+        wall_time: str,
+        current_step_index: int | None = None,
+        total_steps: int | None = None,
+        current_step_name: str | None = None,
+        current_step_type: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.is_held = True
+            self._state.script_runner.hold_requested = True
+            self._state.script_runner.current_step_status = "held"
+            self._state.script_runner.last_hold_wall_time = wall_time
+            self._state.script_runner.last_progress_wall_time = wall_time
+            if current_step_index is not None:
+                self._state.script_runner.current_step_index = current_step_index
+            if total_steps is not None:
+                self._state.script_runner.total_steps = total_steps
+            if current_step_name is not None:
+                self._state.script_runner.current_step_name = current_step_name
+            if current_step_type is not None:
+                self._state.script_runner.current_step_type = current_step_type
+
+    def mark_script_continued(
+        self,
+        *,
+        wall_time: str,
+        current_step_index: int | None = None,
+        total_steps: int | None = None,
+        current_step_name: str | None = None,
+        current_step_type: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.script_runner.is_held = False
+            self._state.script_runner.hold_requested = False
+            self._state.script_runner.current_step_status = "running"
+            self._state.script_runner.last_continue_wall_time = wall_time
+            self._state.script_runner.last_progress_wall_time = wall_time
+            if current_step_index is not None:
+                self._state.script_runner.current_step_index = current_step_index
+            if total_steps is not None:
+                self._state.script_runner.total_steps = total_steps
+            if current_step_name is not None:
+                self._state.script_runner.current_step_name = current_step_name
+            if current_step_type is not None:
+                self._state.script_runner.current_step_type = current_step_type
 
     def clear_script_running_state(self) -> None:
         with self._lock:
@@ -229,6 +311,10 @@ class StateStore:
             self._state.script_runner.current_step_status = None
             self._state.script_runner.last_progress_wall_time = None
             self._state.script_runner.plan_steps_summary = []
+            self._state.script_runner.is_held = False
+            self._state.script_runner.hold_requested = False
+            self._state.script_runner.last_hold_wall_time = None
+            self._state.script_runner.last_continue_wall_time = None
 
     def set_health_snapshot(
         self,
