@@ -10,15 +10,16 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-
-import settings
 from typing import Any
 
+import settings
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from gui import ChecklistWindow, QLoggingHandler
 
 log = logging.getLogger(__name__)
+
+_BACKEND_REQUEST_TIMEOUT_S = 6.0
 
 
 def _project_root() -> Path:
@@ -58,6 +59,7 @@ def _supervisor_script() -> Path:
     if not script_path.is_file():
         raise FileNotFoundError(f"Missing GUI supervisor script: {script_path}")
     return script_path
+
 
 def _abort_relay_script() -> Path:
     script_path = _project_root() / "gui" / "abort_relay.py"
@@ -138,7 +140,6 @@ def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
         _kill_process(process, label="abort relay")
         _wait_for_process_exit(process, timeout_s=1.0)
     raise RuntimeError(f"AbortRelay did not become ready at {relay_socket}")
-
 
 
 def _spawn_supervisor(
@@ -223,6 +224,85 @@ def _wait_for_process_exit(process: subprocess.Popen[str], *, timeout_s: float) 
         pass
 
 
+def _backend_socket_path() -> Path:
+    return _project_root() / ".backend_service.sock"
+
+
+def _recv_json_lines(sock: socket.socket, *, deadline: float) -> list[dict[str, Any]]:
+    buffer = ""
+    messages: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        remaining = max(0.05, deadline - time.monotonic())
+        sock.settimeout(remaining)
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        buffer += chunk.decode("utf-8", errors="replace")
+        while "\n" in buffer:
+            raw_line, buffer = buffer.split("\n", 1)
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                decoded = json.loads(raw_line)
+            except Exception as exc:
+                raise RuntimeError(f"Backend returned invalid JSON: {exc}") from exc
+            if isinstance(decoded, dict):
+                messages.append(decoded)
+        if messages:
+            break
+    return messages
+
+
+def _request_backend_start_run(start_run_payload: dict[str, Any], *, timeout_s: float = _BACKEND_REQUEST_TIMEOUT_S) -> dict[str, Any]:
+    socket_path = _backend_socket_path()
+    if not socket_path.exists():
+        raise RuntimeError(f"Backend socket not found: {socket_path}")
+
+    request = {
+        "type": "start_run",
+        "payload": dict(start_run_payload),
+    }
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout_s)
+            sock.connect(str(socket_path))
+            sock.sendall((json.dumps(request, ensure_ascii=False, sort_keys=False) + "\n").encode("utf-8"))
+
+            deadline = time.monotonic() + timeout_s
+            buffered_messages: list[dict[str, Any]] = []
+            while time.monotonic() < deadline:
+                buffered_messages.extend(_recv_json_lines(sock, deadline=deadline))
+                for message in buffered_messages:
+                    message_type = message.get("type")
+                    payload = message.get("payload", {})
+                    if not isinstance(payload, dict):
+                        payload = {}
+
+                    if message_type == "error":
+                        code = str(payload.get("code") or "backend_error")
+                        detail = str(payload.get("message") or "Backend rejected start_run.")
+                        raise RuntimeError(f"{code}: {detail}")
+
+                    if message_type == "run_status":
+                        status = str(payload.get("status") or "")
+                        if status == "running":
+                            return dict(payload)
+                        if status:
+                            raise RuntimeError(f"Backend returned unexpected run status: {status}")
+
+                buffered_messages.clear()
+
+    except TimeoutError as exc:
+        raise RuntimeError("Timed out waiting for backend start_run acknowledgement") from exc
+    except socket.timeout as exc:
+        raise RuntimeError("Timed out waiting for backend start_run acknowledgement") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Failed to contact backend: {exc}") from exc
+
+    raise RuntimeError("Backend did not acknowledge start_run")
+
 
 def main() -> int:
     app = QApplication(sys.argv)
@@ -248,7 +328,32 @@ def main() -> int:
         return _spawn_supervisor(mode="playback", selected_test=selected_test)
 
     start_run_payload = dict(checklist.live_run_metadata or {}) or None
-    log.info("Launching GUI supervisor for live session with metadata: %s", start_run_payload)
+    if not start_run_payload:
+        QMessageBox.critical(
+            None,
+            "Live Start Error",
+            "Live mode requires run metadata before the operator windows can open.",
+        )
+        return 1
+
+    try:
+        run_status = _request_backend_start_run(start_run_payload)
+    except Exception as exc:
+        QMessageBox.critical(
+            None,
+            "Live Start Error",
+            "Backend rejected the live start request.\n\n"
+            "The operator windows will not open until the backend accepts the run metadata.\n\n"
+            f"Error: {exc}",
+        )
+        return 1
+
+    log.info(
+        "Backend accepted live start_run before GUI launch: run_id=%s test_name=%s operator=%s",
+        run_status.get("run_id"),
+        run_status.get("test_name"),
+        run_status.get("operator"),
+    )
 
     abort_relay_process: subprocess.Popen[str] | None = None
     abort_relay_socket: Path | None = None
@@ -256,14 +361,15 @@ def main() -> int:
         abort_relay_process, abort_relay_socket = _spawn_abort_relay()
         return _spawn_supervisor(
             mode="live",
-            start_run_payload=start_run_payload,
+            start_run_payload=None,
             abort_relay_socket=str(abort_relay_socket),
         )
     except Exception as exc:
         QMessageBox.critical(
             None,
             "Abort Relay Launch Error",
-            "Failed to launch AbortRelay for the live GUI session.\n\n"
+            "The backend accepted the live run, but the GUI support process failed to launch.\n\n"
+            "The backend may still be running and recording without visible operator windows.\n\n"
             f"Error: {exc}",
         )
         return 1
