@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime
 from typing import Any, Mapping
 
 from historymanager import HistoryManager
@@ -9,7 +11,16 @@ from .state_store import StateStore
 
 
 class RunController:
-    """Coordinate backend run lifecycle with HistoryManager and StateStore."""
+    """Coordinate backend run lifecycle with HistoryManager and StateStore.
+
+    Commit 50 focus:
+    - immediately persist an archive-initialized lifecycle event once a run is accepted
+    - write an initial backend snapshot at run start
+    - persist a final archive-finalizing lifecycle event and final snapshot before writers drain
+
+    This keeps playback/integrity tooling anchored on a stable run header from the start,
+    and preserves a final replay-oriented snapshot before the archive is closed.
+    """
 
     def __init__(
         self,
@@ -19,6 +30,7 @@ class RunController:
     ) -> None:
         self.history_manager = history_manager
         self.state_store = state_store
+        self._next_snapshot_index = 0
 
     def start_run(
         self,
@@ -78,6 +90,21 @@ class RunController:
             metadata=state_metadata,
         )
 
+        self._next_snapshot_index = 0
+        self._record_archive_lifecycle_event(
+            event_type="run_archive_initialized",
+            severity="info",
+            run_id=run_id_value,
+            mode=mode,
+            test_name=test_name,
+            operator=operator,
+            profile_name=profile_name,
+            notes=notes,
+            started_wall_time=current_run.started_wall_time,
+            metadata=state_metadata,
+        )
+        initial_snapshot_path = self._write_snapshot(self.state_store.get_snapshot())
+
         return {
             "run_id": run_id_value,
             "mode": mode,
@@ -87,6 +114,8 @@ class RunController:
             "profile_name": profile_name,
             "notes": notes,
             "started_wall_time": current_run.started_wall_time,
+            "initial_snapshot_path": str(initial_snapshot_path),
+            "archive_initialized": True,
         }
 
     def finish_run(self, *, reason: str = "operator_stop") -> dict[str, Any]:
@@ -97,13 +126,34 @@ class RunController:
         run_id = current_run.run_id
         mode = current_run.metadata.get("mode")
         test_name = current_run.metadata.get("test_name")
+        operator = current_run.metadata.get("operator")
+        profile_name = current_run.metadata.get("profile_name")
+
+        preview_finished_wall_time = isoformat_z()
+        final_snapshot_preview = self._build_final_snapshot_preview(
+            run_id=run_id,
+            finished_wall_time=preview_finished_wall_time,
+            reason=reason,
+        )
+
+        self._record_archive_lifecycle_event(
+            event_type="run_archive_finalizing",
+            severity="info",
+            run_id=run_id,
+            mode=mode,
+            test_name=test_name,
+            operator=operator,
+            profile_name=profile_name,
+            reason=reason,
+            finished_wall_time=preview_finished_wall_time,
+        )
+        final_snapshot_path = self._write_snapshot(final_snapshot_preview)
 
         finished_run_id = self.history_manager.finish_run(reason=reason)
-        finished_wall_time = isoformat_z()
 
         self.state_store.mark_run_finished(
             run_id=finished_run_id,
-            finished_wall_time=finished_wall_time,
+            finished_wall_time=preview_finished_wall_time,
             reason=reason,
         )
 
@@ -112,6 +162,123 @@ class RunController:
             "mode": mode,
             "status": "completed",
             "test_name": test_name,
+            "operator": operator,
+            "profile_name": profile_name,
             "reason": reason,
-            "finished_wall_time": finished_wall_time,
+            "finished_wall_time": preview_finished_wall_time,
+            "final_snapshot_path": str(final_snapshot_path),
+            "archive_finalized": True,
         }
+
+    def _record_archive_lifecycle_event(
+        self,
+        *,
+        event_type: str,
+        severity: str,
+        **extra: Any,
+    ) -> None:
+        if not self.history_manager.is_running:
+            return
+
+        raw_event = {
+            "event_kind": "system_event",
+            "event_type": event_type,
+            "severity": severity,
+            "recorded_by": "backend",
+            "wall_time": isoformat_z(),
+            **extra,
+        }
+        self.history_manager.record_raw_event("system_event", raw_event)
+
+        structured_event = {
+            **raw_event,
+            "structured_at": isoformat_z(),
+        }
+        self.history_manager.record_structured_event("system_event", structured_event)
+
+    def _write_snapshot(self, snapshot: Mapping[str, Any]) -> Any:
+        path = self.history_manager.write_snapshot(self._next_snapshot_index, snapshot)
+        self._next_snapshot_index += 1
+        return path
+
+    def _build_final_snapshot_preview(
+        self,
+        *,
+        run_id: str,
+        finished_wall_time: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        snapshot = deepcopy(self.state_store.get_snapshot())
+
+        run_state = dict(snapshot.get("run", {}))
+        run_state["active_run_id"] = run_id
+        run_state["is_running"] = False
+        run_state["status"] = "completed"
+        run_state["last_finished_wall_time"] = finished_wall_time
+        run_state["last_finish_reason"] = reason
+        snapshot["run"] = run_state
+
+        started_wall_time = run_state.get("last_started_wall_time")
+        elapsed_seconds = self._elapsed_seconds_between(started_wall_time, finished_wall_time)
+
+        recording_clock = dict(snapshot.get("recording_clock", {}))
+        recording_clock["active"] = False
+        recording_clock["status"] = "stopped"
+        recording_clock["stopped_wall_time"] = finished_wall_time
+        if elapsed_seconds is not None:
+            recording_clock["elapsed_seconds"] = elapsed_seconds
+        recording_clock["display_text"] = self._format_recording_display(
+            elapsed_seconds=recording_clock.get("elapsed_seconds"),
+            active=False,
+        )
+        recording_clock["accent"] = "neutral"
+        snapshot["recording_clock"] = recording_clock
+
+        playback_clock = dict(snapshot.get("playback_clock", {}))
+        if playback_clock.get("active"):
+            playback_clock["status"] = "stopped"
+        playback_clock["updated_wall_time"] = finished_wall_time
+        snapshot["playback_clock"] = playback_clock
+
+        archive_state = dict(snapshot.get("archive", {}))
+        archive_state["finalized_preview"] = True
+        archive_state["preview_finished_wall_time"] = finished_wall_time
+        archive_state["preview_finish_reason"] = reason
+        archive_state["next_snapshot_index"] = self._next_snapshot_index
+        snapshot["archive"] = archive_state
+
+        snapshot.setdefault("run_id", run_id)
+        snapshot.setdefault("recorded_at", finished_wall_time)
+        return snapshot
+
+    @staticmethod
+    def _elapsed_seconds_between(start_wall_time: Any, end_wall_time: Any) -> float | None:
+        if not isinstance(start_wall_time, str) or not isinstance(end_wall_time, str):
+            return None
+        try:
+            start_dt = _parse_iso_utc(start_wall_time)
+            end_dt = _parse_iso_utc(end_wall_time)
+        except Exception:
+            return None
+        delta = (end_dt - start_dt).total_seconds()
+        return max(0.0, float(delta))
+
+    @staticmethod
+    def _format_recording_display(*, elapsed_seconds: Any, active: bool) -> str:
+        try:
+            seconds = max(0, int(float(elapsed_seconds or 0.0)))
+        except Exception:
+            seconds = 0
+
+        minutes, rem_seconds = divmod(seconds, 60)
+        if active:
+            return f"Recording: {minutes}m {rem_seconds:02d}s"
+        if seconds > 0:
+            return f"Recording: {minutes}m {rem_seconds:02d}s"
+        return "Not Recording"
+
+
+def _parse_iso_utc(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
