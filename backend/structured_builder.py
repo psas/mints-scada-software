@@ -65,7 +65,15 @@ class StructuredEventBuilder:
         reduction: dict[str, Any],
         first_order_event: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        semantic = reduction.get("semantic")
+        if not isinstance(semantic, Mapping):
+            semantic = {
+                "domain": "generic",
+                "summary": "No semantic decode available",
+                "fields": {},
+            }
+
+        payload = {
             **_copy_shared_event_identity(first_order_event),
             "event_kind": "telemetry_in",
             "structured_at": isoformat_z(),
@@ -83,4 +91,29 @@ class StructuredEventBuilder:
                 "aux": reduction.get("runtime_aux"),
                 "time": reduction.get("runtime_time"),
             },
+            "semantic": {
+                "domain": semantic.get("domain"),
+                "summary": semantic.get("summary"),
+                "fields": dict(semantic.get("fields", {})),
+            },
         }
+
+        semantic_fields = semantic.get("fields", {})
+        if isinstance(semantic_fields, Mapping):
+            domain = semantic.get("domain")
+            if domain == "pressure":
+                payload["pressure"] = semantic_fields.get("pressure")
+                payload["pressure_units"] = semantic_fields.get("units")
+            elif domain == "temperature":
+                payload["temperature"] = semantic_fields.get("temperature")
+                payload["temperature_units"] = semantic_fields.get("units")
+            elif domain == "valve":
+                payload["valve_state"] = semantic_fields.get("state")
+            elif domain == "flow":
+                payload["flow"] = semantic_fields.get("flow")
+                payload["flow_units"] = semantic_fields.get("units")
+            elif domain == "load":
+                payload["load"] = semantic_fields.get("load")
+                payload["load_units"] = semantic_fields.get("units")
+
+        return payload
