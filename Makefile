@@ -1,10 +1,13 @@
 # MINTS SCADA Software - Makefile
 
+
 # Variables
+
 SHELL := /bin/bash
 PYTHON := python3
 VENV := .venv
 VENV_ACTIVATE := $(VENV)/bin/activate
+REQUIREMENTS := requirements.txt
 
 BACKEND := main_backend.py
 GUI := main_user_gui.py
@@ -27,46 +30,67 @@ PRESERVE_HISTORY_RUN_PATTERNS := \
 	*demo_integrity_yellow_missing_rawbak \
 	*demo_integrity_red_mismatch
 
-.PHONY: help setup run run-backend run-gui stop restart status clear-all-history clean clean-dev \
-        _ensure-dev-dirs _ensure-venv _ensure-history-dirs
+.DEFAULT_GOAL := help
+
+.PHONY: help setup wsl-usb run run-direct run-backend run-gui stop restart status \
+	clear-all-history clean clean-dev \
+	_ensure-dev-dirs _ensure-venv _ensure-history-dirs \
+	_show-usb-status _maybe-wsl-usb _preflight-usb
+
 
 help:
 	@echo "MINTS SCADA Software - Available Commands"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make setup              - Create virtual environment and install dependencies"
+	@echo " make setup - Create virtual environment, install dependencies, then run USB/serial preflight"
+	@echo " make wsl-usb - Configure USB device forwarding (WSL only)"
 	@echo ""
 	@echo "Run:"
-	@echo "  make run                - Start backend, wait for backend socket, then start GUI"
-	@echo "  make run-backend        - Start backend only"
-	@echo "  make run-gui            - Start GUI only"
+	@echo " make run - Run USB/serial preflight, start backend, wait for socket, then start GUI"
+	@echo " make run-backend - Run USB/serial preflight, then start backend only"
+	@echo " make run-gui - Run USB/serial preflight, then start GUI only"
+	@echo " make run-direct - Start GUI only without USB/serial preflight"
 	@echo ""
 	@echo "Control:"
-	@echo "  make stop               - Stop backend started by this Makefile"
-	@echo "  make restart            - Stop backend, then start backend + GUI again"
-	@echo "  make status             - Show backend, socket, and local history status"
+	@echo " make stop - Stop backend started by this Makefile"
+	@echo " make restart - Stop backend, then run full startup again"
+	@echo " make status - Show backend, socket, and local history status"
 	@echo ""
 	@echo "Dev cleanup:"
-	@echo "  These are for software dev only and will be removed. Please do not use."
-	@echo "  make clear-all-history  - Clear history contents but preserve .gitkeep and preserved demo runs"
-	@echo "  make clean-dev          - Remove dev pid/socket files"
-	@echo "  make clean              - Full dev reset: history + .dev + GUI metadata (preserves demo runs)"
+	@echo " These are for software dev only and will be removed. Please do not use."
+	@echo " make clear-all-history - Clear history contents but preserve .gitkeep and preserved demo runs"
+	@echo " make clean-dev - Remove dev pid/socket files"
+	@echo " make clean - Full dev reset: history + .dev + GUI metadata (preserves demo runs)"
 	@echo ""
 	@echo "Notes:"
-	@echo "  make run starts backend first, waits for the backend socket, then opens the GUI."
-	@echo "  If backend was already started by this Makefile, it will be reused."
-	@echo "  Demo integrity runs are preserved during cleanup."
+	@echo " Startup targets run USB/serial preflight before launching anything."
+	@echo " Use 'make run-direct' only when you intentionally want to skip that check."
+	@echo " Demo integrity runs are preserved during cleanup."
+
 
 setup:
+	@$(MAKE) _preflight-usb
+	@$(MAKE) _ensure-dev-dirs
+	@$(MAKE) _ensure-history-dirs
 	@echo "Creating virtual environment..."
 	$(PYTHON) -m venv $(VENV)
 	@echo "Installing dependencies..."
-	@source "$(VENV_ACTIVATE)" && pip install -r requirements.txt
+	@source "$(VENV_ACTIVATE)" && pip install -r $(REQUIREMENTS)
 	@echo ""
 	@echo "[OK] Setup complete"
 	@echo "To run: make run"
 
-run: _ensure-dev-dirs _ensure-venv _ensure-history-dirs
+
+# WSL USB port forwarding setup (optional, WSL users only)
+wsl-usb:
+	@./install-system-deps.sh
+
+
+run:
+	@$(MAKE) _preflight-usb
+	@$(MAKE) _ensure-dev-dirs
+	@$(MAKE) _ensure-venv
+	@$(MAKE) _ensure-history-dirs
 	@set -euo pipefail; \
 	started_backend=0; \
 	if [[ -f "$(BACKEND_PID_FILE)" ]]; then \
@@ -126,7 +150,12 @@ run: _ensure-dev-dirs _ensure-venv _ensure-history-dirs
 	echo "[INFO] Starting GUI..."; \
 	source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GUI)
 
-run-backend: _ensure-dev-dirs _ensure-venv _ensure-history-dirs
+
+run-backend:
+	@$(MAKE) _preflight-usb
+	@$(MAKE) _ensure-dev-dirs
+	@$(MAKE) _ensure-venv
+	@$(MAKE) _ensure-history-dirs
 	@set -euo pipefail; \
 	if [[ -f "$(BACKEND_PID_FILE)" ]]; then \
 		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
@@ -143,9 +172,22 @@ run-backend: _ensure-dev-dirs _ensure-venv _ensure-history-dirs
 	echo $$! > "$(BACKEND_PID_FILE)"; \
 	echo "[OK] Backend started with pid=$$(cat "$(BACKEND_PID_FILE)")"
 
-run-gui: _ensure-venv _ensure-history-dirs
+
+run-gui:
+	@$(MAKE) _preflight-usb
+	@$(MAKE) _ensure-venv
+	@$(MAKE) _ensure-history-dirs
 	@echo "[INFO] Starting GUI only..."
 	@source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GUI)
+
+
+# Start GUI directly without USB/serial preflight
+run-direct:
+	@$(MAKE) _ensure-venv
+	@$(MAKE) _ensure-history-dirs
+	@echo "[INFO] Starting GUI directly (USB/serial preflight skipped)..."
+	@source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GUI)
+
 
 stop:
 	@set -euo pipefail; \
@@ -166,12 +208,14 @@ stop:
 	rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"; \
 	echo "[OK] Backend stopped"
 
+
 restart: stop run
+
 
 status:
 	@echo "=== MINTS SCADA Status ==="
 	@echo "Backend socket: $(BACKEND_SOCKET)"
-	@if [[ -S "$(BACKEND_SOCKET)" ]]; then echo "  [OK] socket exists"; else echo "  [--] socket missing"; fi
+	@if [[ -S "$(BACKEND_SOCKET)" ]]; then echo " [OK] socket exists"; else echo " [--] socket missing"; fi
 	@if [[ -f "$(BACKEND_PID_FILE)" ]]; then \
 		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
 		if [[ -n "$$pid" ]] && kill -0 "$$pid" 2>/dev/null; then \
@@ -185,23 +229,24 @@ status:
 	@echo "History roots:"
 	@for d in $(HISTORY_DIRS); do \
 		if [[ -d "$$d" ]]; then \
-			echo "  [OK] $$d"; \
+			echo " [OK] $$d"; \
 		else \
-			echo "  [--] $$d missing"; \
+			echo " [--] $$d missing"; \
 		fi; \
 	done
 	@echo "Preserved history patterns:"
 	@for p in $(PRESERVE_HISTORY_RUN_PATTERNS); do \
-		echo "  [KEEP] $$p"; \
+		echo " [KEEP] $$p"; \
 	done
 	@echo "Local dev files:"
 	@for f in $(LOCAL_DEV_FILES); do \
-		if [[ -f "$$f" ]]; then echo "  [OK] $$f"; else echo "  [--] $$f missing"; fi; \
+		if [[ -f "$$f" ]]; then echo " [OK] $$f"; else echo " [--] $$f missing"; fi; \
 	done
 	@echo "Local dev dirs:"
 	@for d in $(LOCAL_DEV_DIRS); do \
-		if [[ -d "$$d" ]]; then echo "  [OK] $$d"; else echo "  [--] $$d missing"; fi; \
+		if [[ -d "$$d" ]]; then echo " [OK] $$d"; else echo " [--] $$d missing"; fi; \
 	done
+
 
 clear-all-history: _ensure-history-dirs
 	@echo "[WARN] Clearing dev history contents but preserving .gitkeep and preserved demo runs..."
@@ -224,15 +269,16 @@ clear-all-history: _ensure-history-dirs
 			name=$$(basename "$$entry"); \
 			[[ "$$name" == "." || "$$name" == ".." ]] && continue; \
 			if should_preserve "$$name"; then \
-				echo "  [KEEP] $$entry"; \
+				echo " [KEEP] $$entry"; \
 				continue; \
 			fi; \
-			echo "  [RM]   $$entry"; \
+			echo " [RM] $$entry"; \
 			rm -rf "$$entry"; \
 		done; \
 		touch "$$d/.gitkeep"; \
 	done
 	@echo "[OK] Cleared history contents and preserved .gitkeep + demo runs"
+
 
 clean: stop clear-all-history
 	@echo "[WARN] Removing local dev-only metadata and scratch directories..."
@@ -241,20 +287,68 @@ clean: stop clear-all-history
 	@rm -rf "$(DEV_DIR)"
 	@echo "[OK] Full dev cleanup complete"
 
+
 clean-dev:
 	@echo "[INFO] Cleaning dev artifacts..."
 	@rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"
 	@rmdir "$(DEV_DIR)" 2>/dev/null || true
 	@echo "[OK] Dev artifacts cleaned"
 
+
+_show-usb-status:
+	@echo "=== Current USB/Serial Port Status ==="
+	@echo ""
+	@if command -v lsusb > /dev/null 2>&1; then \
+		echo "USB Devices:"; \
+		lsusb 2>/dev/null || echo " (none found)"; \
+	else \
+		echo "USB Devices:"; \
+		echo " (lsusb not available)"; \
+	fi
+	@echo ""
+	@echo "Serial Ports:"
+	@if ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null; then \
+		echo ""; \
+	else \
+		echo " (none found)"; \
+	fi
+	@echo ""
+
+
+_maybe-wsl-usb:
+	@if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
+		echo "Detected WSL environment."; \
+		read -p "Need to configure USB forwarding from Windows? (y/n): " answer; \
+		if [[ "$$answer" == "y" || "$$answer" == "Y" ]]; then \
+			$(MAKE) wsl-usb; \
+			echo ""; \
+			echo "[OK] USB forwarding step finished."; \
+			echo ""; \
+		else \
+			echo "Skipping USB forwarding."; \
+			echo ""; \
+		fi; \
+	else \
+		echo "Running on native Linux - USB devices should be available directly."; \
+		echo ""; \
+	fi
+
+
+_preflight-usb:
+	@$(MAKE) _show-usb-status
+	@$(MAKE) _maybe-wsl-usb
+
+
 _ensure-dev-dirs:
 	@mkdir -p "$(DEV_DIR)"
+
 
 _ensure-venv:
 	@if [[ ! -d "$(VENV)" ]]; then \
 		echo "[ERROR] Virtual environment not found. Run 'make setup' first."; \
 		exit 1; \
 	fi
+
 
 _ensure-history-dirs:
 	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory

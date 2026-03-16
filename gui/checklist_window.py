@@ -61,18 +61,15 @@ class ChecklistItem(QWidget):
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(10, 5, 10, 5)
 
-        # Status indicator (LED-style)
         self.status_label = QLabel("○")
         self.status_label.setFont(QFont("Arial", 16))
         self.status_label.setFixedWidth(30)
         self.layout.addWidget(self.status_label)
 
-        # Description
         self.text_label = QLabel(text)
         self.text_label.setFont(QFont("Arial", 11))
         self.layout.addWidget(self.text_label)
 
-        # Result message
         self.result_label = QLabel("")
         self.result_label.setFont(QFont("Arial", 9))
         self.result_label.setStyleSheet("color: #888;")
@@ -84,26 +81,22 @@ class ChecklistItem(QWidget):
         self._update_display()
 
     def set_checking(self):
-        """Mark item as currently being checked"""
         self.status = "checking"
         self._update_display()
 
     def set_pass(self, message=""):
-        """Mark item as passed"""
         self.status = "pass"
         if message:
             self.result_label.setText(message)
         self._update_display()
 
     def set_fail(self, message=""):
-        """Mark item as failed"""
         self.status = "fail"
         if message:
             self.result_label.setText(message)
         self._update_display()
 
     def _update_display(self):
-        """Update visual display based on status"""
         if self.status == "pending":
             self.status_label.setText("○")
             self.status_label.setStyleSheet("color: #555;")
@@ -127,10 +120,21 @@ class ChecklistWindow(QDialog):
     - playback mode: select a recorded run from ignitionhistory
     """
 
-    def __init__(self, serial_port, parent=None, *, backend_socket_path: str | Path | None = None, auto_refresh_ms: int = 2000):
+    def __init__(
+        self,
+        serial_port,
+        parent=None,
+        *,
+        backend_socket_path: str | Path | None = None,
+        auto_refresh_ms: int = 2000,
+    ):
         super().__init__(parent)
         self.serial_port = serial_port
-        self.backend_socket_path = Path(backend_socket_path).expanduser().resolve() if backend_socket_path else self._default_backend_socket_path()
+        self.backend_socket_path = (
+            Path(backend_socket_path).expanduser().resolve()
+            if backend_socket_path
+            else self._default_backend_socket_path()
+        )
         self.backend_probe_snapshot: dict[str, object] | None = None
         self._check_refresh_ms = max(500, int(auto_refresh_ms))
         self.all_passed = False
@@ -143,6 +147,7 @@ class ChecklistWindow(QDialog):
         self.selected_playback_source: str = _PLAYBACK_SOURCE_NATIVE
         self.playback_continue_button: QPushButton | None = None
         self.live_continue_button: QPushButton | None = None
+        self._live_init_in_progress = False
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
         self.setGeometry(100, 100, 640, 460)
@@ -317,7 +322,9 @@ class ChecklistWindow(QDialog):
         self.check_bus.set_checking()
         QApplication.processEvents()
         probe = self._probe_backend_live_state()
-        self.backend_probe_snapshot = probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else None
+        self.backend_probe_snapshot = (
+            probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else None
+        )
 
         bus_ok = False
         devices_ok = False
@@ -327,7 +334,11 @@ class ChecklistWindow(QDialog):
         if probe.get("reachable"):
             snapshot = probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else {}
             bus_state = snapshot.get("bus") if isinstance(snapshot.get("bus"), dict) else {}
-            registry_state = snapshot.get("registry") if isinstance(snapshot.get("registry"), dict) else {}
+            registry_state = (
+                snapshot.get("device_registry")
+                if isinstance(snapshot.get("device_registry"), dict)
+                else {}
+            )
 
             bus_connected = bool(bus_state.get("connected"))
             bus_reconnecting = bool(bus_state.get("reconnecting"))
@@ -345,6 +356,7 @@ class ChecklistWindow(QDialog):
 
             total_devices = int(registry_state.get("total_devices") or 0)
             load_error_count = int(registry_state.get("load_error_count") or 0)
+
             if bus_ok and total_devices > 0 and load_error_count == 0:
                 devices_ok = True
                 devices_message = f"{total_devices} device(s) available"
@@ -355,7 +367,9 @@ class ChecklistWindow(QDialog):
             else:
                 devices_message = "No devices available from backend registry"
         else:
-            bus_message = str(probe.get("message") or f"Backend service unavailable at {self.backend_socket_path}")
+            bus_message = str(
+                probe.get("message") or f"Backend service unavailable at {self.backend_socket_path}"
+            )
             devices_message = "Device readiness unavailable until backend responds"
 
         if bus_ok:
@@ -383,9 +397,10 @@ class ChecklistWindow(QDialog):
             self._handle_failure("; ".join(failure_parts))
 
     def _handle_success(self):
-        """Handle successful completion of all checks"""
         self.all_passed = True
-        self.status_message.setText("All checks passed. Live mode is ready through backend-owned hardware state.")
+        self.status_message.setText(
+            "All checks passed. Live mode is ready through backend-owned hardware state."
+        )
         self.status_message.setStyleSheet(
             "color: #4CAF50; margin: 10px; padding: 10px; font-weight: bold;"
         )
@@ -393,10 +408,10 @@ class ChecklistWindow(QDialog):
         log.info("All pre-flight checks passed")
 
     def _handle_failure(self, message):
-        """Handle check failure"""
         self.all_passed = False
         self.status_message.setText(
-            f"Check failed: {message}\n\nPlayback is still available. Live mode will unlock when backend live readiness is available."
+            f"Check failed: {message}\n\nPlayback is still available. "
+            f"Live mode will unlock when backend live readiness is available."
         )
         self.status_message.setStyleSheet(
             "color: #F44336; margin: 10px; padding: 10px; "
@@ -407,6 +422,20 @@ class ChecklistWindow(QDialog):
     def show_live_setup(self):
         """Switch to live run metadata entry view."""
         self.run_checks()
+
+        if not self.all_passed:
+            self.status_message.setText("Attempting to initialize live hardware through backend...")
+            self.status_message.setStyleSheet("color: #FFA726; margin: 10px; padding: 10px;")
+            QApplication.processEvents()
+
+            init_ok, init_message = self._initialize_backend_live_hardware()
+            if init_ok:
+                log.info("Checklist-triggered live hardware init succeeded: %s", init_message)
+            else:
+                log.error("Checklist-triggered live hardware init failed: %s", init_message)
+
+            self.run_checks()
+
         if not self.all_passed:
             QMessageBox.warning(
                 self,
@@ -489,7 +518,9 @@ class ChecklistWindow(QDialog):
         source_row.addWidget(self.prepare_rebuild_button)
         integrity_layout.addLayout(source_row)
 
-        self.rebuild_status_label = QLabel("Rebuild artifacts are not prepared for the selected run.")
+        self.rebuild_status_label = QLabel(
+            "Rebuild artifacts are not prepared for the selected run."
+        )
         self.rebuild_status_label.setWordWrap(True)
         self.rebuild_status_label.setStyleSheet("color: #999; margin-top: 4px;")
         integrity_layout.addWidget(self.rebuild_status_label)
@@ -543,7 +574,7 @@ class ChecklistWindow(QDialog):
         self.checklist_widget.show()
 
     def _project_root(self) -> Path:
-        return Path(__file__).resolve().parents[1]
+        return Path(__file__).resolve().parent.parent
 
     def _default_backend_socket_path(self) -> Path:
         env_value = os.environ.get("MINTS_BACKEND_SOCKET")
@@ -552,7 +583,7 @@ class ChecklistWindow(QDialog):
         return (self._project_root() / ".backend_service.sock").resolve()
 
     def _maybe_refresh_checks(self) -> None:
-        if self.checklist_widget.isVisible():
+        if self.checklist_widget.isVisible() and not self._live_init_in_progress:
             self.run_checks()
 
     def _probe_backend_live_state(self, *, timeout_s: float = 0.75) -> dict[str, object]:
@@ -583,24 +614,34 @@ class ChecklistWindow(QDialog):
                 snapshot: dict[str, object] | None = None
                 backend_status: dict[str, object] | None = None
                 buffer = ""
+
                 while True:
                     chunk = sock.recv(65536)
                     if not chunk:
                         break
                     buffer += chunk.decode("utf-8", errors="replace")
+
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()
                         if not line:
                             continue
+
                         try:
                             message = json.loads(line)
                         except Exception:
                             continue
+
                         if not isinstance(message, dict):
                             continue
+
                         message_type = str(message.get("type") or "")
-                        payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+                        payload = (
+                            message.get("payload")
+                            if isinstance(message.get("payload"), dict)
+                            else {}
+                        )
+
                         if message_type == "state_snapshot":
                             snapshot = payload
                         elif message_type == "backend_status":
@@ -626,8 +667,91 @@ class ChecklistWindow(QDialog):
             "snapshot": None,
         }
 
+    def _initialize_backend_live_hardware(
+        self,
+        *,
+        timeout_s: float = 2.0,
+    ) -> tuple[bool, str]:
+        socket_path = self.backend_socket_path
+
+        if not socket_path.exists():
+            return False, f"Backend socket not found: {socket_path}"
+
+        self._live_init_in_progress = True
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout_s)
+                sock.connect(str(socket_path))
+
+                hello_payload = {
+                    "client_name": "checklist_window",
+                    "window_role": "launcher",
+                    "window_kind": "checklist",
+                    "mode": "live_init",
+                    "pid": os.getpid(),
+                }
+
+                self._send_probe_message(sock, "hello", hello_payload)
+                self._send_probe_message(sock, "initialize_live_hardware", {})
+                self._send_probe_message(sock, "request_full_state", {})
+
+                buffer = ""
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+
+                    buffer += chunk.decode("utf-8", errors="replace")
+
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        try:
+                            message = json.loads(line)
+                        except Exception:
+                            continue
+
+                        if not isinstance(message, dict):
+                            continue
+
+                        message_type = str(message.get("type") or "")
+                        payload = (
+                            message.get("payload")
+                            if isinstance(message.get("payload"), dict)
+                            else {}
+                        )
+
+                        if message_type == "error":
+                            return (
+                                False,
+                                str(payload.get("message") or "Live hardware initialization failed"),
+                            )
+
+                        if message_type == "hardware_status":
+                            if bool(payload.get("connected")):
+                                return True, "Live hardware initialized"
+
+                        if message_type == "state_snapshot":
+                            bus_state = payload.get("bus") if isinstance(payload.get("bus"), dict) else {}
+                            if bool(bus_state.get("connected")):
+                                return True, "Live hardware initialized"
+
+        except Exception as exc:
+            return False, f"Backend live initialization failed: {exc}"
+        finally:
+            self._live_init_in_progress = False
+
+        return False, "Backend did not confirm live hardware initialization"
+
     def _send_probe_message(self, sock: socket.socket, message_type: str, payload: dict[str, object]) -> None:
-        wire = json.dumps({"type": message_type, "payload": payload}, ensure_ascii=False, sort_keys=False) + "\n"
+        wire = json.dumps(
+            {"type": message_type, "payload": payload},
+            ensure_ascii=False,
+            sort_keys=False,
+        ) + "\n"
         sock.sendall(wire.encode("utf-8"))
 
     def _required_live_fields_present(self) -> bool:
@@ -697,9 +821,6 @@ class ChecklistWindow(QDialog):
         log.info("Selected live startup metadata: %s", self.live_run_metadata)
         self.accept()
 
-    def _project_root(self) -> Path:
-        return Path(__file__).resolve().parent.parent
-
     def _ignitionhistory_path(self) -> Path:
         return self._project_root() / HISTORY_ROOT_DIRNAME
 
@@ -735,7 +856,11 @@ class ChecklistWindow(QDialog):
                 run_dir_str = str(summary.run_dir)
                 self.playback_run_summaries_by_dir[run_dir_str] = summary
 
-                report = summary.integrity_report if isinstance(summary.integrity_report, dict) else self._scan_integrity_for_summary(summary)
+                report = (
+                    summary.integrity_report
+                    if isinstance(summary.integrity_report, dict)
+                    else self._scan_integrity_for_summary(summary)
+                )
                 self.playback_integrity_reports[run_dir_str] = report
                 self.playback_rebuild_status_by_dir[run_dir_str] = self._load_rebuild_status(summary.run_dir)
 
@@ -759,7 +884,6 @@ class ChecklistWindow(QDialog):
             self.test_list.addItem(item)
             self._set_integrity_placeholder(f"Error loading playback runs: {e}")
 
-
     def _is_selectable_playback_item(self, item: QListWidgetItem | None) -> bool:
         if item is None:
             return False
@@ -772,10 +896,16 @@ class ChecklistWindow(QDialog):
         if self.playback_continue_button is None:
             return
         self.playback_continue_button.setEnabled(
-            self._is_selectable_playback_item(self.test_list.currentItem() if hasattr(self, "test_list") else None)
+            self._is_selectable_playback_item(
+                self.test_list.currentItem() if hasattr(self, "test_list") else None
+            )
         )
 
-    def on_playback_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None = None):
+    def on_playback_item_changed(
+        self,
+        current: QListWidgetItem | None,
+        previous: QListWidgetItem | None = None,
+    ):
         del previous
         self._update_playback_continue_button()
 
@@ -799,7 +929,6 @@ class ChecklistWindow(QDialog):
         if isinstance(run_dir_str, str):
             rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {})
         self._apply_rebuild_status(rebuild_status if isinstance(rebuild_status, dict) else {})
-
 
     def _scan_integrity_for_summary(self, summary: PlaybackRunSummary) -> dict[str, object]:
         report = summary.integrity_report
@@ -828,12 +957,19 @@ class ChecklistWindow(QDialog):
         )
         self.integrity_badge_label.setText(f"{badge_text}\n{summary_message}")
         self.integrity_badge_label.setStyleSheet(
-            f"padding: 8px; border-radius: 6px; color: {fg}; background-color: {bg}; font-weight: bold;"
+            f"padding: 8px; border-radius: 6px; color: {fg}; "
+            f"background-color: {bg}; font-weight: bold;"
         )
         current_item = self.test_list.currentItem() if hasattr(self, "test_list") else None
         run_dir_str = current_item.data(Qt.UserRole) if current_item is not None else None
-        rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {}) if isinstance(run_dir_str, str) else {}
-        self.integrity_details_box.setPlainText(self._build_integrity_detail_text(report, rebuild_status))
+        rebuild_status = (
+            self.playback_rebuild_status_by_dir.get(run_dir_str, {})
+            if isinstance(run_dir_str, str)
+            else {}
+        )
+        self.integrity_details_box.setPlainText(
+            self._build_integrity_detail_text(report, rebuild_status)
+        )
 
     def _set_integrity_placeholder(self, text: str) -> None:
         if hasattr(self, "integrity_badge_label"):
@@ -854,7 +990,9 @@ class ChecklistWindow(QDialog):
         if hasattr(self, "prepare_rebuild_button"):
             self.prepare_rebuild_button.setEnabled(False)
         if hasattr(self, "rebuild_status_label"):
-            self.rebuild_status_label.setText("Rebuild artifacts are not prepared for the selected run.")
+            self.rebuild_status_label.setText(
+                "Rebuild artifacts are not prepared for the selected run."
+            )
 
     def _build_list_item_tooltip(self, base_tooltip: str, report: dict[str, object]) -> str:
         parts = [base_tooltip]
@@ -863,7 +1001,11 @@ class ChecklistWindow(QDialog):
             parts.extend(["", f"Integrity: {summary_message.strip()}"])
         return "\n".join(parts)
 
-    def _build_integrity_detail_text(self, report: dict[str, object], rebuild_status: dict[str, object] | None = None) -> str:
+    def _build_integrity_detail_text(
+        self,
+        report: dict[str, object],
+        rebuild_status: dict[str, object] | None = None,
+    ) -> str:
         lines: list[str] = []
 
         overall_status = str(report.get("overall_status") or "unknown")
@@ -946,7 +1088,11 @@ class ChecklistWindow(QDialog):
                 self.selected_test = selected_path or current_item.text()
             self.selected_playback_source = playback_source
             self.playback_mode = True
-            log.info("Selected run for playback: %s (source=%s)", self.selected_test, playback_source)
+            log.info(
+                "Selected run for playback: %s (source=%s)",
+                self.selected_test,
+                playback_source,
+            )
             self.accept()
 
     def _load_rebuild_status(self, run_dir: Path) -> dict[str, object]:
@@ -987,22 +1133,34 @@ class ChecklistWindow(QDialog):
 
         summary_message = str(rebuild_status.get("summary_message") or "")
         if has_rebuild:
-            self.rebuild_status_label.setText(f"Rebuild artifacts available. {summary_message}".strip())
+            self.rebuild_status_label.setText(
+                f"Rebuild artifacts available. {summary_message}".strip()
+            )
             if self.playback_source_combo.findData(_PLAYBACK_SOURCE_REBUILD) >= 0:
                 self.playback_source_combo.setCurrentIndex(0)
         else:
-            self.rebuild_status_label.setText(summary_message or "Rebuild artifacts are not prepared for the selected run.")
+            self.rebuild_status_label.setText(
+                summary_message or "Rebuild artifacts are not prepared for the selected run."
+            )
             self.playback_source_combo.setCurrentIndex(0)
 
     def on_prepare_rebuild_clicked(self):
-        current_item = getattr(self, "test_list", None).currentItem() if hasattr(self, "test_list") else None
+        current_item = (
+            getattr(self, "test_list", None).currentItem()
+            if hasattr(self, "test_list")
+            else None
+        )
         if current_item is None or not (current_item.flags() & Qt.ItemIsEnabled):
             QMessageBox.information(self, "Prepare Rebuild", "Select a playback run first.")
             return
 
         run_dir_str = current_item.data(Qt.UserRole)
         if not isinstance(run_dir_str, str):
-            QMessageBox.warning(self, "Prepare Rebuild", "Selected playback item is missing a valid run path.")
+            QMessageBox.warning(
+                self,
+                "Prepare Rebuild",
+                "Selected playback item is missing a valid run path.",
+            )
             return
 
         run_dir = Path(run_dir_str)
@@ -1014,7 +1172,11 @@ class ChecklistWindow(QDialog):
             report = publish_run_rebuild_artifacts(run_dir, project_root=self._project_root())
         except Exception as exc:
             log.error("Failed to prepare rebuild for %s: %s", run_dir, exc)
-            QMessageBox.critical(self, "Prepare Rebuild Failed", f"Failed to prepare rebuild artifacts.\n\nError: {exc}")
+            QMessageBox.critical(
+                self,
+                "Prepare Rebuild Failed",
+                f"Failed to prepare rebuild artifacts.\n\nError: {exc}",
+            )
             self.playback_rebuild_status_by_dir[run_dir_str] = {
                 "has_rebuild_artifacts": False,
                 "status": "failed",
@@ -1034,7 +1196,10 @@ class ChecklistWindow(QDialog):
                 QMessageBox.warning(
                     self,
                     "Rebuild Failed",
-                    str(report.get("summary_message") or "Rebuild failed, please check data manually."),
+                    str(
+                        report.get("summary_message")
+                        or "Rebuild failed, please check data manually."
+                    ),
                 )
         finally:
             self.prepare_rebuild_button.setEnabled(True)
@@ -1046,9 +1211,15 @@ class ChecklistWindow(QDialog):
             if rebuild_index >= 0:
                 self.playback_source_combo.setCurrentIndex(rebuild_index)
 
-    def _append_rebuild_detail_lines(self, lines: list[str], rebuild_status: dict[str, object]) -> None:
+    def _append_rebuild_detail_lines(
+        self,
+        lines: list[str],
+        rebuild_status: dict[str, object],
+    ) -> None:
         status = str(rebuild_status.get("status") or "unknown")
-        summary_message = str(rebuild_status.get("summary_message") or "Rebuild artifacts unavailable.")
+        summary_message = str(
+            rebuild_status.get("summary_message") or "Rebuild artifacts unavailable."
+        )
         lines.append("")
         lines.append(f"Rebuild status: {status}")
         lines.append(f"Rebuild summary: {summary_message}")
