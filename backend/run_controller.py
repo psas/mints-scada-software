@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping
 
 from historymanager import HistoryManager
+from historymanager.integrity import scan_and_write_run_integrity
 from historymanager.manager import isoformat_z
 
 from .state_store import StateStore
@@ -13,13 +15,14 @@ from .state_store import StateStore
 class RunController:
     """Coordinate backend run lifecycle with HistoryManager and StateStore.
 
-    Commit 50 focus:
-    - immediately persist an archive-initialized lifecycle event once a run is accepted
-    - write an initial backend snapshot at run start
-    - persist a final archive-finalizing lifecycle event and final snapshot before writers drain
+    Commit 51 focus:
+    - preserve the commit 50 archive lifecycle anchors and snapshots
+    - persist a finished-run integrity report immediately after archive close
+    - surface integrity summary information to the launcher/UI path that requested finish_run
 
-    This keeps playback/integrity tooling anchored on a stable run header from the start,
-    and preserves a final replay-oriented snapshot before the archive is closed.
+    This lets playback catalog code load a stable ``integrity_report.json`` without
+    always rescanning the archive inline, and it keeps archive finalization resilient:
+    an integrity scan failure should not make run shutdown fail.
     """
 
     def __init__(
@@ -157,6 +160,25 @@ class RunController:
             reason=reason,
         )
 
+        integrity_status = "unknown"
+        integrity_badge = "red"
+        integrity_summary_message = "Integrity scan did not run."
+        integrity_report_path: str | None = None
+        integrity_scan_error: str | None = None
+
+        try:
+            integrity_report, report_path = scan_and_write_run_integrity(finished_run_id)
+            integrity_status = str(integrity_report.get("overall_status") or "unknown")
+            integrity_badge = str(integrity_report.get("badge") or "red")
+            integrity_summary_message = str(
+                integrity_report.get("summary_message")
+                or "Integrity scan completed, but no summary was provided."
+            )
+            integrity_report_path = str(report_path)
+        except Exception as exc:
+            integrity_scan_error = str(exc)
+            integrity_summary_message = f"Integrity scan failed after run close: {exc}"
+
         return {
             "run_id": finished_run_id,
             "mode": mode,
@@ -168,6 +190,11 @@ class RunController:
             "finished_wall_time": preview_finished_wall_time,
             "final_snapshot_path": str(final_snapshot_path),
             "archive_finalized": True,
+            "integrity_status": integrity_status,
+            "integrity_badge": integrity_badge,
+            "integrity_summary_message": integrity_summary_message,
+            "integrity_report_path": integrity_report_path,
+            "integrity_scan_error": integrity_scan_error,
         }
 
     def _record_archive_lifecycle_event(
@@ -258,27 +285,24 @@ class RunController:
         try:
             start_dt = _parse_iso_utc(start_wall_time)
             end_dt = _parse_iso_utc(end_wall_time)
-        except Exception:
+        except ValueError:
             return None
-        delta = (end_dt - start_dt).total_seconds()
-        return max(0.0, float(delta))
+        elapsed = (end_dt - start_dt).total_seconds()
+        return elapsed if elapsed >= 0 else None
 
     @staticmethod
     def _format_recording_display(*, elapsed_seconds: Any, active: bool) -> str:
-        try:
-            seconds = max(0, int(float(elapsed_seconds or 0.0)))
-        except Exception:
-            seconds = 0
-
-        minutes, rem_seconds = divmod(seconds, 60)
-        if active:
-            return f"Recording: {minutes}m {rem_seconds:02d}s"
-        if seconds > 0:
-            return f"Recording: {minutes}m {rem_seconds:02d}s"
-        return "Not Recording"
+        if not isinstance(elapsed_seconds, (int, float)):
+            return "Recording: --m : --s" if active else "Not Recording"
+        total_seconds = max(0, int(elapsed_seconds))
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        prefix = "Recording" if active else "Recorded"
+        return f"{prefix}: {minutes:02d}m : {seconds:02d}s"
 
 
 def _parse_iso_utc(value: str) -> datetime:
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    return datetime.fromisoformat(normalized)
