@@ -197,6 +197,7 @@ class BackendService:
             session = self._client_sessions_by_connection_id.pop(client_id, None)
             connected_count = len(self._connected_clients)
             self.state_store.set_connected_clients(connected_count)
+            self.state_store.remove_gui_client_session(connection_id=client_id)
 
         disconnect_payload: dict[str, Any] = {
             "connection_id": client_id,
@@ -1131,8 +1132,12 @@ class BackendService:
             connected_clients=status["connected_clients"],
             active_run_id=status["active_run_id"],
             is_running=status["is_running"],
+            run_mode=status.get("run_mode"),
             connected_client_sessions=self.connected_client_sessions,
             health_summary=status.get("health_summary"),
+            recording=status.get("recording"),
+            mission_clock=status.get("mission_clock"),
+            playback_clock=status.get("playback_clock"),
         )
 
     def _register_client_hello(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1144,6 +1149,8 @@ class BackendService:
                 normalized["connected_at"] = previous.get("connected_at") or normalized["connected_at"]
             self._client_sessions_by_connection_id[connection_id] = dict(normalized)
 
+        self.state_store.upsert_gui_client_session(normalized)
+        self.state_store.set_connected_clients(self.connected_client_count)
         return dict(normalized)
 
     def _normalize_client_session(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:

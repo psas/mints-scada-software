@@ -71,6 +71,10 @@ def backend_status_message(
     is_running: bool,
     connected_client_sessions: list[Mapping[str, Any]] | None = None,
     health_summary: Mapping[str, Any] | None = None,
+    recording: Mapping[str, Any] | None = None,
+    mission_clock: Mapping[str, Any] | None = None,
+    playback_clock: Mapping[str, Any] | None = None,
+    run_mode: str | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="backend_status",
@@ -79,8 +83,12 @@ def backend_status_message(
             "connected_clients": connected_clients,
             "active_run_id": active_run_id,
             "is_running": is_running,
+            "run_mode": run_mode,
             "connected_client_sessions": [dict(item) for item in list(connected_client_sessions or [])],
             "health_summary": dict(health_summary or {}),
+            "recording": dict(recording or {}),
+            "mission_clock": dict(mission_clock or {}),
+            "playback_clock": dict(playback_clock or {}),
         },
     )
 

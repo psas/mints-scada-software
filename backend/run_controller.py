@@ -57,6 +57,16 @@ class RunController:
         if current_run is None:
             raise RuntimeError("HistoryManager did not expose current_run after start_run()")
 
+        state_metadata: dict[str, Any] = {
+            "software_git_commit": software_git_commit,
+            "software_branch": software_branch,
+            "device_map_version": device_map_version,
+            "svg_version": svg_version,
+            "bus_config": dict(bus_config or {}),
+            "clock_info": dict(clock_info or {}),
+            "extra_metadata": dict(extra_metadata or {}),
+        }
+
         self.state_store.mark_run_started(
             run_id=run_id_value,
             mode=mode,
@@ -64,6 +74,8 @@ class RunController:
             operator=operator,
             profile_name=profile_name,
             started_wall_time=current_run.started_wall_time,
+            notes=notes,
+            metadata=state_metadata,
         )
 
         return {
@@ -73,6 +85,7 @@ class RunController:
             "test_name": test_name,
             "operator": operator,
             "profile_name": profile_name,
+            "notes": notes,
             "started_wall_time": current_run.started_wall_time,
         }
 

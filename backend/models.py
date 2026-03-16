@@ -13,12 +13,17 @@ class RunRuntimeState:
     test_name: str | None = None
     operator: str | None = None
     profile_name: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     last_started_wall_time: str | None = None
     last_finished_wall_time: str | None = None
     last_finish_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            **asdict(self),
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass
@@ -63,6 +68,106 @@ class DeviceRuntimeState:
                 device_id: dict(state)
                 for device_id, state in self.by_id.items()
             }
+        }
+
+
+@dataclass
+class GuiPresenceState:
+    total_connections: int = 0
+    total_windows: int = 0
+    by_connection_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    window_roles: list[str] = field(default_factory=list)
+    logical_client_ids: list[str] = field(default_factory=list)
+    last_event_wall_time: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_connections": self.total_connections,
+            "total_windows": self.total_windows,
+            "by_connection_id": {
+                connection_id: dict(value)
+                for connection_id, value in self.by_connection_id.items()
+            },
+            "window_roles": list(self.window_roles),
+            "logical_client_ids": list(self.logical_client_ids),
+            "last_event_wall_time": self.last_event_wall_time,
+        }
+
+
+@dataclass
+class RecordingClockState:
+    active: bool = False
+    status: str = "idle"
+    started_wall_time: str | None = None
+    stopped_wall_time: str | None = None
+    elapsed_seconds: float = 0.0
+    display_text: str = "Not Recording"
+    accent: str = "neutral"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class PlaybackClockState:
+    active: bool = False
+    status: str = "idle"
+    source_run_id: str | None = None
+    total_duration_seconds: float | None = None
+    position_seconds: float | None = None
+    display_text: str = "Playback: --"
+    accent: str = "neutral"
+    started_wall_time: str | None = None
+    updated_wall_time: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class MissionClockState:
+    label: str = "T+"
+    state: str = "idle"
+    seconds: float = 0.0
+    updated_wall_time: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SequenceRuntimeState:
+    current_state: str | None = None
+    current_phase: str | None = None
+    current_step_name: str | None = None
+    current_step_index: int | None = None
+    hold_state: str | None = None
+    profile_name: str | None = None
+    updated_wall_time: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "details": dict(self.details),
+        }
+
+
+@dataclass
+class AlarmRuntimeState:
+    active_alarm_count: int = 0
+    active_fault_count: int = 0
+    active_alarms: list[dict[str, Any]] = field(default_factory=list)
+    active_faults: list[dict[str, Any]] = field(default_factory=list)
+    updated_wall_time: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "active_alarm_count": self.active_alarm_count,
+            "active_fault_count": self.active_fault_count,
+            "active_alarms": [dict(item) for item in self.active_alarms],
+            "active_faults": [dict(item) for item in self.active_faults],
+            "updated_wall_time": self.updated_wall_time,
         }
 
 
@@ -126,6 +231,12 @@ class BackendRuntimeState:
     bus: BusRuntimeState = field(default_factory=BusRuntimeState)
     device_registry: DeviceRegistryState = field(default_factory=DeviceRegistryState)
     device_runtime: DeviceRuntimeState = field(default_factory=DeviceRuntimeState)
+    gui: GuiPresenceState = field(default_factory=GuiPresenceState)
+    mission_clock: MissionClockState = field(default_factory=MissionClockState)
+    recording_clock: RecordingClockState = field(default_factory=RecordingClockState)
+    playback_clock: PlaybackClockState = field(default_factory=PlaybackClockState)
+    sequence: SequenceRuntimeState = field(default_factory=SequenceRuntimeState)
+    alarms: AlarmRuntimeState = field(default_factory=AlarmRuntimeState)
     script_runner: ScriptRunnerState = field(default_factory=ScriptRunnerState)
     health: HealthRuntimeState = field(default_factory=HealthRuntimeState)
 
@@ -138,6 +249,12 @@ class BackendRuntimeState:
             "bus": self.bus.to_dict(),
             "device_registry": self.device_registry.to_dict(),
             "device_runtime": self.device_runtime.to_dict(),
+            "gui": self.gui.to_dict(),
+            "mission_clock": self.mission_clock.to_dict(),
+            "recording_clock": self.recording_clock.to_dict(),
+            "playback_clock": self.playback_clock.to_dict(),
+            "sequence": self.sequence.to_dict(),
+            "alarms": self.alarms.to_dict(),
             "script_runner": self.script_runner.to_dict(),
             "health": self.health.to_dict(),
         }

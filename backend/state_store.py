@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from .models import BackendRuntimeState
 
 
 class StateStore:
-    """Minimal authoritative backend runtime state."""
+    """Authoritative backend runtime state.
+
+    This version expands the state model so future GUI work can rely on backend
+    snapshots for:
+    - run metadata
+    - GUI window presence
+    - mission clock vs recording clock vs playback clock
+    - sequence summary
+    - active alarms and faults
+    """
 
     def __init__(self, *, service_name: str, backend_started_at: str) -> None:
         self._lock = threading.RLock()
@@ -19,7 +29,27 @@ class StateStore:
 
     def set_connected_clients(self, count: int) -> None:
         with self._lock:
-            self._state.connected_clients = max(0, int(count))
+            normalized = max(0, int(count))
+            self._state.connected_clients = normalized
+            self._state.gui.total_connections = normalized
+            self._state.gui.last_event_wall_time = isoformat_utc_now()
+
+    def upsert_gui_client_session(self, session: Mapping[str, Any]) -> None:
+        connection_id = str(session.get("connection_id") or "").strip()
+        if not connection_id:
+            raise ValueError("GUI client session requires a non-empty connection_id")
+
+        with self._lock:
+            normalized = dict(session)
+            self._state.gui.by_connection_id[connection_id] = normalized
+            self._state.gui.last_event_wall_time = normalized.get("last_hello_wall_time") or isoformat_utc_now()
+            self._refresh_gui_presence_locked()
+
+    def remove_gui_client_session(self, *, connection_id: str) -> None:
+        with self._lock:
+            self._state.gui.by_connection_id.pop(connection_id, None)
+            self._state.gui.last_event_wall_time = isoformat_utc_now()
+            self._refresh_gui_presence_locked()
 
     def mark_run_started(
         self,
@@ -30,6 +60,8 @@ class StateStore:
         operator: str | None,
         profile_name: str | None,
         started_wall_time: str,
+        notes: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         with self._lock:
             self._state.run.active_run_id = run_id
@@ -39,8 +71,39 @@ class StateStore:
             self._state.run.test_name = test_name
             self._state.run.operator = operator
             self._state.run.profile_name = profile_name
+            self._state.run.notes = notes
+            self._state.run.metadata = dict(metadata or {})
             self._state.run.last_started_wall_time = started_wall_time
             self._state.run.last_finish_reason = None
+            self._state.run.last_finished_wall_time = None
+
+            self._state.recording_clock.active = mode == "live"
+            self._state.recording_clock.status = "recording" if mode == "live" else "idle"
+            self._state.recording_clock.started_wall_time = started_wall_time if mode == "live" else None
+            self._state.recording_clock.stopped_wall_time = None
+            self._state.recording_clock.elapsed_seconds = 0.0
+            self._state.recording_clock.display_text = "Recording: 0m 00s" if mode == "live" else "Not Recording"
+            self._state.recording_clock.accent = "recording" if mode == "live" else "neutral"
+
+            if mode == "playback":
+                self._state.playback_clock.active = True
+                self._state.playback_clock.status = "ready"
+                self._state.playback_clock.source_run_id = run_id
+                self._state.playback_clock.started_wall_time = started_wall_time
+                self._state.playback_clock.updated_wall_time = started_wall_time
+            else:
+                self._state.playback_clock.active = False
+                self._state.playback_clock.status = "idle"
+                self._state.playback_clock.source_run_id = None
+                self._state.playback_clock.position_seconds = None
+                self._state.playback_clock.total_duration_seconds = None
+                self._state.playback_clock.display_text = "Playback: --"
+                self._state.playback_clock.accent = "neutral"
+                self._state.playback_clock.started_wall_time = None
+                self._state.playback_clock.updated_wall_time = None
+
+            self._state.sequence.profile_name = profile_name
+            self._state.sequence.updated_wall_time = started_wall_time
 
     def mark_run_finished(
         self,
@@ -55,6 +118,23 @@ class StateStore:
             self._state.run.status = "completed"
             self._state.run.last_finished_wall_time = finished_wall_time
             self._state.run.last_finish_reason = reason
+
+            started_wall_time = self._state.run.last_started_wall_time
+            elapsed_seconds = self._elapsed_seconds_between(started_wall_time, finished_wall_time)
+            if elapsed_seconds is not None:
+                self._state.recording_clock.elapsed_seconds = elapsed_seconds
+
+            self._state.recording_clock.active = False
+            self._state.recording_clock.status = "stopped"
+            self._state.recording_clock.stopped_wall_time = finished_wall_time
+            self._state.recording_clock.display_text = self._format_recording_display(
+                elapsed_seconds=self._state.recording_clock.elapsed_seconds,
+                active=False,
+            )
+            self._state.recording_clock.accent = "neutral"
+
+            self._state.playback_clock.status = "stopped" if self._state.playback_clock.active else self._state.playback_clock.status
+            self._state.playback_clock.updated_wall_time = finished_wall_time
 
     def set_bus_connection_state(
         self,
@@ -116,6 +196,9 @@ class StateStore:
         runtime_aux: Any,
         runtime_time: Any,
         source: str,
+        runtime_state: Any = None,
+        runtime_position: Any = None,
+        runtime_status: Any = None,
     ) -> None:
         with self._lock:
             current = self._state.device_runtime.by_id.get(device_id, {})
@@ -127,6 +210,7 @@ class StateStore:
                 "source": source,
                 "packet_count": packet_count,
                 "last_packet_wall_time": wall_time,
+                "last_packet_age_seconds": 0.0,
                 "last_packet_id": packet_id,
                 "last_packet_seq": packet_seq,
                 "last_packet_cmd": packet_cmd,
@@ -139,7 +223,99 @@ class StateStore:
                 "runtime_value": runtime_value,
                 "runtime_aux": runtime_aux,
                 "runtime_time": runtime_time,
+                "runtime_state": runtime_state,
+                "runtime_position": runtime_position,
+                "runtime_status": runtime_status,
             }
+
+    def set_mission_clock(
+        self,
+        *,
+        seconds: float,
+        state: str = "running",
+        wall_time: str | None = None,
+        label: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.mission_clock.seconds = max(0.0, float(seconds))
+            self._state.mission_clock.state = state
+            self._state.mission_clock.updated_wall_time = wall_time or isoformat_utc_now()
+            if label is not None:
+                self._state.mission_clock.label = str(label)
+
+    def reset_mission_clock(self, *, wall_time: str | None = None) -> None:
+        with self._lock:
+            self._state.mission_clock.seconds = 0.0
+            self._state.mission_clock.state = "idle"
+            self._state.mission_clock.updated_wall_time = wall_time or isoformat_utc_now()
+
+    def set_playback_clock(
+        self,
+        *,
+        source_run_id: str | None,
+        total_duration_seconds: float | None,
+        position_seconds: float | None = None,
+        status: str = "ready",
+        wall_time: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.playback_clock.active = source_run_id is not None
+            self._state.playback_clock.source_run_id = source_run_id
+            self._state.playback_clock.total_duration_seconds = self._normalize_seconds(total_duration_seconds)
+            self._state.playback_clock.position_seconds = self._normalize_seconds(position_seconds)
+            self._state.playback_clock.status = status
+            self._state.playback_clock.updated_wall_time = wall_time or isoformat_utc_now()
+
+    def clear_playback_clock(self, *, wall_time: str | None = None) -> None:
+        with self._lock:
+            self._state.playback_clock.active = False
+            self._state.playback_clock.status = "idle"
+            self._state.playback_clock.source_run_id = None
+            self._state.playback_clock.total_duration_seconds = None
+            self._state.playback_clock.position_seconds = None
+            self._state.playback_clock.display_text = "Playback: --"
+            self._state.playback_clock.accent = "neutral"
+            self._state.playback_clock.started_wall_time = None
+            self._state.playback_clock.updated_wall_time = wall_time or isoformat_utc_now()
+
+    def set_sequence_state(
+        self,
+        *,
+        current_state: str | None,
+        current_phase: str | None = None,
+        current_step_name: str | None = None,
+        current_step_index: int | None = None,
+        hold_state: str | None = None,
+        profile_name: str | None = None,
+        details: Mapping[str, Any] | None = None,
+        wall_time: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.sequence.current_state = current_state
+            self._state.sequence.current_phase = current_phase
+            self._state.sequence.current_step_name = current_step_name
+            self._state.sequence.current_step_index = current_step_index
+            self._state.sequence.hold_state = hold_state
+            if profile_name is not None:
+                self._state.sequence.profile_name = profile_name
+            self._state.sequence.details = dict(details or {})
+            self._state.sequence.updated_wall_time = wall_time or isoformat_utc_now()
+
+    def set_alarm_state(
+        self,
+        *,
+        active_alarms: Iterable[Mapping[str, Any]] | None = None,
+        active_faults: Iterable[Mapping[str, Any]] | None = None,
+        wall_time: str | None = None,
+    ) -> None:
+        with self._lock:
+            alarm_list = [dict(item) for item in list(active_alarms or [])]
+            fault_list = [dict(item) for item in list(active_faults or [])]
+            self._state.alarms.active_alarms = alarm_list
+            self._state.alarms.active_faults = fault_list
+            self._state.alarms.active_alarm_count = len(alarm_list)
+            self._state.alarms.active_fault_count = len(fault_list)
+            self._state.alarms.updated_wall_time = wall_time or isoformat_utc_now()
 
     def mark_script_started(
         self,
@@ -196,7 +372,6 @@ class StateStore:
             self._state.script_runner.finished_wall_time = finished_wall_time
             self._state.script_runner.last_exit_code = return_code
             self._state.script_runner.last_stop_reason = reason
-
 
     def update_script_progress(
         self,
@@ -340,15 +515,36 @@ class StateStore:
 
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
+            self._refresh_transient_fields_locked()
             return deepcopy(self._state.to_dict())
 
     def get_backend_status(self) -> dict[str, Any]:
         with self._lock:
+            self._refresh_transient_fields_locked()
             return {
                 "backend_started_at": self._state.backend_started_at,
                 "connected_clients": self._state.connected_clients,
                 "active_run_id": self._state.run.active_run_id,
                 "is_running": self._state.run.is_running,
+                "run_mode": self._state.run.mode,
+                "recording": {
+                    "active": self._state.recording_clock.active,
+                    "status": self._state.recording_clock.status,
+                    "elapsed_seconds": self._state.recording_clock.elapsed_seconds,
+                    "display_text": self._state.recording_clock.display_text,
+                },
+                "mission_clock": {
+                    "state": self._state.mission_clock.state,
+                    "seconds": self._state.mission_clock.seconds,
+                    "label": self._state.mission_clock.label,
+                },
+                "playback_clock": {
+                    "active": self._state.playback_clock.active,
+                    "status": self._state.playback_clock.status,
+                    "position_seconds": self._state.playback_clock.position_seconds,
+                    "total_duration_seconds": self._state.playback_clock.total_duration_seconds,
+                    "display_text": self._state.playback_clock.display_text,
+                },
                 "health_summary": {
                     "sampled_at": self._state.health.sampled_at,
                     "overall_status": self._state.health.overall_status,
@@ -356,3 +552,118 @@ class StateStore:
                     "active_warnings": list(self._state.health.active_warnings),
                 },
             }
+
+    def _refresh_transient_fields_locked(self) -> None:
+        now_wall_time = isoformat_utc_now()
+        self._refresh_gui_presence_locked()
+        self._refresh_device_packet_ages_locked(now_wall_time=now_wall_time)
+        self._refresh_recording_clock_locked(now_wall_time=now_wall_time)
+        self._refresh_playback_clock_locked(now_wall_time=now_wall_time)
+
+    def _refresh_gui_presence_locked(self) -> None:
+        sessions = list(self._state.gui.by_connection_id.values())
+        self._state.gui.total_windows = len(sessions)
+        self._state.gui.total_connections = max(self._state.connected_clients, len(sessions))
+        self._state.gui.window_roles = sorted(
+            {
+                str(item.get("window_role"))
+                for item in sessions
+                if item.get("window_role") not in (None, "")
+            }
+        )
+        self._state.gui.logical_client_ids = sorted(
+            {
+                str(item.get("logical_client_id"))
+                for item in sessions
+                if item.get("logical_client_id") not in (None, "")
+            }
+        )
+
+    def _refresh_device_packet_ages_locked(self, *, now_wall_time: str) -> None:
+        for device_state in self._state.device_runtime.by_id.values():
+            packet_wall_time = device_state.get("last_packet_wall_time")
+            age_seconds = self._elapsed_seconds_between(packet_wall_time, now_wall_time)
+            device_state["last_packet_age_seconds"] = age_seconds
+
+    def _refresh_recording_clock_locked(self, *, now_wall_time: str) -> None:
+        if self._state.recording_clock.active and self._state.recording_clock.started_wall_time:
+            elapsed_seconds = self._elapsed_seconds_between(
+                self._state.recording_clock.started_wall_time,
+                now_wall_time,
+            )
+            if elapsed_seconds is not None:
+                self._state.recording_clock.elapsed_seconds = elapsed_seconds
+
+        self._state.recording_clock.display_text = self._format_recording_display(
+            elapsed_seconds=self._state.recording_clock.elapsed_seconds,
+            active=self._state.recording_clock.active,
+        )
+        self._state.recording_clock.accent = "recording" if self._state.recording_clock.active else "neutral"
+
+    def _refresh_playback_clock_locked(self, *, now_wall_time: str) -> None:
+        total_duration = self._state.playback_clock.total_duration_seconds
+        position = self._state.playback_clock.position_seconds
+
+        if total_duration is None and not self._state.playback_clock.active:
+            self._state.playback_clock.display_text = "Playback: --"
+            self._state.playback_clock.accent = "neutral"
+            return
+
+        if total_duration is None:
+            self._state.playback_clock.display_text = "Duration: --"
+        elif position is None:
+            self._state.playback_clock.display_text = f"Duration: {self._format_duration(total_duration)}"
+        else:
+            self._state.playback_clock.display_text = (
+                f"Playback: {self._format_duration(position)} / {self._format_duration(total_duration)}"
+            )
+
+        self._state.playback_clock.accent = "playback" if self._state.playback_clock.active else "neutral"
+        self._state.playback_clock.updated_wall_time = now_wall_time
+
+    def _format_recording_display(self, *, elapsed_seconds: float, active: bool) -> str:
+        if not active and elapsed_seconds <= 0.0:
+            return "Not Recording"
+        return f"Recording: {self._format_duration(elapsed_seconds)}"
+
+    def _format_duration(self, seconds: float | int | None) -> str:
+        normalized = int(max(0, round(float(seconds or 0.0))))
+        minutes, remaining_seconds = divmod(normalized, 60)
+        return f"{minutes}m {remaining_seconds:02d}s"
+
+    def _normalize_seconds(self, value: float | int | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _elapsed_seconds_between(self, start_wall_time: str | None, end_wall_time: str | None) -> float | None:
+        start_dt = parse_iso_wall_time(start_wall_time)
+        end_dt = parse_iso_wall_time(end_wall_time)
+        if start_dt is None or end_dt is None:
+            return None
+        delta = (end_dt - start_dt).total_seconds()
+        return max(0.0, delta)
+
+
+def parse_iso_wall_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def isoformat_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
