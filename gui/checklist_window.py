@@ -1,4 +1,8 @@
 from pathlib import Path
+import json
+import os
+import socket
+
 from gui.playback_catalog import PlaybackRunSummary, discover_playback_runs
 
 from PyQt5.QtWidgets import (
@@ -123,9 +127,12 @@ class ChecklistWindow(QDialog):
     - playback mode: select a recorded run from ignitionhistory
     """
 
-    def __init__(self, serial_port, parent=None):
+    def __init__(self, serial_port, parent=None, *, backend_socket_path: str | Path | None = None, auto_refresh_ms: int = 2000):
         super().__init__(parent)
         self.serial_port = serial_port
+        self.backend_socket_path = Path(backend_socket_path).expanduser().resolve() if backend_socket_path else self._default_backend_socket_path()
+        self.backend_probe_snapshot: dict[str, object] | None = None
+        self._check_refresh_ms = max(500, int(auto_refresh_ms))
         self.all_passed = False
         self.selected_test = None
         self.playback_mode = False
@@ -148,6 +155,11 @@ class ChecklistWindow(QDialog):
         self.checklist_widget = self._build_checklist_widget()
         self.main_layout.addWidget(self.checklist_widget)
 
+        self._check_refresh_timer = QTimer(self)
+        self._check_refresh_timer.setInterval(self._check_refresh_ms)
+        self._check_refresh_timer.timeout.connect(self._maybe_refresh_checks)
+        self._check_refresh_timer.start()
+
         QTimer.singleShot(500, self.run_checks)
 
     def _build_checklist_widget(self) -> QWidget:
@@ -160,7 +172,7 @@ class ChecklistWindow(QDialog):
         title.setAlignment(Qt.AlignCenter)
         checklist_layout.addWidget(title)
 
-        subtitle = QLabel("Checking hardware and connections...")
+        subtitle = QLabel("Checking hardware readiness and backend live status...")
         subtitle.setFont(QFont("Arial", 10))
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
@@ -286,7 +298,7 @@ class ChecklistWindow(QDialog):
         return widget
 
     def run_checks(self):
-        """Run all pre-flight checks"""
+        """Run all pre-flight checks using backend-owned live readiness."""
         self.continue_button.setEnabled(False)
         self.status_message.setText("Running checks...")
         self.status_message.setStyleSheet("color: #888; margin: 10px; padding: 10px;")
@@ -294,29 +306,86 @@ class ChecklistWindow(QDialog):
         self.check_serial.set_checking()
         QApplication.processEvents()
 
-        if Path(self.serial_port).exists():
+        serial_ok = Path(self.serial_port).exists()
+        if serial_ok:
             self.check_serial.set_pass(f"Found: {self.serial_port}")
             log.info("Serial port check passed: %s", self.serial_port)
         else:
             self.check_serial.set_fail(f"Not found: {self.serial_port}")
             log.error("Serial port not found: %s", self.serial_port)
-            self._handle_failure("Serial port not found. Please check USB connection.")
-            return
 
         self.check_bus.set_checking()
         QApplication.processEvents()
-        self.check_bus.set_pass("Ready")
+        probe = self._probe_backend_live_state()
+        self.backend_probe_snapshot = probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else None
+
+        bus_ok = False
+        devices_ok = False
+        bus_message = "Backend live status unavailable"
+        devices_message = "Backend live status unavailable"
+
+        if probe.get("reachable"):
+            snapshot = probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else {}
+            bus_state = snapshot.get("bus") if isinstance(snapshot.get("bus"), dict) else {}
+            registry_state = snapshot.get("registry") if isinstance(snapshot.get("registry"), dict) else {}
+
+            bus_connected = bool(bus_state.get("connected"))
+            bus_reconnecting = bool(bus_state.get("reconnecting"))
+            sender = str(bus_state.get("sender") or "backend")
+            bitrate = bus_state.get("bitrate")
+            bitrate_text = f" @ {bitrate}" if bitrate else ""
+
+            if bus_connected and not bus_reconnecting:
+                bus_ok = True
+                bus_message = f"Ready via {sender}{bitrate_text}"
+            elif bus_reconnecting:
+                bus_message = "Backend is reconnecting the live bus"
+            else:
+                bus_message = "Backend is reachable, but live bus is not connected"
+
+            total_devices = int(registry_state.get("total_devices") or 0)
+            load_error_count = int(registry_state.get("load_error_count") or 0)
+            if bus_ok and total_devices > 0 and load_error_count == 0:
+                devices_ok = True
+                devices_message = f"{total_devices} device(s) available"
+            elif load_error_count > 0:
+                devices_message = f"{load_error_count} device load error(s)"
+            elif total_devices > 0:
+                devices_message = f"{total_devices} device(s) listed, waiting for live readiness"
+            else:
+                devices_message = "No devices available from backend registry"
+        else:
+            bus_message = str(probe.get("message") or f"Backend service unavailable at {self.backend_socket_path}")
+            devices_message = "Device readiness unavailable until backend responds"
+
+        if bus_ok:
+            self.check_bus.set_pass(bus_message)
+        else:
+            self.check_bus.set_fail(bus_message)
 
         self.check_devices.set_checking()
         QApplication.processEvents()
-        self.check_devices.set_pass("Ready to initialize")
+        if devices_ok:
+            self.check_devices.set_pass(devices_message)
+        else:
+            self.check_devices.set_fail(devices_message)
 
-        self._handle_success()
+        if serial_ok and bus_ok and devices_ok:
+            self._handle_success()
+        else:
+            failure_parts: list[str] = []
+            if not serial_ok:
+                failure_parts.append("serial port not found")
+            if not bus_ok:
+                failure_parts.append(bus_message)
+            if not devices_ok:
+                failure_parts.append(devices_message)
+            self._handle_failure("; ".join(failure_parts))
 
     def _handle_success(self):
         """Handle successful completion of all checks"""
         self.all_passed = True
-        self.status_message.setText("All checks passed! Ready to continue.")
+        self.status_message.setText("All checks passed. Live mode is ready through backend-owned hardware state.")
         self.status_message.setStyleSheet(
             "color: #4CAF50; margin: 10px; padding: 10px; font-weight: bold;"
         )
@@ -327,7 +396,7 @@ class ChecklistWindow(QDialog):
         """Handle check failure"""
         self.all_passed = False
         self.status_message.setText(
-            f"Check failed: {message}\n\nFix the issue and run 'make run' again."
+            f"Check failed: {message}\n\nPlayback is still available. Live mode will unlock when backend live readiness is available."
         )
         self.status_message.setStyleSheet(
             "color: #F44336; margin: 10px; padding: 10px; "
@@ -337,6 +406,7 @@ class ChecklistWindow(QDialog):
 
     def show_live_setup(self):
         """Switch to live run metadata entry view."""
+        self.run_checks()
         if not self.all_passed:
             QMessageBox.warning(
                 self,
@@ -471,6 +541,94 @@ class ChecklistWindow(QDialog):
             self.live_setup_widget.hide()
 
         self.checklist_widget.show()
+
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _default_backend_socket_path(self) -> Path:
+        env_value = os.environ.get("MINTS_BACKEND_SOCKET")
+        if env_value:
+            return Path(env_value).expanduser().resolve()
+        return (self._project_root() / ".backend_service.sock").resolve()
+
+    def _maybe_refresh_checks(self) -> None:
+        if self.checklist_widget.isVisible():
+            self.run_checks()
+
+    def _probe_backend_live_state(self, *, timeout_s: float = 0.75) -> dict[str, object]:
+        socket_path = self.backend_socket_path
+        if not socket_path.exists():
+            return {
+                "reachable": False,
+                "message": f"Backend socket not found: {socket_path}",
+                "snapshot": None,
+            }
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout_s)
+                sock.connect(str(socket_path))
+
+                hello_payload = {
+                    "client_name": "checklist_window",
+                    "window_role": "launcher",
+                    "window_kind": "checklist",
+                    "mode": "check",
+                    "pid": os.getpid(),
+                }
+                self._send_probe_message(sock, "hello", hello_payload)
+                self._send_probe_message(sock, "request_full_state", {})
+                self._send_probe_message(sock, "status_request", {})
+
+                snapshot: dict[str, object] | None = None
+                backend_status: dict[str, object] | None = None
+                buffer = ""
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            message = json.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(message, dict):
+                            continue
+                        message_type = str(message.get("type") or "")
+                        payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+                        if message_type == "state_snapshot":
+                            snapshot = payload
+                        elif message_type == "backend_status":
+                            backend_status = payload
+
+                        if snapshot is not None and backend_status is not None:
+                            return {
+                                "reachable": True,
+                                "message": "Backend service responded",
+                                "snapshot": snapshot,
+                                "backend_status": backend_status,
+                            }
+        except Exception as exc:
+            return {
+                "reachable": False,
+                "message": f"Backend service unavailable: {exc}",
+                "snapshot": None,
+            }
+
+        return {
+            "reachable": False,
+            "message": "Backend service did not return state data",
+            "snapshot": None,
+        }
+
+    def _send_probe_message(self, sock: socket.socket, message_type: str, payload: dict[str, object]) -> None:
+        wire = json.dumps({"type": message_type, "payload": payload}, ensure_ascii=False, sort_keys=False) + "\n"
+        sock.sendall(wire.encode("utf-8"))
 
     def _required_live_fields_present(self) -> bool:
         test_name = self.test_name_input.text().strip() if hasattr(self, "test_name_input") else ""
