@@ -38,7 +38,8 @@ class ScriptRunner:
     - single running script at a time
     - subprocess lifecycle ownership in backend for legacy mode
     - background thread ownership in backend for plan mode
-    - no hold/continue yet (next commit)
+    - hold/continue semantics for plan mode only
+    - cooperative pause points for sleep / wait_state / note / pre-dispatch checkpoints
     """
 
     def __init__(
@@ -113,7 +114,8 @@ class ScriptRunner:
 
     def stop_script(self, *, reason: str = "operator_stop", timeout_s: float = 3.0) -> dict[str, Any]:
         with self._lock:
-            if self._launch_mode == "plan":
+            launch_mode = self._launch_mode
+            if launch_mode == "plan":
                 if self._plan_thread is None or not self._plan_thread.is_alive():
                     raise RuntimeError("No running backend-owned script to stop")
 
@@ -122,6 +124,7 @@ class ScriptRunner:
                 pid = os.getpid()
                 self._stop_watcher.set()
                 self._plan_stop.set()
+                self._plan_resume.set()
                 plan_thread = self._plan_thread
             else:
                 if self._process is None or self._process.poll() is not None:
@@ -132,7 +135,7 @@ class ScriptRunner:
                 script_name = self._script_name
                 pid = process.pid
 
-        if self._launch_mode == "plan":
+        if launch_mode == "plan":
             assert plan_thread is not None
             plan_thread.join(timeout=timeout_s)
             if plan_thread.is_alive():
@@ -151,6 +154,8 @@ class ScriptRunner:
                 "stopped_via": stopped_via,
             }
 
+        assert self._process is not None
+        process = self._process
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -178,6 +183,42 @@ class ScriptRunner:
             "returncode": return_code,
             "stopped_via": stopped_via,
         }
+
+    def hold_script(self, *, reason: str = "operator_hold") -> dict[str, Any]:
+        del reason
+        with self._lock:
+            if not self.is_running:
+                raise RuntimeError("No running backend-owned script to hold")
+            if self._launch_mode != "plan":
+                raise RuntimeError("Hold is only supported for backend plan-mode scripts")
+
+            self._plan_hold_requested.set()
+            self._plan_resume.clear()
+
+            if self._is_held:
+                status = "held"
+            else:
+                status = "hold_requested"
+
+            return self._build_plan_control_result(status=status)
+
+    def continue_script(self, *, reason: str = "operator_continue") -> dict[str, Any]:
+        del reason
+        with self._lock:
+            if not self.is_running:
+                raise RuntimeError("No running backend-owned script to continue")
+            if self._launch_mode != "plan":
+                raise RuntimeError("Continue is only supported for backend plan-mode scripts")
+            if not self._plan_hold_requested.is_set() and not self._is_held:
+                raise RuntimeError("Backend plan-mode script is not currently held")
+
+            self._plan_hold_requested.clear()
+            self._is_held = False
+            self._plan_resume.set()
+            result = self._build_plan_control_result(status="continued")
+            result["is_held"] = False
+            result["hold_requested"] = False
+            return result
 
     def shutdown(self) -> None:
         with self._lock:
@@ -230,6 +271,7 @@ class ScriptRunner:
         self._current_step_type = None
         self._current_step_status = None
         self._plan_steps_summary = []
+        self._is_held = False
 
         self._stop_watcher.clear()
         self._watcher_thread = threading.Thread(
@@ -335,7 +377,23 @@ class ScriptRunner:
                     plan_steps_summary=plan_steps_summary,
                 )
 
-                self._execute_plan_step(step_type, step)
+                self._honor_hold_point(
+                    current_step_index=index,
+                    total_steps=total_steps,
+                    current_step_name=step_name,
+                    current_step_type=step_type,
+                    current_step_status="hold_requested",
+                    plan_steps_summary=plan_steps_summary,
+                )
+
+                self._execute_plan_step(
+                    step_type,
+                    step,
+                    current_step_index=index,
+                    total_steps=total_steps,
+                    current_step_name=step_name,
+                    plan_steps_summary=plan_steps_summary,
+                )
 
                 if self._plan_stop.is_set():
                     return_code = 0
@@ -374,6 +432,7 @@ class ScriptRunner:
         if self._stop_watcher.is_set():
             return
 
+        exit_snapshot = self._script_progress_snapshot()
         self._clear_after_exit()
         if callable(on_exit):
             payload = {
@@ -384,25 +443,49 @@ class ScriptRunner:
                 "command": command,
                 "cwd": cwd,
                 "returncode": return_code,
-                "current_step_index": self._current_step_index,
-                "total_steps": total_steps,
-                "current_step_name": self._current_step_name,
-                "current_step_type": self._current_step_type,
-                "current_step_status": self._current_step_status,
-                "plan_steps_summary": plan_steps_summary,
+                "current_step_index": exit_snapshot.get("current_step_index"),
+                "total_steps": exit_snapshot.get("total_steps"),
+                "current_step_name": exit_snapshot.get("current_step_name"),
+                "current_step_type": exit_snapshot.get("current_step_type"),
+                "current_step_status": exit_snapshot.get("current_step_status"),
+                "plan_steps_summary": exit_snapshot.get("plan_steps_summary", []),
             }
             if failure_message is not None:
                 payload["failure_message"] = failure_message
             on_exit(payload)
 
-    def _execute_plan_step(self, step_type: str, step: Mapping[str, Any]) -> None:
+    def _execute_plan_step(
+        self,
+        step_type: str,
+        step: Mapping[str, Any],
+        *,
+        current_step_index: int,
+        total_steps: int,
+        current_step_name: str,
+        plan_steps_summary: list[str],
+    ) -> None:
         if step_type == "sleep":
             seconds = self._coerce_positive_number(step.get("seconds"), key="seconds")
-            self._sleep_interruptibly(seconds)
+            self._sleep_interruptibly(
+                seconds,
+                current_step_index=current_step_index,
+                total_steps=total_steps,
+                current_step_name=current_step_name,
+                current_step_type=step_type,
+                plan_steps_summary=plan_steps_summary,
+            )
             return
 
         if step_type == "note":
             _ = self._require_non_empty_step_string(step, "message")
+            self._honor_hold_point(
+                current_step_index=current_step_index,
+                total_steps=total_steps,
+                current_step_name=current_step_name,
+                current_step_type=step_type,
+                current_step_status="hold_requested",
+                plan_steps_summary=plan_steps_summary,
+            )
             return
 
         if step_type == "command_request":
@@ -411,6 +494,14 @@ class ScriptRunner:
             payload = step.get("payload")
             if not isinstance(payload, Mapping):
                 raise ValueError("Plan-mode command_request step must include an object 'payload'")
+            self._honor_hold_point(
+                current_step_index=current_step_index,
+                total_steps=total_steps,
+                current_step_name=current_step_name,
+                current_step_type=step_type,
+                current_step_status="hold_requested",
+                plan_steps_summary=plan_steps_summary,
+            )
             result = self._command_dispatcher(dict(payload))
             if not bool(result.get("success")):
                 raise RuntimeError(result.get("error") or "Plan command step failed")
@@ -427,6 +518,14 @@ class ScriptRunner:
             while time.monotonic() < deadline:
                 if self._plan_stop.is_set():
                     return
+                self._honor_hold_point(
+                    current_step_index=current_step_index,
+                    total_steps=total_steps,
+                    current_step_name=current_step_name,
+                    current_step_type=step_type,
+                    current_step_status="hold_requested",
+                    plan_steps_summary=plan_steps_summary,
+                )
                 snapshot = self._state_snapshot_getter()
                 actual = self._lookup_state_path(snapshot, path)
                 if actual == expected:
@@ -449,14 +548,20 @@ class ScriptRunner:
         current_step_type: str | None,
         current_step_status: str | None,
         plan_steps_summary: list[str],
-        is_held: bool,
-        hold_requested: bool,
+        is_held: bool | None = None,
+        hold_requested: bool | None = None,
     ) -> None:
         with self._lock:
             self._current_step_index = current_step_index
             self._current_step_name = current_step_name
             self._current_step_type = current_step_type
             self._current_step_status = current_step_status
+            if is_held is None:
+                is_held = self._is_held
+            else:
+                self._is_held = bool(is_held)
+            if hold_requested is None:
+                hold_requested = self._plan_hold_requested.is_set()
             payload = {
                 "script_id": self._script_id,
                 "name": self._script_name,
@@ -470,8 +575,8 @@ class ScriptRunner:
                 "current_step_type": current_step_type,
                 "current_step_status": current_step_status,
                 "plan_steps_summary": list(plan_steps_summary),
-                "is_held": is_held,
-                "hold_requested": hold_requested,
+                "is_held": bool(is_held),
+                "hold_requested": bool(hold_requested),
                 "progress_wall_time": self._utc_now_iso(),
             }
         if callable(self._progress_callback):
@@ -633,15 +738,89 @@ class ScriptRunner:
             raise ValueError(f"Plan step field '{key}' must be non-negative")
         return converted
 
-    def _sleep_interruptibly(self, seconds: float) -> None:
+    def _sleep_interruptibly(
+        self,
+        seconds: float,
+        *,
+        current_step_index: int,
+        total_steps: int,
+        current_step_name: str,
+        current_step_type: str,
+        plan_steps_summary: list[str],
+    ) -> None:
         deadline = time.monotonic() + seconds
         while True:
             if self._plan_stop.is_set():
                 return
+            self._honor_hold_point(
+                current_step_index=current_step_index,
+                total_steps=total_steps,
+                current_step_name=current_step_name,
+                current_step_type=current_step_type,
+                current_step_status="hold_requested",
+                plan_steps_summary=plan_steps_summary,
+            )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
             time.sleep(min(0.1, remaining))
+
+    def _honor_hold_point(
+        self,
+        *,
+        current_step_index: int | None,
+        total_steps: int | None,
+        current_step_name: str | None,
+        current_step_type: str | None,
+        current_step_status: str | None,
+        plan_steps_summary: list[str],
+    ) -> None:
+        if self._plan_stop.is_set() or not self._plan_hold_requested.is_set():
+            return
+
+        with self._lock:
+            self._is_held = True
+            self._current_step_index = current_step_index
+            self._total_steps = total_steps
+            self._current_step_name = current_step_name
+            self._current_step_type = current_step_type
+            self._current_step_status = "held"
+
+        self._emit_progress(
+            current_step_index=current_step_index,
+            total_steps=total_steps,
+            current_step_name=current_step_name,
+            current_step_type=current_step_type,
+            current_step_status="held",
+            plan_steps_summary=plan_steps_summary,
+            is_held=True,
+            hold_requested=True,
+        )
+
+        while True:
+            if self._plan_stop.is_set():
+                return
+            if not self._plan_hold_requested.is_set():
+                break
+            if self._plan_resume.wait(timeout=0.1):
+                self._plan_resume.clear()
+                if not self._plan_hold_requested.is_set():
+                    break
+
+        with self._lock:
+            self._is_held = False
+            self._current_step_status = current_step_status
+
+        self._emit_progress(
+            current_step_index=current_step_index,
+            total_steps=total_steps,
+            current_step_name=current_step_name,
+            current_step_type=current_step_type,
+            current_step_status=current_step_status,
+            plan_steps_summary=plan_steps_summary,
+            is_held=False,
+            hold_requested=False,
+        )
 
     def _lookup_state_path(self, snapshot: Mapping[str, Any], path: str) -> Any:
         current: Any = snapshot
@@ -658,6 +837,30 @@ class ScriptRunner:
         if name:
             return f"{index}:{step_type}:{name}"
         return f"{index}:{step_type}"
+
+    def _script_progress_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "script_id": self._script_id,
+                "name": self._script_name,
+                "pid": self._process.pid if self._process is not None else os.getpid(),
+                "launch_mode": self._launch_mode,
+                "command": list(self._command),
+                "cwd": self._cwd,
+                "current_step_index": self._current_step_index,
+                "total_steps": self._total_steps,
+                "current_step_name": self._current_step_name,
+                "current_step_type": self._current_step_type,
+                "current_step_status": self._current_step_status,
+                "plan_steps_summary": list(self._plan_steps_summary),
+                "is_held": self._is_held,
+                "hold_requested": self._plan_hold_requested.is_set(),
+            }
+
+    def _build_plan_control_result(self, *, status: str) -> dict[str, Any]:
+        snapshot = self._script_progress_snapshot()
+        snapshot["status"] = status
+        return snapshot
 
     def _utc_now_iso(self) -> str:
         return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + f".{int((time.time() % 1)*1000):03d}Z"
