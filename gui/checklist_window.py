@@ -1,5 +1,5 @@
 from pathlib import Path
-from gui.playback_catalog import discover_playback_runs
+from gui.playback_catalog import PlaybackRunSummary, discover_playback_runs
 
 from PyQt5.QtWidgets import (
     QDialog,
@@ -22,7 +22,6 @@ from PyQt5.QtGui import QFont, QColor, QBrush
 import qdarkstyle
 import logging
 
-from historymanager.integrity import scan_run_integrity
 from historymanager.rebuild import get_rebuild_artifact_status, publish_run_rebuild_artifacts
 from historymanager.paths import HISTORY_ROOT_DIRNAME
 
@@ -564,7 +563,7 @@ class ChecklistWindow(QDialog):
             return
 
         try:
-            run_summaries = discover_playback_runs(self._project_root())
+            run_summaries = discover_playback_runs(self._project_root(), include_integrity=True)
 
             if not run_summaries:
                 item = QListWidgetItem("No playback runs available")
@@ -578,11 +577,11 @@ class ChecklistWindow(QDialog):
                 run_dir_str = str(summary.run_dir)
                 self.playback_run_summaries_by_dir[run_dir_str] = summary
 
-                report = self._scan_integrity_for_run(summary.run_dir)
+                report = summary.integrity_report if isinstance(summary.integrity_report, dict) else self._scan_integrity_for_summary(summary)
                 self.playback_integrity_reports[run_dir_str] = report
                 self.playback_rebuild_status_by_dir[run_dir_str] = self._load_rebuild_status(summary.run_dir)
 
-                badge = str(report.get("badge") or "red")
+                badge = summary.integrity_badge or str(report.get("badge") or "red")
                 prefix = _INTEGRITY_ITEM_PREFIX.get(badge, "[CHECK]")
                 item = QListWidgetItem(
                     f"{prefix} {summary.display_title}\n{summary.display_subtitle}"
@@ -643,23 +642,24 @@ class ChecklistWindow(QDialog):
             rebuild_status = self.playback_rebuild_status_by_dir.get(run_dir_str, {})
         self._apply_rebuild_status(rebuild_status if isinstance(rebuild_status, dict) else {})
 
-    def _scan_integrity_for_run(self, run_dir: Path) -> dict[str, object]:
-        try:
-            report = scan_run_integrity(run_dir, project_root=self._project_root())
+
+    def _scan_integrity_for_summary(self, summary: PlaybackRunSummary) -> dict[str, object]:
+        report = summary.integrity_report
+        if isinstance(report, dict):
             return report
-        except Exception as exc:
-            log.error("Integrity scan failed for %s: %s", run_dir, exc)
-            return {
-                "overall_status": "mismatch",
-                "badge": "red",
-                "summary_message": f"Integrity scan failed: {exc}",
-                "stream_reports": {},
-                "source_presence": {
-                    "raw": False,
-                    "rawbak": False,
-                    "history": False,
-                },
-            }
+
+        log.warning("Integrity details unavailable in playback summary for %s", summary.run_dir)
+        return {
+            "overall_status": summary.integrity_status or "unknown",
+            "badge": summary.integrity_badge or "red",
+            "summary_message": summary.integrity_summary_message or "Integrity details unavailable.",
+            "stream_reports": {},
+            "source_presence": {
+                "raw": False,
+                "rawbak": False,
+                "history": False,
+            },
+        }
 
     def _apply_integrity_report(self, report: dict[str, object]) -> None:
         badge = str(report.get("badge") or "red")
