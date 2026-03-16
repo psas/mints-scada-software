@@ -72,7 +72,22 @@ class BackendService:
             load_errors=self.device_registry.get_load_errors(),
         )
 
-        self.bus_manager = BusManager()
+        self.bus_manager = BusManager(
+            auto_reconnect=True,
+            reconnect_initial_delay=0.50,
+            reconnect_max_delay=5.00,
+            reconnect_backoff=2.00,
+            receive_poll_interval=0.05,
+            monitor_interval=0.50,
+            max_receive_failures_before_reconnect=3,
+        )
+
+        self.bus_manager.set_event_callbacks(
+            status_callback=self._handle_bus_status_event,
+            packet_callback=self._handle_bus_packet_hook,
+            error_callback=self._handle_bus_error_event,
+
+        )
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
             bus_manager=self.bus_manager,
@@ -862,6 +877,111 @@ class BackendService:
             packet=packet,
             source="bus",
         )
+
+    def _handle_bus_status_event(self, event: Mapping[str, Any]) -> None:
+        event_name = str(event.get("event") or "unknown")
+        reason = event.get("reason")
+        sender = event.get("sender") if isinstance(event.get("sender"), str) else self.bus_manager.sender
+        bitrate = event.get("bitrate") if isinstance(event.get("bitrate"), int) else self.bus_manager.bitrate
+        registered_ids = list(event.get("registered_ids", [])) if isinstance(event.get("registered_ids"), list) else None
+        skipped_ids = list(event.get("skipped_ids", [])) if isinstance(event.get("skipped_ids"), list) else None
+        wall_time = isoformat_z()
+
+        if event_name == "connected":
+            if reason == "initial_connect":
+                return
+
+            self.state_store.set_bus_connection_state(
+                connected=True,
+                reconnecting=False,
+                wall_time=wall_time,
+                sender=sender,
+                bitrate=bitrate,
+                registered_ids=registered_ids,
+                skipped_ids=skipped_ids,
+            )
+            self.state_store.set_device_inventory(
+                devices=self.device_registry.get_gui_device_presentations(),
+                load_errors=self.device_registry.get_load_errors(),
+            )
+            self.health.record_system_event(
+                "bus_reconnected",
+                severity="info",
+                sender=sender,
+                bitrate=bitrate,
+                registered_ids=registered_ids or [],
+                skipped_ids=skipped_ids or [],
+            )
+            self.health_monitor.sample_once()
+            return
+
+        if event_name == "reconnecting":
+            self.state_store.set_bus_connection_state(
+                connected=False,
+                reconnecting=True,
+                wall_time=wall_time,
+                sender=sender,
+                bitrate=bitrate,
+            )
+            self.health.record_system_event(
+                "bus_reconnecting",
+                severity="warning",
+                sender=sender,
+                bitrate=bitrate,
+                delay_seconds=event.get("delay_seconds"),
+            )
+            self.health_monitor.sample_once()
+            return
+
+        if event_name == "disconnected":
+            if reason == "manual_shutdown":
+                return
+
+            self.state_store.set_bus_connection_state(
+                connected=False,
+                reconnecting=self.bus_manager.auto_reconnect,
+                wall_time=wall_time,
+                sender=sender,
+                bitrate=bitrate,
+            )
+            self.health.record_system_event(
+                "bus_disconnected",
+                severity="warning",
+                sender=sender,
+                bitrate=bitrate,
+                reason=reason,
+            )
+            self.health_monitor.sample_once()
+            return
+
+        if event_name in {"receive_loop_started", "receive_loop_stopped", "packet_listener_attached"}:
+            self.health.record_system_event(
+                f"bus_{event_name}",
+                severity="info",
+                **dict(event),
+            )
+            self.health_monitor.sample_once()
+
+    def _handle_bus_packet_hook(self, packet: Any) -> None:
+        """Reserved fanout hook for the next telemetry commit.
+
+        Commit 38 wires the hook and makes reconnect/lifecycle supervision live.
+        Commit 39 can decide whether this packet path should feed reducer/history,
+        or whether device-level callbacks remain the only telemetry source.
+        """
+
+    def _handle_bus_error_event(self, event: Mapping[str, Any]) -> None:
+        payload = dict(event)
+        error_type = str(payload.pop("error_type", "bus_manager_error"))
+        message = payload.pop("message", "bus manager error")
+        self.health.record_system_event(
+            error_type,
+            severity="error",
+            message=message,
+            **payload,
+        )
+        self.health_monitor.sample_once()
+
 
     def _handle_script_exit(self, info: Mapping[str, Any]) -> None:
         returncode = info.get("returncode")
