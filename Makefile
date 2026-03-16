@@ -15,6 +15,7 @@ BACKEND_SOCKET := .backend_service.sock
 
 DEV_DIR := .dev
 BACKEND_PID_FILE := $(DEV_DIR)/backend.pid
+APPLICATION_PID_FILE := .applicationpid
 
 HISTORY_DIRS := .ignitionraw .ignitionrawbak ignitionhistory
 LOCAL_DEV_FILES := .guiworkspace.json
@@ -109,8 +110,11 @@ run:
 	if [[ ! -f "$(BACKEND_PID_FILE)" ]]; then \
 		echo "[INFO] Starting backend..."; \
 		nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(BACKEND)' >/dev/null 2>&1 & \
-		echo $$! > "$(BACKEND_PID_FILE)"; \
+		backend_pid=$$!; \
+		echo "$$backend_pid" > "$(BACKEND_PID_FILE)"; \
 		started_backend=1; \
+	else \
+		backend_pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
 	fi; \
 	echo "[INFO] Waiting for backend socket $(BACKEND_SOCKET)..."; \
 	for i in $$(seq 1 80); do \
@@ -131,24 +135,40 @@ run:
 	fi; \
 	cleanup() { \
 		gui_code=$$?; \
-		if [[ "$$started_backend" -eq 1 ]]; then \
-			if [[ -f "$(BACKEND_PID_FILE)" ]]; then \
-				pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
+		echo "[INFO] Shutting down all application processes..."; \
+		if [[ -f "$(APPLICATION_PID_FILE)" ]]; then \
+			while IFS= read -r pid_line; do \
+				pid=$$(echo "$$pid_line" | awk '{print $$1}'); \
+				label=$$(echo "$$pid_line" | cut -d' ' -f2-); \
 				if [[ -n "$$pid" ]] && kill -0 "$$pid" 2>/dev/null; then \
-					echo "[INFO] Stopping backend pid=$$pid"; \
+					echo "[INFO] Terminating $$label (pid=$$pid)"; \
 					kill "$$pid" 2>/dev/null || true; \
-					sleep 1; \
-					kill -0 "$$pid" 2>/dev/null && kill -9 "$$pid" 2>/dev/null || true; \
 				fi; \
-				rm -f "$(BACKEND_PID_FILE)"; \
-			fi; \
-			rm -f "$(BACKEND_SOCKET)"; \
+			done < "$(APPLICATION_PID_FILE)"; \
+			sleep 1.5; \
+			while IFS= read -r pid_line; do \
+				pid=$$(echo "$$pid_line" | awk '{print $$1}'); \
+				label=$$(echo "$$pid_line" | cut -d' ' -f2-); \
+				if [[ -n "$$pid" ]] && kill -0 "$$pid" 2>/dev/null; then \
+					echo "[WARN] Force killing $$label (pid=$$pid)"; \
+					kill -9 "$$pid" 2>/dev/null || true; \
+				fi; \
+			done < "$(APPLICATION_PID_FILE)"; \
+			rm -f "$(APPLICATION_PID_FILE)"; \
 		fi; \
+		rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"; \
+		echo "[OK] Application shutdown complete"; \
 		exit "$$gui_code"; \
 	}; \
 	trap cleanup EXIT INT TERM; \
+	rm -f "$(APPLICATION_PID_FILE)" .shutdown_signal; \
+	echo "$$backend_pid backend" >> "$(APPLICATION_PID_FILE)"; \
+	echo "[INFO] Starting shutdown watcher..."; \
+	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) gui/shutdown_watcher.py' >/dev/null 2>&1 & \
+	watcher_pid=$$!; \
+	echo "$$watcher_pid shutdown_watcher" >> "$(APPLICATION_PID_FILE)"; \
 	echo "[INFO] Starting GUI..."; \
-	source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GUI)
+	source "$(VENV_ACTIVATE)" && $(PYTHON) $(GUI)
 
 
 run-backend:
@@ -290,7 +310,7 @@ clean: stop clear-all-history
 
 clean-dev:
 	@echo "[INFO] Cleaning dev artifacts..."
-	@rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"
+	@rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
 	@rmdir "$(DEV_DIR)" 2>/dev/null || true
 	@echo "[OK] Dev artifacts cleaned"
 

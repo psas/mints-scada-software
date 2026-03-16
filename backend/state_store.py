@@ -523,6 +523,44 @@ class StateStore:
             self._state.script_runner.last_hold_wall_time = None
             self._state.script_runner.last_continue_wall_time = None
 
+    def mark_command_result(
+        self,
+        *,
+        request_id: str | None,
+        requested_at: str | None,
+        request_source: str | None,
+        authority_level: str | None,
+        command_name: str | None,
+        device_id: str | None,
+        status: str,
+        dispatched_via: str | None,
+        adapter_name: str | None,
+        run_mode: str | None,
+        rejection_reason: str | None = None,
+        interlock_reason: str | None = None,
+        validation_errors: Iterable[str] | None = None,
+        state_reasons: Iterable[str] | None = None,
+        error: str | None = None,
+        result_summary: Mapping[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            self._state.last_command.request_id = request_id
+            self._state.last_command.requested_at = requested_at
+            self._state.last_command.request_source = request_source
+            self._state.last_command.authority_level = authority_level
+            self._state.last_command.command_name = command_name
+            self._state.last_command.device_id = device_id
+            self._state.last_command.status = str(status)
+            self._state.last_command.dispatched_via = dispatched_via
+            self._state.last_command.adapter_name = adapter_name
+            self._state.last_command.run_mode = run_mode
+            self._state.last_command.rejection_reason = rejection_reason
+            self._state.last_command.interlock_reason = interlock_reason
+            self._state.last_command.validation_errors = [str(item) for item in (validation_errors or [])]
+            self._state.last_command.state_reasons = [str(item) for item in (state_reasons or [])]
+            self._state.last_command.error = error
+            self._state.last_command.result_summary = dict(result_summary or {})
+
     def set_health_snapshot(
         self,
         *,

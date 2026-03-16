@@ -801,6 +801,18 @@ class BackendService:
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
+        if message.type == "shutdown_service":
+            self.health.record_system_event(
+                "backend_shutdown_requested",
+                severity="warning",
+                message="Backend service shutdown requested by GUI client",
+            )
+            # Stop the IPC server to break out of serve_forever()
+            self.server.stop()
+            # Yield acknowledgment before shutting down
+            yield pong_message()
+            return
+
         yield error_message(
             "unsupported_message_type",
             f"Unsupported IPC message type: {message.type}",

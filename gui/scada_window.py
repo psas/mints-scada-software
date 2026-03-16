@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -233,8 +234,119 @@ class ScadaWindow(QMainWindow):
     def print_states(self):
         logger.info("[SCADA] XV states: %s", self.xv_states)
 
+    def _snapshot_run_section(self) -> dict:
+        snapshot = getattr(self, "backend_state_snapshot", None)
+        if isinstance(snapshot, dict):
+            run = snapshot.get("run")
+            if isinstance(run, dict):
+                return dict(run)
+        return {}
+
+    def _extract_run_id(self) -> str | None:
+        run_status = getattr(self, "backend_run_status", None)
+        if isinstance(run_status, dict):
+            for key in ("run_id", "active_run_id"):
+                value = run_status.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        run = self._snapshot_run_section()
+        for key in ("active_run_id",):
+            value = run.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _history_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent / HISTORY_ROOT_DIRNAME
+
+    def _complete_json_path(self) -> Path | None:
+        run_id = self._extract_run_id()
+        if not run_id:
+            return None
+        return self._history_root() / run_id / "complete.json"
+
+    def _complete_json_exists(self) -> bool:
+        path = self._complete_json_path()
+        return bool(path and path.exists())
+
+    def _recording_active(self) -> bool:
+        run_status = getattr(self, "backend_run_status", None)
+        if isinstance(run_status, dict):
+            status = str(run_status.get("status") or "").strip().lower()
+            if status in {"running", "recording", "active"}:
+                return True
+            if status in {"finished", "completed", "stopped", "idle", "not_running"}:
+                return False
+        run = self._snapshot_run_section()
+        if "is_running" in run:
+            return bool(run.get("is_running"))
+        return False
+
+    def _run_has_ever_started(self) -> bool:
+        if self._extract_run_id():
+            return True
+        run = self._snapshot_run_section()
+        started = run.get("last_started_wall_time")
+        return isinstance(started, str) and bool(started.strip())
+
     def closeEvent(self, event):
         logger.info("[SCADA] ScadaWindow closing")
-        if self.manager:
-            self.manager.close_all()
-        event.accept()
+
+        if self.playback_mode:
+            self._trigger_application_shutdown()
+            event.accept()
+            return
+
+        if self._recording_active():
+            # While actively recording, closing one window should behave like an
+            # accidental close and let the supervisor respawn it.
+            event.accept()
+            return
+
+        if not self._run_has_ever_started():
+            box = QMessageBox(self)
+            box.setWindowTitle("Close Live Session")
+            box.setIcon(QMessageBox.Warning)
+            box.setText("This test will be dropped because no recording was started.")
+            box.setInformativeText("Close the entire live application anyway?")
+            close_btn = box.addButton("Close Application", QMessageBox.AcceptRole)
+            cancel_btn = box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(cancel_btn)
+            box.exec_()
+            if box.clickedButton() is close_btn:
+                self._trigger_application_shutdown()
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        if self._complete_json_exists():
+            self._trigger_application_shutdown()
+            event.accept()
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Saving In Progress")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            "Saving is in progress. Please wait patiently.\n\n"
+            "If you click Terminate Anyway, it will terminate the saving process and crash the test."
+        )
+        wait_btn = box.addButton("Wait", QMessageBox.RejectRole)
+        terminate_btn = box.addButton("Terminate Anyway", QMessageBox.DestructiveRole)
+        box.setDefaultButton(wait_btn)
+        box.exec_()
+        if box.clickedButton() is terminate_btn:
+            self._trigger_application_shutdown()
+            event.accept()
+        else:
+            event.ignore()
+
+    def _trigger_application_shutdown(self) -> None:
+        """Trigger full application shutdown via shutdown watcher."""
+        try:
+            shutdown_signal = Path(__file__).resolve().parent.parent / ".shutdown_signal"
+            shutdown_signal.touch()
+            logger.info("Triggered application shutdown signal")
+        except Exception as exc:
+            logger.warning("Failed to trigger shutdown signal: %s", exc)
