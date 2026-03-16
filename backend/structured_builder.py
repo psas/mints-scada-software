@@ -4,6 +4,8 @@ from typing import Any, Mapping
 
 from historymanager.manager import isoformat_z
 
+from .telemetry_models import NormalizedTelemetryPacket
+
 _SHARED_EVENT_IDENTITY_FIELDS = (
     "run_id",
     "stream",
@@ -12,6 +14,7 @@ _SHARED_EVENT_IDENTITY_FIELDS = (
     "stream_seq",
     "canonical_hash",
 )
+
 
 
 def _copy_shared_event_identity(first_order_event: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -32,39 +35,45 @@ class StructuredEventBuilder:
     def build_raw_telemetry_event(
         self,
         *,
-        meta: dict[str, Any],
-        packet: Any,
+        telemetry: NormalizedTelemetryPacket | None = None,
+        meta: dict[str, Any] | None = None,
+        packet: Any | None = None,
+        runtime: Any | None = None,
         source: str = "bus",
     ) -> dict[str, Any]:
-        return {
-            "event_kind": "telemetry_packet",
-            "source": source,
-            "device_id": meta["id"],
-            "device_name": meta["name"],
-            "device_type": meta["deviceType"],
-            "device_group": meta["deviceGroup"],
-            "device_systems": list(meta["deviceSystems"]),
-            "bus_address": meta["address"],
-            "packet": {
-                "id": packet.id,
-                "seq": packet.seq,
-                "cmd": packet.cmd,
-                "reply": bool(packet.reply),
-                "err": bool(packet.err),
-                "rsvd": bool(packet.rsvd),
-                "timestamp": getattr(packet, "timestamp", None),
-                "data": list(packet.data),
-                "data_hex": " ".join(f"{b:02X}" for b in packet.data),
-            },
-        }
+        if telemetry is None:
+            if meta is None or packet is None:
+                raise ValueError("telemetry or meta+packet must be provided")
+            telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
+                meta=meta,
+                runtime=runtime,
+                packet=packet,
+                source=source,
+            )
+
+        return telemetry.to_raw_event_payload()
 
     def build_structured_telemetry_event(
         self,
         *,
-        meta: dict[str, Any],
+        telemetry: NormalizedTelemetryPacket | None = None,
         reduction: dict[str, Any],
         first_order_event: Mapping[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
+        packet: Any | None = None,
+        runtime: Any | None = None,
+        source: str = "bus",
     ) -> dict[str, Any]:
+        if telemetry is None:
+            if meta is None or packet is None:
+                raise ValueError("telemetry or meta+packet must be provided")
+            telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
+                meta=meta,
+                runtime=runtime,
+                packet=packet,
+                source=source,
+            )
+
         semantic = reduction.get("semantic")
         if not isinstance(semantic, Mapping):
             semantic = {
@@ -76,21 +85,18 @@ class StructuredEventBuilder:
         payload = {
             **_copy_shared_event_identity(first_order_event),
             "event_kind": "telemetry_in",
+            "observed_at": telemetry.wall_time,
             "structured_at": isoformat_z(),
-            "device_id": meta["id"],
-            "device_name": meta["name"],
-            "device_type": meta["deviceType"],
-            "device_group": meta["deviceGroup"],
-            "device_systems": list(meta["deviceSystems"]),
-            "widget_type": meta["widgetType"],
-            "bus_address": meta["address"],
-            "source": reduction["source"],
-            "packet": dict(reduction["packet_summary"]),
-            "runtime": {
-                "value": reduction.get("runtime_value"),
-                "aux": reduction.get("runtime_aux"),
-                "time": reduction.get("runtime_time"),
-            },
+            "device_id": telemetry.device_id,
+            "device_name": telemetry.device_name,
+            "device_type": telemetry.device_type,
+            "device_group": telemetry.device_group,
+            "device_systems": list(telemetry.device_systems),
+            "widget_type": telemetry.widget_type,
+            "bus_address": telemetry.bus_address,
+            "source": telemetry.source,
+            "packet": telemetry.packet_summary(),
+            "runtime": telemetry.runtime_summary(),
             "semantic": {
                 "domain": semantic.get("domain"),
                 "summary": semantic.get("summary"),
@@ -109,6 +115,7 @@ class StructuredEventBuilder:
                 payload["temperature_units"] = semantic_fields.get("units")
             elif domain == "valve":
                 payload["valve_state"] = semantic_fields.get("state")
+                payload["valve_position"] = semantic_fields.get("position")
             elif domain == "flow":
                 payload["flow"] = semantic_fields.get("flow")
                 payload["flow_units"] = semantic_fields.get("units")

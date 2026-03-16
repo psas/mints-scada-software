@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from historymanager.manager import isoformat_z
-
 from .state_store import StateStore
+from .telemetry_models import NormalizedTelemetryPacket
 
 
 class Reducer:
-    """Backend reducer with light semantic decode for key device families.
+    """Backend reducer with normalized telemetry input and light semantic decode.
 
     Current semantic targets:
     - pressure-like devices
@@ -17,10 +16,9 @@ class Reducer:
     - flow-like devices
     - load / weight-like devices
 
-    This still does not claim full protocol/business decode coverage for every
-    hardware class, but it upgrades the old generic packet summary into
-    domain-oriented structured fields where the runtime information is already
-    available.
+    The reducer now consumes a normalized telemetry envelope so that bus packets,
+    mock telemetry, and any future replay / ingest source all enter the state
+    update path with the same shape.
     """
 
     def __init__(self, *, state_store: StateStore) -> None:
@@ -34,62 +32,55 @@ class Reducer:
         packet: Any,
         source: str = "bus",
     ) -> dict[str, Any]:
-        wall_time = isoformat_z()
-        runtime_value = getattr(runtime, "value", None)
-        runtime_aux = getattr(runtime, "aux", None)
-        runtime_time = getattr(runtime, "time", None)
-
-        packet_summary = {
-            "id": packet.id,
-            "seq": packet.seq,
-            "cmd": packet.cmd,
-            "reply": bool(packet.reply),
-            "err": bool(packet.err),
-            "rsvd": bool(packet.rsvd),
-            "timestamp": getattr(packet, "timestamp", None),
-            "data": list(packet.data),
-            "data_hex": " ".join(f"{b:02X}" for b in packet.data),
-        }
-
-        semantic = self._semantic_decode(
+        telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
             meta=meta,
             runtime=runtime,
-            runtime_value=runtime_value,
-            runtime_aux=runtime_aux,
-            runtime_time=runtime_time,
-            packet_summary=packet_summary,
+            packet=packet,
+            source=source,
         )
+        return self.apply_normalized_telemetry(telemetry=telemetry)
+
+    def apply_normalized_telemetry(
+        self,
+        *,
+        telemetry: NormalizedTelemetryPacket,
+    ) -> dict[str, Any]:
+        packet_summary = telemetry.packet_summary()
+        semantic = self._semantic_decode(telemetry=telemetry)
 
         reduction = {
-            "device_id": meta["id"],
-            "device_name": meta["name"],
-            "device_type": meta["deviceType"],
-            "device_group": meta["deviceGroup"],
-            "source": source,
-            "wall_time": wall_time,
+            "device_id": telemetry.device_id,
+            "device_name": telemetry.device_name,
+            "device_type": telemetry.device_type,
+            "device_group": telemetry.device_group,
+            "source": telemetry.source,
+            "wall_time": telemetry.wall_time,
             "packet_count_increment": 1,
             "packet_summary": packet_summary,
-            "runtime_value": runtime_value,
-            "runtime_aux": runtime_aux,
-            "runtime_time": runtime_time,
+            "runtime_value": telemetry.runtime_value,
+            "runtime_aux": telemetry.runtime_aux,
+            "runtime_time": telemetry.runtime_time,
+            "runtime_state": telemetry.runtime_state,
+            "runtime_position": telemetry.runtime_position,
+            "runtime_status": telemetry.runtime_status,
             "semantic": semantic,
         }
 
         self.state_store.mark_device_packet(
-            device_id=meta["id"],
-            wall_time=wall_time,
-            packet_id=packet.id,
-            packet_seq=packet.seq,
-            packet_cmd=packet.cmd,
-            packet_reply=bool(packet.reply),
-            packet_err=bool(packet.err),
-            packet_rsvd=bool(packet.rsvd),
-            packet_timestamp=getattr(packet, "timestamp", None),
-            packet_data=list(packet.data),
-            runtime_value=runtime_value,
-            runtime_aux=runtime_aux,
-            runtime_time=runtime_time,
-            source=source,
+            device_id=telemetry.device_id,
+            wall_time=telemetry.wall_time,
+            packet_id=telemetry.packet_id,
+            packet_seq=telemetry.packet_seq,
+            packet_cmd=telemetry.packet_cmd,
+            packet_reply=telemetry.packet_reply,
+            packet_err=telemetry.packet_err,
+            packet_rsvd=telemetry.packet_rsvd,
+            packet_timestamp=telemetry.packet_timestamp,
+            packet_data=list(telemetry.packet_data),
+            runtime_value=telemetry.runtime_value,
+            runtime_aux=telemetry.runtime_aux,
+            runtime_time=telemetry.runtime_time,
+            source=telemetry.source,
         )
 
         return reduction
@@ -97,62 +88,52 @@ class Reducer:
     def _semantic_decode(
         self,
         *,
-        meta: Mapping[str, Any],
-        runtime: Any,
-        runtime_value: Any,
-        runtime_aux: Any,
-        runtime_time: Any,
-        packet_summary: Mapping[str, Any],
+        telemetry: NormalizedTelemetryPacket,
     ) -> dict[str, Any]:
-        device_type = str(meta.get("deviceType") or "")
-        device_name = str(meta.get("name") or "")
-        lowered_type = device_type.strip().lower()
-        lowered_name = device_name.strip().lower()
+        lowered_type = telemetry.device_type.strip().lower()
+        lowered_name = telemetry.device_name.strip().lower()
 
         if self._looks_like_pressure(lowered_type, lowered_name):
             return self._decode_pressure(
-                runtime_value=runtime_value,
-                runtime_aux=runtime_aux,
-                runtime_time=runtime_time,
+                runtime_value=telemetry.runtime_value,
+                runtime_aux=telemetry.runtime_aux,
+                runtime_time=telemetry.runtime_time,
             )
 
         if self._looks_like_temperature(lowered_type, lowered_name):
             return self._decode_temperature(
-                runtime_value=runtime_value,
-                runtime_aux=runtime_aux,
-                runtime_time=runtime_time,
+                runtime_value=telemetry.runtime_value,
+                runtime_aux=telemetry.runtime_aux,
+                runtime_time=telemetry.runtime_time,
             )
 
         if self._looks_like_valve(lowered_type, lowered_name):
-            return self._decode_valve(
-                runtime=runtime,
-                runtime_value=runtime_value,
-                runtime_aux=runtime_aux,
-                runtime_time=runtime_time,
-                packet_summary=packet_summary,
-            )
+            return self._decode_valve(telemetry=telemetry)
 
         if self._looks_like_flow(lowered_type, lowered_name):
             return self._decode_flow(
-                runtime_value=runtime_value,
-                runtime_aux=runtime_aux,
-                runtime_time=runtime_time,
+                runtime_value=telemetry.runtime_value,
+                runtime_aux=telemetry.runtime_aux,
+                runtime_time=telemetry.runtime_time,
             )
 
         if self._looks_like_load(lowered_type, lowered_name):
             return self._decode_load(
-                runtime_value=runtime_value,
-                runtime_aux=runtime_aux,
-                runtime_time=runtime_time,
+                runtime_value=telemetry.runtime_value,
+                runtime_aux=telemetry.runtime_aux,
+                runtime_time=telemetry.runtime_time,
             )
 
         return {
             "domain": "generic",
-            "summary": self._build_generic_summary(runtime_value, runtime_aux),
+            "summary": self._build_generic_summary(telemetry.runtime_value, telemetry.runtime_aux),
             "fields": {
-                "value": runtime_value,
-                "aux": runtime_aux,
-                "time": runtime_time,
+                "value": telemetry.runtime_value,
+                "aux": telemetry.runtime_aux,
+                "time": telemetry.runtime_time,
+                "state": telemetry.runtime_state,
+                "position": telemetry.runtime_position,
+                "status": telemetry.runtime_status,
             },
         }
 
@@ -236,42 +217,36 @@ class Reducer:
             },
         }
 
-    def _decode_valve(
-        self,
-        *,
-        runtime: Any,
-        runtime_value: Any,
-        runtime_aux: Any,
-        runtime_time: Any,
-        packet_summary: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        state = self._extract_valve_state(runtime=runtime, runtime_value=runtime_value, runtime_aux=runtime_aux)
+    def _decode_valve(self, *, telemetry: NormalizedTelemetryPacket) -> dict[str, Any]:
+        state = self._extract_valve_state(telemetry=telemetry)
         return {
             "domain": "valve",
             "summary": f"Valve state {state}",
             "fields": {
                 "state": state,
-                "sample_time": runtime_time,
-                "quality": self._extract_quality(runtime_aux),
-                "packet_reply": packet_summary.get("reply"),
-                "packet_err": packet_summary.get("err"),
+                "sample_time": telemetry.runtime_time,
+                "quality": self._extract_quality(telemetry.runtime_aux),
+                "packet_reply": telemetry.packet_reply,
+                "packet_err": telemetry.packet_err,
+                "position": telemetry.runtime_position,
+                "status": telemetry.runtime_status,
             },
         }
 
-    def _extract_valve_state(self, *, runtime: Any, runtime_value: Any, runtime_aux: Any) -> str:
-        for attr_name in ("state", "position", "status"):
-            attr_value = getattr(runtime, attr_name, None)
-            resolved = self._normalize_valve_state(attr_value)
+    def _extract_valve_state(self, *, telemetry: NormalizedTelemetryPacket) -> str:
+        for candidate in (
+            telemetry.runtime_state,
+            telemetry.runtime_position,
+            telemetry.runtime_status,
+            telemetry.runtime_value,
+        ):
+            resolved = self._normalize_valve_state(candidate)
             if resolved is not None:
                 return resolved
 
-        resolved = self._normalize_valve_state(runtime_value)
-        if resolved is not None:
-            return resolved
-
-        if isinstance(runtime_aux, Mapping):
+        if isinstance(telemetry.runtime_aux, Mapping):
             for key in ("state", "position", "status", "open"):
-                resolved = self._normalize_valve_state(runtime_aux.get(key))
+                resolved = self._normalize_valve_state(telemetry.runtime_aux.get(key))
                 if resolved is not None:
                     return resolved
 

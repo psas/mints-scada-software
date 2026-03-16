@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ from .run_controller import RunController
 from .script_runner import ScriptRunner
 from .state_store import StateStore
 from .structured_builder import StructuredEventBuilder
+from .telemetry_models import NormalizedTelemetryPacket
 
 
 class BackendService:
@@ -443,6 +445,7 @@ class BackendService:
 
                 meta = self.device_registry.get_meta(device_id)
                 runtime = self.device_registry.get_runtime(device_id)
+                runtime_shadow = self._build_mock_runtime_shadow(runtime=runtime, payload=payload)
 
                 seq = self._get_optional_int(payload, "seq") or 1
                 cmd = self._get_optional_int(payload, "cmd") or 1
@@ -461,9 +464,13 @@ class BackendService:
                     rsvd=rsvd,
                 )
 
+                packet_timestamp = payload.get("packet_timestamp")
+                if isinstance(packet_timestamp, (int, float)):
+                    packet.timestamp = float(packet_timestamp)
+
                 structured_event = self._process_telemetry_packet(
                     meta=meta,
-                    runtime=runtime,
+                    runtime=runtime_shadow,
                     packet=packet,
                     source="mock_ipc",
                 )
@@ -963,12 +970,27 @@ class BackendService:
             self.health_monitor.sample_once()
 
     def _handle_bus_packet_hook(self, packet: Any) -> None:
-        """Reserved fanout hook for the next telemetry commit.
+        """Reserved bus-level packet hook.
 
-        Commit 38 wires the hook and makes reconnect/lifecycle supervision live.
-        Commit 39 can decide whether this packet path should feed reducer/history,
-        or whether device-level callbacks remain the only telemetry source.
+        The authoritative live telemetry path still comes from device runtime
+        callbacks installed by ``DeviceRegistry``. This hook stays available for a
+        later packet-only fanout path once bus-level decode rules are ready.
         """
+
+    def _build_mock_runtime_shadow(
+        self,
+        *,
+        runtime: Any,
+        payload: Mapping[str, Any],
+    ) -> Any:
+        return SimpleNamespace(
+            value=payload.get("runtime_value", getattr(runtime, "value", None)),
+            aux=payload.get("runtime_aux", getattr(runtime, "aux", None)),
+            time=payload.get("runtime_time", getattr(runtime, "time", None)),
+            state=payload.get("runtime_state", getattr(runtime, "state", None)),
+            position=payload.get("runtime_position", getattr(runtime, "position", None)),
+            status=payload.get("runtime_status", getattr(runtime, "status", None)),
+        )
 
     def _handle_bus_error_event(self, event: Mapping[str, Any]) -> None:
         payload = dict(event)
@@ -1021,24 +1043,26 @@ class BackendService:
         packet: Any,
         source: str,
     ) -> dict[str, Any]:
-        raw_event = self.structured_builder.build_raw_telemetry_event(
-            meta=meta,
-            packet=packet,
-            source=source,
-        )
-
-        if self.history_manager.is_running:
-            self.history_manager.record_raw_event("telemetry_in", raw_event)
-
-        reduction = self.reducer.apply_telemetry_packet(
+        telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
             meta=meta,
             runtime=runtime,
             packet=packet,
             source=source,
         )
 
+        raw_event = self.structured_builder.build_raw_telemetry_event(
+            telemetry=telemetry,
+        )
+
+        if self.history_manager.is_running:
+            self.history_manager.record_raw_event("telemetry_in", raw_event)
+
+        reduction = self.reducer.apply_normalized_telemetry(
+            telemetry=telemetry,
+        )
+
         structured_event = self.structured_builder.build_structured_telemetry_event(
-            meta=meta,
+            telemetry=telemetry,
             reduction=reduction,
             first_order_event=raw_event,
         )
