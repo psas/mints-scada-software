@@ -135,6 +135,8 @@ class ChecklistWindow(QDialog):
         self.playback_run_summaries_by_dir: dict[str, object] = {}
         self.playback_rebuild_status_by_dir: dict[str, dict[str, object]] = {}
         self.selected_playback_source: str = _PLAYBACK_SOURCE_NATIVE
+        self.playback_continue_button: QPushButton | None = None
+        self.live_continue_button: QPushButton | None = None
 
         self.setWindowTitle("minTS Controller - Startup Checklist")
         self.setGeometry(100, 100, 640, 460)
@@ -215,7 +217,7 @@ class ChecklistWindow(QDialog):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Enter run metadata before backend start_run.")
+        subtitle = QLabel("Enter live run metadata before opening the operator windows.")
         subtitle.setFont(QFont("Arial", 10))
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #888; margin-bottom: 20px;")
@@ -246,7 +248,9 @@ class ChecklistWindow(QDialog):
 
         layout.addWidget(form_widget)
 
-        self.live_setup_status = QLabel("")
+        self.live_setup_status = QLabel(
+            "Required: test name and operator. Optional: profile and notes."
+        )
         self.live_setup_status.setWordWrap(True)
         self.live_setup_status.setAlignment(Qt.AlignCenter)
         self.live_setup_status.setStyleSheet("color: #888; margin: 10px; padding: 10px;")
@@ -261,10 +265,11 @@ class ChecklistWindow(QDialog):
 
         button_layout.addStretch()
 
-        start_button = QPushButton("Start Live")
-        start_button.clicked.connect(self.on_live_selected)
-        start_button.setMinimumWidth(120)
-        button_layout.addWidget(start_button)
+        self.live_continue_button = QPushButton("Continue")
+        self.live_continue_button.clicked.connect(self.on_live_selected)
+        self.live_continue_button.setEnabled(False)
+        self.live_continue_button.setMinimumWidth(120)
+        button_layout.addWidget(self.live_continue_button)
 
         exit_button = QPushButton("Exit")
         exit_button.clicked.connect(self.reject)
@@ -272,6 +277,13 @@ class ChecklistWindow(QDialog):
         button_layout.addWidget(exit_button)
 
         layout.addLayout(button_layout)
+
+        self.test_name_input.textChanged.connect(self._update_live_continue_state)
+        self.operator_input.textChanged.connect(self._update_live_continue_state)
+        self.test_name_input.returnPressed.connect(self._maybe_submit_live_setup)
+        self.operator_input.returnPressed.connect(self._maybe_submit_live_setup)
+        self.profile_input.returnPressed.connect(self._maybe_submit_live_setup)
+
         return widget
 
     def run_checks(self):
@@ -342,6 +354,7 @@ class ChecklistWindow(QDialog):
 
         self.playback_mode = False
         self.live_setup_widget.show()
+        self._update_live_continue_state()
         self.test_name_input.setFocus()
 
     def show_playback_selection(self):
@@ -360,7 +373,7 @@ class ChecklistWindow(QDialog):
         playback_layout.addWidget(title)
 
         subtitle = QLabel(
-            f"Choose a run from {HISTORY_ROOT_DIRNAME}. Integrity is checked automatically."
+            f"Choose a run from {HISTORY_ROOT_DIRNAME}. Select a run first, then click Continue."
         )
         subtitle.setFont(QFont("Arial", 10))
         subtitle.setAlignment(Qt.AlignCenter)
@@ -369,7 +382,7 @@ class ChecklistWindow(QDialog):
 
         self.test_list = QListWidget()
         self.test_list.setFont(QFont("Arial", 11))
-        self.test_list.itemDoubleClicked.connect(self.on_test_selected)
+        self.test_list.setSelectionMode(QListWidget.SingleSelection)
         self.test_list.currentItemChanged.connect(self.on_playback_item_changed)
         playback_layout.addWidget(self.test_list)
 
@@ -425,10 +438,11 @@ class ChecklistWindow(QDialog):
 
         button_layout.addStretch()
 
-        select_button = QPushButton("Select")
-        select_button.clicked.connect(self.on_test_selected)
-        select_button.setMinimumWidth(100)
-        button_layout.addWidget(select_button)
+        self.playback_continue_button = QPushButton("Continue")
+        self.playback_continue_button.clicked.connect(self.on_test_selected)
+        self.playback_continue_button.setEnabled(False)
+        self.playback_continue_button.setMinimumWidth(100)
+        button_layout.addWidget(self.playback_continue_button)
 
         exit_button = QPushButton("Exit")
         exit_button.clicked.connect(self.reject)
@@ -443,6 +457,8 @@ class ChecklistWindow(QDialog):
         if self.test_list.count() > 0 and self.test_list.item(0).flags() & Qt.ItemIsEnabled:
             self.test_list.setCurrentRow(0)
 
+        self._update_playback_continue_button()
+
     def show_checklist(self):
         """Switch back to the main checklist view."""
         if hasattr(self, "playback_widget"):
@@ -450,11 +466,39 @@ class ChecklistWindow(QDialog):
             self.main_layout.removeWidget(self.playback_widget)
             self.playback_widget.deleteLater()
             del self.playback_widget
+            self.playback_continue_button = None
 
         if hasattr(self, "live_setup_widget"):
             self.live_setup_widget.hide()
 
         self.checklist_widget.show()
+
+    def _required_live_fields_present(self) -> bool:
+        test_name = self.test_name_input.text().strip() if hasattr(self, "test_name_input") else ""
+        operator = self.operator_input.text().strip() if hasattr(self, "operator_input") else ""
+        return bool(test_name and operator)
+
+    def _update_live_continue_state(self) -> None:
+        if self.live_continue_button is None:
+            return
+
+        ready = self._required_live_fields_present()
+        self.live_continue_button.setEnabled(ready)
+
+        if ready:
+            self.live_setup_status.setText(
+                "Live metadata is ready. Click Continue to launch the live session."
+            )
+            self.live_setup_status.setStyleSheet("color: #4CAF50; margin: 10px; padding: 10px;")
+        else:
+            self.live_setup_status.setText(
+                "Required: test name and operator. Optional: profile and notes."
+            )
+            self.live_setup_status.setStyleSheet("color: #888; margin: 10px; padding: 10px;")
+
+    def _maybe_submit_live_setup(self) -> None:
+        if self.live_continue_button is not None and self.live_continue_button.isEnabled():
+            self.on_live_selected()
 
     def on_live_selected(self):
         """Validate live metadata and accept the dialog for live startup."""
@@ -470,6 +514,15 @@ class ChecklistWindow(QDialog):
                 "background-color: #3a1a1a; border-radius: 5px;"
             )
             self.test_name_input.setFocus()
+            return
+
+        if not operator:
+            self.live_setup_status.setText("Operator is required.")
+            self.live_setup_status.setStyleSheet(
+                "color: #F44336; margin: 10px; padding: 10px;"
+                "background-color: #3a1a1a; border-radius: 5px;"
+            )
+            self.operator_input.setFocus()
             return
 
         self.live_run_metadata = {
@@ -550,8 +603,25 @@ class ChecklistWindow(QDialog):
             self._set_integrity_placeholder(f"Error loading playback runs: {e}")
 
 
+    def _is_selectable_playback_item(self, item: QListWidgetItem | None) -> bool:
+        if item is None:
+            return False
+        if not (item.flags() & Qt.ItemIsEnabled):
+            return False
+        run_dir_str = item.data(Qt.UserRole)
+        return isinstance(run_dir_str, str) and bool(run_dir_str.strip())
+
+    def _update_playback_continue_button(self) -> None:
+        if self.playback_continue_button is None:
+            return
+        self.playback_continue_button.setEnabled(
+            self._is_selectable_playback_item(self.test_list.currentItem() if hasattr(self, "test_list") else None)
+        )
+
     def on_playback_item_changed(self, current: QListWidgetItem | None, previous: QListWidgetItem | None = None):
         del previous
+        self._update_playback_continue_button()
+
         if current is None or not (current.flags() & Qt.ItemIsEnabled):
             self._set_integrity_placeholder("Select a run to view archive integrity details.")
             return
@@ -621,6 +691,8 @@ class ChecklistWindow(QDialog):
             self.playback_source_combo.addItem("Native archive", _PLAYBACK_SOURCE_NATIVE)
             self.playback_source_combo.setEnabled(False)
             self.playback_source_combo.blockSignals(False)
+        if self.playback_continue_button is not None:
+            self.playback_continue_button.setEnabled(False)
         if hasattr(self, "prepare_rebuild_button"):
             self.prepare_rebuild_button.setEnabled(False)
         if hasattr(self, "rebuild_status_label"):
@@ -707,7 +779,7 @@ class ChecklistWindow(QDialog):
         """Handle playback run selection"""
         current_item = self.test_list.currentItem()
 
-        if current_item and current_item.flags() & Qt.ItemIsEnabled:
+        if self._is_selectable_playback_item(current_item):
             selected_path = current_item.data(Qt.UserRole)
             playback_source = self._current_playback_source()
             if isinstance(selected_path, str) and playback_source == _PLAYBACK_SOURCE_REBUILD:
