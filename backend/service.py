@@ -76,6 +76,7 @@ class BackendService:
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
             bus_manager=self.bus_manager,
+            state_snapshot_getter=self.state_store.get_snapshot,
         )
         self.script_runner = ScriptRunner(
             command_dispatcher=self._dispatch_script_command,
@@ -496,15 +497,23 @@ class BackendService:
                     device_id=device_id if isinstance(device_id, str) else None,
                     dispatched_via="none",
                     error=str(exc),
+                    status="failed",
+                    adapter_name="service_guard",
                 )
                 return
 
             yield command_result_message(
-                success=True,
-                command_name=dispatch_info["command_name"],
-                device_id=dispatch_info.get("device_id"),
-                dispatched_via=dispatch_info["dispatched_via"],
+                success=bool(dispatch_info.get("success")),
+                command_name=str(dispatch_info.get("command_name") or "<unknown>"),
+                device_id=dispatch_info.get("device_id") if isinstance(dispatch_info.get("device_id"), str) else None,
+                dispatched_via=str(dispatch_info.get("dispatched_via") or "none"),
                 result_summary=dispatch_info.get("result_summary"),
+                error=dispatch_info.get("error") if isinstance(dispatch_info.get("error"), str) else None,
+                status=dispatch_info.get("status") if isinstance(dispatch_info.get("status"), str) else None,
+                adapter_name=dispatch_info.get("adapter_name") if isinstance(dispatch_info.get("adapter_name"), str) else None,
+                rejection_reason=dispatch_info.get("rejection_reason") if isinstance(dispatch_info.get("rejection_reason"), str) else None,
+                interlock_reason=dispatch_info.get("interlock_reason") if isinstance(dispatch_info.get("interlock_reason"), str) else None,
+                validation_errors=list(dispatch_info.get("validation_errors", [])) if isinstance(dispatch_info.get("validation_errors"), list) else None,
             )
             return
 
@@ -787,16 +796,45 @@ class BackendService:
             self._record_operator_action_if_running(action_event)
 
         dispatch_result = self.command_router.route_command(normalized)
-        self._record_command_out_if_running(
-            dispatch_result.command_event,
-            result_summary=dispatch_result.result_summary,
-        )
+
+        if dispatch_result.success and dispatch_result.command_event is not None:
+            self._record_command_out_if_running(
+                dispatch_result.command_event,
+                result_summary=dispatch_result.result_summary,
+            )
+        elif dispatch_result.status == "rejected":
+            self.health.record_system_event(
+                "command_rejected",
+                severity="warning",
+                command_name=dispatch_result.command_name,
+                device_id=dispatch_result.device_id,
+                adapter_name=dispatch_result.adapter_name,
+                rejection_reason=dispatch_result.rejection_reason,
+                interlock_reason=dispatch_result.interlock_reason,
+                validation_errors=list(dispatch_result.validation_errors),
+            )
+        elif dispatch_result.status == "failed":
+            self.health.record_system_event(
+                "command_dispatch_failed",
+                severity="error",
+                command_name=dispatch_result.command_name,
+                device_id=dispatch_result.device_id,
+                adapter_name=dispatch_result.adapter_name,
+                message=dispatch_result.error,
+            )
+
         return {
-            "success": True,
+            "success": dispatch_result.success,
+            "status": dispatch_result.status,
             "command_name": dispatch_result.command_name,
             "device_id": dispatch_result.device_id,
             "dispatched_via": dispatch_result.dispatched_via,
+            "adapter_name": dispatch_result.adapter_name,
             "result_summary": dispatch_result.result_summary,
+            "rejection_reason": dispatch_result.rejection_reason,
+            "interlock_reason": dispatch_result.interlock_reason,
+            "validation_errors": list(dispatch_result.validation_errors),
+            "error": dispatch_result.error,
         }
 
     def _handle_script_progress(self, info: Mapping[str, Any]) -> None:

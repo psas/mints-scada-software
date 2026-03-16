@@ -131,6 +131,11 @@ def command_result_message(
     dispatched_via: str,
     result_summary: Any = None,
     error: str | None = None,
+    status: str | None = None,
+    adapter_name: str | None = None,
+    rejection_reason: str | None = None,
+    interlock_reason: str | None = None,
+    validation_errors: list[str] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="command_result",
@@ -141,6 +146,11 @@ def command_result_message(
             "dispatched_via": dispatched_via,
             "result_summary": result_summary,
             "error": error,
+            "status": status,
+            "adapter_name": adapter_name,
+            "rejection_reason": rejection_reason,
+            "interlock_reason": interlock_reason,
+            "validation_errors": list(validation_errors or []),
         },
     )
 
