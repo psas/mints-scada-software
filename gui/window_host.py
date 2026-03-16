@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton, QFrame, QLab
 import settings  # noqa: E402
 from gui import QLoggingHandler  # noqa: E402
 from gui.abort_relay import send_abort_request  # noqa: E402
-from gui.backend_client import BackendClient  # noqa: E402
+from gui.backend_client import BackendClient, GuiBackendActionAPI  # noqa: E402
 from gui.controller_window import ControllerWindow  # noqa: E402
 from gui.device_catalog import BackendDeviceCatalog  # noqa: E402
 from gui.scada_window import ScadaWindow  # noqa: E402
@@ -368,11 +368,15 @@ class GuiBackendBridge:
         *,
         window: Any,
         backend_client: BackendClient,
+        mode: str,
+        window_kind: str,
         initialize_live_hardware_on_connect: bool,
         pending_start_run_payload: dict[str, Any] | None = None,
     ) -> None:
         self.window = window
         self.backend_client = backend_client
+        self.mode = str(mode)
+        self.window_kind = str(window_kind)
         self.initialize_live_hardware_on_connect = initialize_live_hardware_on_connect
         self.pending_start_run_payload = dict(pending_start_run_payload or {}) or None
         self._start_run_requested = False
@@ -381,27 +385,36 @@ class GuiBackendBridge:
         self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
         self._health_poll_timer.setInterval(1000)
         self._health_poll_timer.timeout.connect(self._poll_backend_health)
+        self.gui_action_api = GuiBackendActionAPI(
+            backend_client=self.backend_client,
+            mode=self.mode,
+            window_kind=self.window_kind,
+            parent=self.window.window if hasattr(self.window, "window") else None,
+        )
 
-        self._attach_backend_client()
+        self._attach_gui_action_api()
         self._connect_signals()
 
-    def _attach_backend_client(self) -> None:
-        setattr(self.window, "backend_client", self.backend_client)
-        setattr(self.window, "backend_device_catalog", self.device_catalog)
-        setattr(self.window, "send_operator_action", self.send_operator_action)
-        setattr(self.window, "request_backend_command", self.request_backend_command)
-        setattr(self.window, "start_backend_script", self.start_backend_script)
-        setattr(self.window, "stop_backend_script", self.stop_backend_script)
-
+    def _attach_gui_action_api(self) -> None:
+        targets = [self.window]
         for child_name in ("controller", "scada"):
             child = getattr(self.window, child_name, None)
             if child is not None:
-                setattr(child, "backend_client", self.backend_client)
-                setattr(child, "backend_device_catalog", self.device_catalog)
-                setattr(child, "send_operator_action", self.send_operator_action)
-                setattr(child, "request_backend_command", self.request_backend_command)
-                setattr(child, "start_backend_script", self.start_backend_script)
-                setattr(child, "stop_backend_script", self.stop_backend_script)
+                targets.append(child)
+
+        for target in targets:
+            setattr(target, "gui_action_api", self.gui_action_api)
+            setattr(target, "backend_device_catalog", self.device_catalog)
+            setattr(target, "send_operator_action", self.send_operator_action)
+            setattr(target, "request_backend_command", self.request_backend_command)
+            setattr(target, "start_backend_script", self.start_backend_script)
+            setattr(target, "stop_backend_script", self.stop_backend_script)
+            setattr(target, "request_backend_status_now", self.request_backend_status_now)
+            setattr(target, "request_full_backend_state", self.request_full_backend_state)
+            setattr(target, "finish_backend_run", self.finish_backend_run)
+            setattr(target, "backend_runtime_owner", "backend_service")
+            setattr(target, "backend_control_mode", "backend_first")
+            setattr(target, "backend_direct_client_exposed", False)
 
     def _connect_signals(self) -> None:
         self.backend_client.connected.connect(self.on_connected)
@@ -423,13 +436,21 @@ class GuiBackendBridge:
         if not self.backend_client.is_connected:
             return
         try:
-            self.backend_client.request_backend_status()
+            self.gui_action_api.request_backend_status()
         except Exception as exc:
             log.debug("Failed to request backend status for health polling: %s", exc)
 
+    def request_backend_status_now(self) -> None:
+        self.gui_action_api.request_backend_status()
+
+    def request_full_backend_state(self) -> None:
+        self.gui_action_api.request_full_state()
+
+    def finish_backend_run(self, *, reason: str = "operator_stop") -> None:
+        self.gui_action_api.finish_run(reason=reason)
+
     def send_operator_action(self, action: str, **extra: Any) -> None:
-        payload = {"action": action, **extra}
-        self.backend_client.send_operator_action(payload)
+        self.gui_action_api.record_operator_action(action, **extra)
 
     def request_backend_command(
         self,
@@ -441,19 +462,14 @@ class GuiBackendBridge:
         mock_only: bool = False,
         operator_action: dict[str, Any] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {
-            "command_name": command_name,
-            "mock_only": mock_only,
-        }
-        if device_id is not None:
-            payload["device_id"] = device_id
-        if command_args is not None:
-            payload["command_args"] = list(command_args)
-        if command_kwargs is not None:
-            payload["command_kwargs"] = dict(command_kwargs)
-        if operator_action is not None:
-            payload["operator_action"] = dict(operator_action)
-        self.backend_client.request_command(payload)
+        self.gui_action_api.request_backend_command(
+            command_name,
+            device_id=device_id,
+            command_args=command_args,
+            command_kwargs=command_kwargs,
+            mock_only=mock_only,
+            operator_action=operator_action,
+        )
 
     def start_backend_script(
         self,
@@ -464,32 +480,29 @@ class GuiBackendBridge:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {"name": name}
-        if command is not None:
-            payload["command"] = list(command)
-        if inline_python is not None:
-            payload["inline_python"] = inline_python
-        if cwd is not None:
-            payload["cwd"] = cwd
-        if env is not None:
-            payload["env"] = dict(env)
-        self.backend_client.start_script(payload)
+        self.gui_action_api.start_backend_script(
+            name=name,
+            command=command,
+            inline_python=inline_python,
+            cwd=cwd,
+            env=env,
+        )
 
     def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
-        self.backend_client.stop_script(reason=reason)
+        self.gui_action_api.stop_backend_script(reason=reason)
 
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
         self._last_disconnect_reason = None
-        self.backend_client.list_devices()
-        self.backend_client.request_full_state()
+        self.gui_action_api.list_devices()
+        self.gui_action_api.request_full_state()
         self._poll_backend_health()
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
 
         if self.initialize_live_hardware_on_connect:
             try:
-                self.backend_client.initialize_live_hardware()
+                self.gui_action_api.initialize_live_hardware()
             except Exception as exc:
                 log.error("Failed to request live hardware initialization: %s", exc)
 
@@ -516,7 +529,7 @@ class GuiBackendBridge:
 
         if self.pending_start_run_payload is not None and not self._start_run_requested:
             try:
-                self.backend_client.start_run(self.pending_start_run_payload)
+                self.gui_action_api.start_run(self.pending_start_run_payload)
                 self._start_run_requested = True
                 log.info("Requested backend start_run with checklist metadata: %s", self.pending_start_run_payload)
             except Exception as exc:
@@ -1424,6 +1437,8 @@ def _run_live_window(args: argparse.Namespace) -> int:
     GuiBackendBridge(
         window=facade,
         backend_client=backend_client,
+        mode="live",
+        window_kind=args.window_kind,
         initialize_live_hardware_on_connect=(args.window_kind == "controller"),
         pending_start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.window_kind == "controller" else None,
     )

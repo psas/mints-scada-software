@@ -367,3 +367,105 @@ class BackendClient(QObject):
         if should_emit:
             self.disconnected.emit()
             self.disconnected_with_reason.emit(dict(payload))
+
+class GuiBackendActionAPI(QObject):
+    """Small action-only surface for GUI windows in backend-first mode.
+
+    This wrapper intentionally exposes semantic GUI actions instead of the raw
+    socket client object, so window code does not become the owner of backend
+    transport details.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend_client: BackendClient,
+        mode: str,
+        window_kind: str,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._backend_client = backend_client
+        self.mode = str(mode)
+        self.window_kind = str(window_kind)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._backend_client.is_connected
+
+    @property
+    def socket_path(self) -> Path:
+        return self._backend_client.socket_path
+
+    def request_backend_status(self) -> None:
+        self._backend_client.request_backend_status()
+
+    def request_full_state(self) -> None:
+        self._backend_client.request_full_state()
+
+    def list_devices(self) -> None:
+        self._backend_client.list_devices()
+
+    def initialize_live_hardware(self) -> None:
+        self._backend_client.initialize_live_hardware()
+
+    def shutdown_live_hardware(self) -> None:
+        self._backend_client.shutdown_live_hardware()
+
+    def start_run(self, payload: Mapping[str, Any]) -> None:
+        self._backend_client.start_run(payload)
+
+    def finish_run(self, *, reason: str = "operator_stop") -> None:
+        self._backend_client.finish_run(reason=reason)
+
+    def record_operator_action(self, action: str, **extra: Any) -> None:
+        payload = {"action": action, **extra}
+        self._backend_client.send_operator_action(payload)
+
+    def request_backend_command(
+        self,
+        command_name: str,
+        *,
+        device_id: str | None = None,
+        command_args: list[Any] | None = None,
+        command_kwargs: Mapping[str, Any] | None = None,
+        mock_only: bool = False,
+        operator_action: Mapping[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "command_name": command_name,
+            "mock_only": bool(mock_only),
+        }
+        if device_id is not None:
+            payload["device_id"] = str(device_id)
+        if command_args is not None:
+            payload["command_args"] = list(command_args)
+        if command_kwargs is not None:
+            payload["command_kwargs"] = dict(command_kwargs)
+        if operator_action is not None:
+            payload["operator_action"] = dict(operator_action)
+        self._backend_client.request_command(payload)
+
+    def start_backend_script(
+        self,
+        *,
+        name: str,
+        command: list[str] | None = None,
+        inline_python: str | None = None,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"name": str(name)}
+        if command is not None:
+            payload["command"] = list(command)
+        if inline_python is not None:
+            payload["inline_python"] = str(inline_python)
+        if cwd is not None:
+            payload["cwd"] = str(cwd)
+        if env is not None:
+            payload["env"] = {str(key): str(value) for key, value in env.items()}
+        self._backend_client.start_script(payload)
+
+    def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
+        self._backend_client.stop_script(reason=reason)
+
