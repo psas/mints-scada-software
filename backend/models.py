@@ -209,6 +209,7 @@ class HealthRuntimeState:
     writers: dict[str, dict[str, Any]] = field(default_factory=dict)
     bus: dict[str, Any] = field(default_factory=dict)
     script: dict[str, Any] = field(default_factory=dict)
+    gui: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -219,6 +220,7 @@ class HealthRuntimeState:
             "writers": {name: dict(value) for name, value in self.writers.items()},
             "bus": dict(self.bus),
             "script": dict(self.script),
+            "gui": dict(self.gui),
         }
 
 

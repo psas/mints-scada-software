@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 
 class BackendClient(QObject):
@@ -27,7 +27,7 @@ class BackendClient(QObject):
     error_received = pyqtSignal(dict)
     raw_message_received = pyqtSignal(str, dict)
 
-    def __init__(self, *, socket_path: str | Path) -> None:
+    def __init__(self, *, socket_path: str | Path, auto_ping_interval_ms: int = 2000) -> None:
         super().__init__()
         self.socket_path = Path(socket_path).expanduser().resolve()
 
@@ -40,6 +40,10 @@ class BackendClient(QObject):
         self._is_connected = False
         self._last_hello_payload: dict[str, Any] | None = None
         self._last_disconnect_payload: dict[str, Any] | None = None
+        self._auto_ping_interval_ms = max(250, int(auto_ping_interval_ms))
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(self._auto_ping_interval_ms)
+        self._heartbeat_timer.timeout.connect(self._send_heartbeat)
 
     @property
     def is_connected(self) -> bool:
@@ -109,9 +113,13 @@ class BackendClient(QObject):
 
         self.connected.emit()
         self.send_message("hello", hello_payload)
+        if not self._heartbeat_timer.isActive():
+            self._heartbeat_timer.start()
 
     def disconnect_from_backend(self) -> None:
         self._stop_event.set()
+        if self._heartbeat_timer.isActive():
+            self._heartbeat_timer.stop()
         self._close_io()
         self._emit_disconnected_once(
             {
@@ -212,6 +220,19 @@ class BackendClient(QObject):
                     payload[key] = value
 
         return payload
+
+    def _send_heartbeat(self) -> None:
+        if not self.is_connected:
+            return
+        try:
+            self.ping()
+        except Exception as exc:
+            self._emit_disconnected_once(
+                {
+                    "code": "heartbeat_failed",
+                    "message": f"Backend heartbeat failed: {exc}",
+                }
+            )
 
     def _reader_loop(self) -> None:
         try:

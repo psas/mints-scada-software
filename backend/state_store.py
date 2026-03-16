@@ -41,14 +41,46 @@ class StateStore:
 
         with self._lock:
             normalized = dict(session)
+            wall_time = (
+                normalized.get("last_message_wall_time")
+                or normalized.get("last_hello_wall_time")
+                or normalized.get("connected_at")
+                or isoformat_utc_now()
+            )
+            normalized.setdefault("connected_at", wall_time)
+            normalized.setdefault("last_hello_wall_time", wall_time)
+            normalized.setdefault("last_message_wall_time", wall_time)
+            normalized.setdefault("last_ping_wall_time", None)
             self._state.gui.by_connection_id[connection_id] = normalized
-            self._state.gui.last_event_wall_time = normalized.get("last_hello_wall_time") or isoformat_utc_now()
+            self._state.gui.last_event_wall_time = wall_time
             self._refresh_gui_presence_locked()
 
     def remove_gui_client_session(self, *, connection_id: str) -> None:
         with self._lock:
             self._state.gui.by_connection_id.pop(connection_id, None)
             self._state.gui.last_event_wall_time = isoformat_utc_now()
+            self._refresh_gui_presence_locked()
+
+    def touch_gui_client_session(
+        self,
+        *,
+        connection_id: str,
+        wall_time: str | None = None,
+        message_type: str | None = None,
+        is_ping: bool = False,
+    ) -> None:
+        with self._lock:
+            session = self._state.gui.by_connection_id.get(connection_id)
+            if session is None:
+                return
+
+            event_wall_time = wall_time or isoformat_utc_now()
+            session["last_message_wall_time"] = event_wall_time
+            if message_type:
+                session["last_message_type"] = str(message_type)
+            if is_ping:
+                session["last_ping_wall_time"] = event_wall_time
+            self._state.gui.last_event_wall_time = event_wall_time
             self._refresh_gui_presence_locked()
 
     def mark_run_started(
@@ -500,6 +532,7 @@ class StateStore:
         writers: Mapping[str, Any],
         bus: Mapping[str, Any],
         script: Mapping[str, Any],
+        gui: Mapping[str, Any],
     ) -> None:
         with self._lock:
             self._state.health.sampled_at = sampled_at
@@ -512,6 +545,7 @@ class StateStore:
             }
             self._state.health.bus = dict(bus)
             self._state.health.script = dict(script)
+            self._state.health.gui = dict(gui)
 
     def get_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -550,6 +584,8 @@ class StateStore:
                     "overall_status": self._state.health.overall_status,
                     "active_warning_count": self._state.health.active_warning_count,
                     "active_warnings": list(self._state.health.active_warnings),
+                    "gui_status": self._state.health.gui.get("status"),
+                    "gui_warning_count": self._state.health.gui.get("warning_count"),
                 },
                 "last_command": self._state.last_command.to_dict(),
             }
@@ -562,6 +598,7 @@ class StateStore:
         self._refresh_playback_clock_locked(now_wall_time=now_wall_time)
 
     def _refresh_gui_presence_locked(self) -> None:
+        now_wall_time = isoformat_utc_now()
         sessions = list(self._state.gui.by_connection_id.values())
         self._state.gui.total_windows = len(sessions)
         self._state.gui.total_connections = max(self._state.connected_clients, len(sessions))
@@ -579,6 +616,10 @@ class StateStore:
                 if item.get("logical_client_id") not in (None, "")
             }
         )
+
+        for session in sessions:
+            age_seconds = self._elapsed_seconds_between(session.get("last_message_wall_time"), now_wall_time)
+            session["last_message_age_seconds"] = age_seconds
 
     def _refresh_device_packet_ages_locked(self, *, now_wall_time: str) -> None:
         for device_state in self._state.device_runtime.by_id.values():

@@ -190,6 +190,7 @@ class BackendService:
             connection_id=client_id,
             connected_clients=connected_count,
         )
+        self.health_monitor.sample_once()
 
     def on_client_disconnected(self, client_id: str) -> None:
         with self._lock:
@@ -221,6 +222,7 @@ class BackendService:
             severity="info",
             **disconnect_payload,
         )
+        self.health_monitor.sample_once()
 
     def handle_message(self, client_id: str, message: IPCMessage) -> Iterable[IPCMessage]:
         if message.type == "hello":
@@ -249,6 +251,8 @@ class BackendService:
             )
             yield self._build_backend_status_message()
             return
+
+        self._touch_client_session(client_id, message.type, is_ping=message.type == "ping")
 
         if message.type == "ping":
             yield pong_message()
@@ -1242,6 +1246,7 @@ class BackendService:
 
         self.state_store.upsert_gui_client_session(normalized)
         self.state_store.set_connected_clients(self.connected_client_count)
+        self.health_monitor.sample_once()
         return dict(normalized)
 
     def _normalize_client_session(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1270,6 +1275,14 @@ class BackendService:
             "connected_at": wall_time,
             "last_hello_wall_time": wall_time,
         }
+
+    def _touch_client_session(self, client_id: str, message_type: str, *, is_ping: bool = False) -> None:
+        self.state_store.touch_gui_client_session(
+            connection_id=client_id,
+            wall_time=isoformat_z(),
+            message_type=message_type,
+            is_ping=is_ping,
+        )
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return dict(payload)
