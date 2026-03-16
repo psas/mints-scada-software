@@ -551,6 +551,7 @@ class StateStore:
                     "active_warning_count": self._state.health.active_warning_count,
                     "active_warnings": list(self._state.health.active_warnings),
                 },
+                "last_command": self._state.last_command.to_dict(),
             }
 
     def _refresh_transient_fields_locked(self) -> None:

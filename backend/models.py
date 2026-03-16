@@ -223,6 +223,46 @@ class HealthRuntimeState:
 
 
 @dataclass
+class CommandRuntimeState:
+    request_id: str | None = None
+    requested_at: str | None = None
+    request_source: str | None = None
+    authority_level: str | None = None
+    command_name: str | None = None
+    device_id: str | None = None
+    status: str = "idle"
+    dispatched_via: str | None = None
+    adapter_name: str | None = None
+    run_mode: str | None = None
+    rejection_reason: str | None = None
+    interlock_reason: str | None = None
+    validation_errors: list[str] = field(default_factory=list)
+    state_reasons: list[str] = field(default_factory=list)
+    error: str | None = None
+    result_summary: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "requested_at": self.requested_at,
+            "request_source": self.request_source,
+            "authority_level": self.authority_level,
+            "command_name": self.command_name,
+            "device_id": self.device_id,
+            "status": self.status,
+            "dispatched_via": self.dispatched_via,
+            "adapter_name": self.adapter_name,
+            "run_mode": self.run_mode,
+            "rejection_reason": self.rejection_reason,
+            "interlock_reason": self.interlock_reason,
+            "validation_errors": list(self.validation_errors),
+            "state_reasons": list(self.state_reasons),
+            "error": self.error,
+            "result_summary": dict(self.result_summary),
+        }
+
+
+@dataclass
 class BackendRuntimeState:
     service_name: str
     backend_started_at: str
@@ -239,6 +279,7 @@ class BackendRuntimeState:
     alarms: AlarmRuntimeState = field(default_factory=AlarmRuntimeState)
     script_runner: ScriptRunnerState = field(default_factory=ScriptRunnerState)
     health: HealthRuntimeState = field(default_factory=HealthRuntimeState)
+    last_command: CommandRuntimeState = field(default_factory=CommandRuntimeState)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -257,4 +298,5 @@ class BackendRuntimeState:
             "alarms": self.alarms.to_dict(),
             "script_runner": self.script_runner.to_dict(),
             "health": self.health.to_dict(),
+            "last_command": self.last_command.to_dict(),
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from historymanager.manager import isoformat_z
 
@@ -17,16 +18,22 @@ class CommandDispatchResult:
     device_id: str | None
     dispatched_via: str
     adapter_name: str
+    request_id: str | None = None
+    request_source: str | None = None
+    authority_level: str | None = None
+    requested_at: str | None = None
+    run_mode: str | None = None
     result_summary: Any = None
     command_event: dict[str, Any] | None = None
     rejection_reason: str | None = None
     interlock_reason: str | None = None
     error: str | None = None
     validation_errors: list[str] = field(default_factory=list)
+    state_reasons: list[str] = field(default_factory=list)
 
 
 class CommandRouter:
-    """Backend-owned command router with explicit adapters and safety interlocks."""
+    """Backend-owned command router with explicit run-mode and state-aware guards."""
 
     _GLOBAL_ABORT_NAMES = {"abort", "emergency_stop", "estop"}
     _GLOBAL_ABORT_METHODS = ("abort", "emergency_stop", "estop", "stop")
@@ -35,6 +42,7 @@ class CommandRouter:
     _VALVE_OPEN_METHODS = ("open", "open_valve", "openValve", "set_open", "setOpen")
     _VALVE_CLOSE_METHODS = ("close", "close_valve", "closeValve", "set_close", "setClose")
     _ALWAYS_ALLOWED_WITHOUT_BUS = _GLOBAL_ABORT_NAMES | {"noop", "dry_run"}
+    _KNOWN_AUTHORITY_LEVELS = {"observer", "operator", "supervisor", "engineer", "script", "system"}
 
     def __init__(
         self,
@@ -54,18 +62,71 @@ class CommandRouter:
         command_kwargs = self._normalize_kwargs(payload.get("command_kwargs"))
         mock_only = bool(payload.get("mock_only", False))
         dry_run = bool(payload.get("dry_run", False)) or command_name in {"noop", "dry_run"}
+        request_id = self._get_optional_string(payload, "request_id") or uuid4().hex
+        request_source = self._get_optional_string(payload, "request_source") or "gui"
+        authority_level = self._get_optional_string(payload, "authority_level") or (
+            "script" if request_source == "script" else "operator"
+        )
+        requested_at = self._get_optional_string(payload, "requested_at") or isoformat_z()
+        allow_when_script_held = bool(payload.get("allow_when_script_held", False))
+        stale_after_seconds = self._get_optional_float(payload, "stale_after_seconds")
+        if stale_after_seconds is None:
+            stale_after_seconds = 15.0
 
         validation_errors: list[str] = []
+        state_reasons: list[str] = []
         snapshot = self._get_state_snapshot()
-        mode = self._extract_mode(snapshot)
+        run_mode = self._extract_mode(snapshot)
 
-        if mode == "playback" and not (mock_only or dry_run):
+        if authority_level not in self._KNOWN_AUTHORITY_LEVELS:
+            validation_errors.append(
+                f"Unsupported authority_level {authority_level!r}; allowed values are {sorted(self._KNOWN_AUTHORITY_LEVELS)}"
+            )
+            return self._reject(
+                command_name=command_name,
+                device_id=device_id,
+                adapter_name="authority_guard",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
+                rejection_reason="unsupported_authority_level",
+                validation_errors=validation_errors,
+            )
+
+        if run_mode == "playback" and not (mock_only or dry_run):
+            state_reasons.append("backend run mode is playback")
             return self._reject(
                 command_name=command_name,
                 device_id=device_id,
                 adapter_name="mode_guard",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 rejection_reason="commands_disabled_in_playback",
                 interlock_reason="commands are disabled while playback mode is active",
+                state_reasons=state_reasons,
+            )
+
+        run_state = snapshot.get("run", {}) if isinstance(snapshot.get("run"), Mapping) else {}
+        run_status = str(run_state.get("status") or "").strip().lower()
+        if run_status in {"finishing", "completed"} and command_name not in self._GLOBAL_ABORT_NAMES and not (mock_only or dry_run):
+            state_reasons.append(f"run status is {run_status}")
+            return self._reject(
+                command_name=command_name,
+                device_id=device_id,
+                adapter_name="run_status_guard",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
+                rejection_reason="run_not_accepting_commands",
+                interlock_reason="new commands are blocked while the run is finishing or completed",
+                state_reasons=state_reasons,
             )
 
         if device_id is not None and device_id not in self.device_registry:
@@ -74,6 +135,11 @@ class CommandRouter:
                 command_name=command_name,
                 device_id=device_id,
                 adapter_name="device_lookup",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 rejection_reason="unknown_device",
                 validation_errors=validation_errors,
             )
@@ -90,6 +156,11 @@ class CommandRouter:
                     command_name=command_name,
                     device_id=device_id,
                     adapter_name="device_capability_guard",
+                    request_id=request_id,
+                    request_source=request_source,
+                    authority_level=authority_level,
+                    requested_at=requested_at,
+                    run_mode=run_mode,
                     rejection_reason="device_not_controllable",
                     validation_errors=validation_errors,
                 )
@@ -102,28 +173,49 @@ class CommandRouter:
             meta=meta,
             runtime=runtime,
             snapshot=snapshot,
+            request_source=request_source,
+            allow_when_script_held=allow_when_script_held,
+            stale_after_seconds=stale_after_seconds,
         )
         if interlock is not None:
+            state_reasons.extend(interlock[1])
             return self._reject(
                 command_name=command_name,
                 device_id=device_id,
-                adapter_name="interlock_guard",
-                rejection_reason="interlock_rejected",
-                interlock_reason=interlock,
+                adapter_name=interlock[0],
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
+                rejection_reason=interlock[2],
+                interlock_reason=interlock[3],
+                state_reasons=state_reasons,
             )
 
         if dry_run or mock_only:
+            result_summary = {
+                "status": "accepted_as_mock",
+                "mock_only": mock_only,
+                "dry_run": dry_run,
+            }
             return self._accept(
                 command_name=command_name,
                 device_id=device_id,
                 dispatched_via="mock",
                 adapter_name="dry_run_adapter",
-                result_summary={
-                    "status": "accepted_as_mock",
-                    "mock_only": mock_only,
-                    "dry_run": dry_run,
-                },
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
+                result_summary=result_summary,
                 command_event=self._build_command_event(
+                    request_id=request_id,
+                    request_source=request_source,
+                    authority_level=authority_level,
+                    requested_at=requested_at,
+                    run_mode=run_mode,
                     command_name=command_name,
                     device_id=device_id,
                     dispatched_via="mock",
@@ -140,6 +232,11 @@ class CommandRouter:
                 command_name=command_name,
                 command_args=command_args,
                 command_kwargs=command_kwargs,
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
             )
 
         if meta is not None and runtime is not None:
@@ -151,6 +248,11 @@ class CommandRouter:
                     runtime=runtime,
                     command_args=command_args,
                     command_kwargs=command_kwargs,
+                    request_id=request_id,
+                    request_source=request_source,
+                    authority_level=authority_level,
+                    requested_at=requested_at,
+                    run_mode=run_mode,
                 )
                 if valve_result is not None:
                     return valve_result
@@ -162,12 +264,22 @@ class CommandRouter:
                 command_args=command_args,
                 command_kwargs=command_kwargs,
                 adapter_name="runtime_method_adapter",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
             )
 
         return self._reject(
             command_name=command_name,
             device_id=device_id,
             adapter_name="command_scope_guard",
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             rejection_reason="device_id_required",
             interlock_reason="non-global commands require a target device_id",
         )
@@ -178,38 +290,40 @@ class CommandRouter:
         command_name: str,
         command_args: list[Any],
         command_kwargs: dict[str, Any],
+        request_id: str,
+        request_source: str,
+        authority_level: str,
+        requested_at: str,
+        run_mode: str | None,
     ) -> CommandDispatchResult:
         invoked: list[dict[str, str]] = []
-
         for device in self.device_registry.get_gui_device_presentations():
             device_id = device.get("id")
             if not isinstance(device_id, str):
                 continue
             if not bool(device.get("isControllable", False)):
                 continue
-
             runtime = self.device_registry.get_runtime(device_id)
             method = self._resolve_first_callable(runtime, self._GLOBAL_ABORT_METHODS)
             if method is None:
                 continue
-
-            method_name = getattr(method, "__name__", None) or "<callable>"
+            method_name = getattr(method, "__name__", None) or ""
             try:
                 method(*command_args, **command_kwargs)
             except TypeError:
                 method()
-            invoked.append(
-                {
-                    "device_id": device_id,
-                    "method": method_name,
-                }
-            )
+            invoked.append({"device_id": device_id, "method": method_name})
 
         if not invoked:
             return self._reject(
                 command_name=command_name,
                 device_id=None,
                 adapter_name="global_abort_adapter",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 rejection_reason="no_global_abort_adapter",
                 interlock_reason="no controllable runtime implements an abort-like method",
             )
@@ -219,12 +333,22 @@ class CommandRouter:
             device_id=None,
             dispatched_via="runtime_global_abort",
             adapter_name="global_abort_adapter",
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary={
                 "status": "accepted",
                 "invoked_count": len(invoked),
                 "invoked_devices": invoked,
             },
             command_event=self._build_command_event(
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 command_name=command_name,
                 device_id=None,
                 dispatched_via="runtime_global_abort",
@@ -244,6 +368,11 @@ class CommandRouter:
         runtime: Any,
         command_args: list[Any],
         command_kwargs: dict[str, Any],
+        request_id: str,
+        request_source: str,
+        authority_level: str,
+        requested_at: str,
+        run_mode: str | None,
     ) -> CommandDispatchResult | None:
         if command_name in self._VALVE_OPEN_NAMES:
             return self._dispatch_runtime_method_candidates(
@@ -254,8 +383,12 @@ class CommandRouter:
                 command_args=command_args,
                 command_kwargs=command_kwargs,
                 adapter_name="valve_adapter",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
             )
-
         if command_name in self._VALVE_CLOSE_NAMES:
             return self._dispatch_runtime_method_candidates(
                 command_name=command_name,
@@ -265,8 +398,12 @@ class CommandRouter:
                 command_args=command_args,
                 command_kwargs=command_kwargs,
                 adapter_name="valve_adapter",
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
             )
-
         return None
 
     def _dispatch_runtime_method_candidates(
@@ -279,6 +416,11 @@ class CommandRouter:
         command_args: list[Any],
         command_kwargs: dict[str, Any],
         adapter_name: str,
+        request_id: str,
+        request_source: str,
+        authority_level: str,
+        requested_at: str,
+        run_mode: str | None,
     ) -> CommandDispatchResult:
         method = self._resolve_first_callable(runtime, method_names)
         if method is None:
@@ -286,6 +428,11 @@ class CommandRouter:
                 command_name=command_name,
                 device_id=device_id,
                 adapter_name=adapter_name,
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 rejection_reason="no_matching_runtime_method",
                 interlock_reason=f"runtime has none of the expected methods: {', '.join(method_names)}",
             )
@@ -299,6 +446,11 @@ class CommandRouter:
                 device_id=device_id,
                 dispatched_via="runtime_method",
                 adapter_name=adapter_name,
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 error=str(exc),
             )
 
@@ -307,12 +459,22 @@ class CommandRouter:
             device_id=device_id,
             dispatched_via="runtime_method",
             adapter_name=adapter_name,
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary={
                 "status": "accepted",
                 "method_name": method_name,
                 "return_value": result,
             },
             command_event=self._build_command_event(
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 command_name=command_name,
                 device_id=device_id,
                 dispatched_via="runtime_method",
@@ -333,6 +495,11 @@ class CommandRouter:
         command_args: list[Any],
         command_kwargs: dict[str, Any],
         adapter_name: str,
+        request_id: str,
+        request_source: str,
+        authority_level: str,
+        requested_at: str,
+        run_mode: str | None,
     ) -> CommandDispatchResult:
         method = getattr(runtime, command_name, None)
         if not callable(method):
@@ -340,10 +507,14 @@ class CommandRouter:
                 command_name=command_name,
                 device_id=device_id,
                 adapter_name=adapter_name,
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 rejection_reason="no_matching_runtime_method",
                 interlock_reason=f"runtime does not implement method {command_name!r}",
             )
-
         try:
             result = method(*command_args, **command_kwargs)
         except Exception as exc:
@@ -352,20 +523,34 @@ class CommandRouter:
                 device_id=device_id,
                 dispatched_via="runtime_method",
                 adapter_name=adapter_name,
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 error=str(exc),
             )
-
         return self._accept(
             command_name=command_name,
             device_id=device_id,
             dispatched_via="runtime_method",
             adapter_name=adapter_name,
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary={
                 "status": "accepted",
                 "method_name": command_name,
                 "return_value": result,
             },
             command_event=self._build_command_event(
+                request_id=request_id,
+                request_source=request_source,
+                authority_level=authority_level,
+                requested_at=requested_at,
+                run_mode=run_mode,
                 command_name=command_name,
                 device_id=device_id,
                 dispatched_via="runtime_method",
@@ -387,23 +572,105 @@ class CommandRouter:
         meta: Mapping[str, Any] | None,
         runtime: Any,
         snapshot: Mapping[str, Any],
-    ) -> str | None:
+        request_source: str,
+        allow_when_script_held: bool,
+        stale_after_seconds: float,
+    ) -> tuple[str, list[str], str, str] | None:
         if mock_only or dry_run or command_name in self._ALWAYS_ALLOWED_WITHOUT_BUS:
             return None
 
+        state_reasons: list[str] = []
+
         bus_state = snapshot.get("bus", {}) if isinstance(snapshot, Mapping) else {}
-        if isinstance(bus_state, Mapping) and not bool(bus_state.get("connected", False)):
-            return "bus is not connected"
+        if isinstance(bus_state, Mapping):
+            if bool(bus_state.get("reconnecting", False)):
+                state_reasons.append("bus is reconnecting")
+                return (
+                    "bus_guard",
+                    state_reasons,
+                    "bus_reconnecting",
+                    "commands are blocked while the backend bus is reconnecting",
+                )
+            if not bool(bus_state.get("connected", False)):
+                state_reasons.append("bus is not connected")
+                return (
+                    "bus_guard",
+                    state_reasons,
+                    "bus_not_connected",
+                    "commands are blocked while the backend bus is disconnected",
+                )
+
+        script_state = snapshot.get("script_runner", {}) if isinstance(snapshot, Mapping) else {}
+        if request_source == "script" and isinstance(script_state, Mapping):
+            if bool(script_state.get("is_held", False)) and not allow_when_script_held:
+                state_reasons.append("script runner is held")
+                return (
+                    "script_hold_guard",
+                    state_reasons,
+                    "script_is_held",
+                    "script-issued commands are blocked while the script runner is held",
+                )
+
+        device_runtime = snapshot.get("device_runtime", {}) if isinstance(snapshot, Mapping) else {}
+        runtime_by_id = device_runtime.get("by_id", {}) if isinstance(device_runtime, Mapping) else {}
+        device_state = runtime_by_id.get(device_id, {}) if isinstance(runtime_by_id, Mapping) and device_id is not None else {}
+        if isinstance(device_state, Mapping):
+            if bool(device_state.get("command_inhibit", False)):
+                state_reasons.append("device reports command_inhibit=true")
+                return (
+                    "device_state_guard",
+                    state_reasons,
+                    "device_command_inhibited",
+                    "device state currently inhibits outbound commands",
+                )
+            if bool(device_state.get("command_busy", False)) or bool(device_state.get("busy", False)):
+                state_reasons.append("device reports busy=true")
+                return (
+                    "device_state_guard",
+                    state_reasons,
+                    "device_busy",
+                    "device is busy and cannot accept another command yet",
+                )
+            if bool(device_state.get("faulted", False)) or bool(device_state.get("is_faulted", False)):
+                state_reasons.append("device reports faulted=true")
+                return (
+                    "device_state_guard",
+                    state_reasons,
+                    "device_faulted",
+                    "device is faulted and command dispatch is blocked",
+                )
+            age_value = device_state.get("telemetry_age_seconds")
+            if isinstance(age_value, (int, float)) and float(age_value) > stale_after_seconds:
+                state_reasons.append(
+                    f"device telemetry is stale at {float(age_value):.3f}s (> {stale_after_seconds:.3f}s)"
+                )
+                return (
+                    "device_state_guard",
+                    state_reasons,
+                    "device_telemetry_stale",
+                    "device telemetry is too old for a safe command dispatch",
+                )
 
         if meta is not None and runtime is not None:
             if not bool(getattr(runtime, "live_registered", False)):
-                return f"device {device_id!r} is not live registered"
+                state_reasons.append(f"device {device_id!r} is not live registered")
+                return (
+                    "device_registration_guard",
+                    state_reasons,
+                    "device_not_live_registered",
+                    f"device {device_id!r} is not live registered",
+                )
 
         return None
 
     def _build_command_event(
         self,
         *,
+        request_id: str,
+        request_source: str,
+        authority_level: str,
+        requested_at: str,
+        run_mode: str | None,
         command_name: str,
         device_id: str | None,
         dispatched_via: str,
@@ -415,7 +682,11 @@ class CommandRouter:
     ) -> dict[str, Any]:
         return {
             "event_kind": "command_dispatch",
-            "requested_at": isoformat_z(),
+            "requested_at": requested_at,
+            "request_id": request_id,
+            "request_source": request_source,
+            "authority_level": authority_level,
+            "run_mode": run_mode,
             "command_name": command_name,
             "device_id": device_id,
             "command_args": list(command_args),
@@ -433,6 +704,11 @@ class CommandRouter:
         device_id: str | None,
         dispatched_via: str,
         adapter_name: str,
+        request_id: str | None,
+        request_source: str | None,
+        authority_level: str | None,
+        requested_at: str | None,
+        run_mode: str | None,
         result_summary: Any,
         command_event: dict[str, Any] | None,
     ) -> CommandDispatchResult:
@@ -443,6 +719,11 @@ class CommandRouter:
             device_id=device_id,
             dispatched_via=dispatched_via,
             adapter_name=adapter_name,
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary=result_summary,
             command_event=command_event,
         )
@@ -453,9 +734,15 @@ class CommandRouter:
         command_name: str,
         device_id: str | None,
         adapter_name: str,
+        request_id: str | None,
+        request_source: str | None,
+        authority_level: str | None,
+        requested_at: str | None,
+        run_mode: str | None,
         rejection_reason: str,
         interlock_reason: str | None = None,
         validation_errors: list[str] | None = None,
+        state_reasons: list[str] | None = None,
     ) -> CommandDispatchResult:
         return CommandDispatchResult(
             success=False,
@@ -464,11 +751,17 @@ class CommandRouter:
             device_id=device_id,
             dispatched_via="none",
             adapter_name=adapter_name,
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary=None,
             command_event=None,
             rejection_reason=rejection_reason,
             interlock_reason=interlock_reason,
             validation_errors=list(validation_errors or []),
+            state_reasons=list(state_reasons or []),
         )
 
     def _failed(
@@ -478,6 +771,11 @@ class CommandRouter:
         device_id: str | None,
         dispatched_via: str,
         adapter_name: str,
+        request_id: str | None,
+        request_source: str | None,
+        authority_level: str | None,
+        requested_at: str | None,
+        run_mode: str | None,
         error: str,
     ) -> CommandDispatchResult:
         return CommandDispatchResult(
@@ -487,6 +785,11 @@ class CommandRouter:
             device_id=device_id,
             dispatched_via=dispatched_via,
             adapter_name=adapter_name,
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            requested_at=requested_at,
+            run_mode=run_mode,
             result_summary=None,
             command_event=None,
             error=error,
@@ -531,6 +834,14 @@ class CommandRouter:
             return None
         stripped = value.strip()
         return stripped or None
+
+    def _get_optional_float(self, payload: Mapping[str, Any], key: str) -> float | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, (int, float)):
+            raise ValueError(f"Command payload field {key!r} must be a number when provided")
+        return float(value)
 
     def _normalize_args(self, value: Any) -> list[Any]:
         if value is None:

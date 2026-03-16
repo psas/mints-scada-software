@@ -498,13 +498,15 @@ class BackendService:
         if message.type == "command_request":
             try:
                 payload = self._normalize_mapping_payload(message.payload)
-                dispatch_info = self._dispatch_script_command(payload)
+                dispatch_info = self._dispatch_command_request(payload, default_request_source="gui")
             except Exception as exc:
                 command_name = None
                 device_id = None
+                request_id = None
                 if isinstance(message.payload, Mapping):
                     command_name = message.payload.get("command_name")
                     device_id = message.payload.get("device_id")
+                    request_id = message.payload.get("request_id")
 
                 self.health.record_system_event(
                     "command_dispatch_failed",
@@ -512,6 +514,7 @@ class BackendService:
                     message=str(exc),
                     command_name=command_name if isinstance(command_name, str) else None,
                     device_id=device_id if isinstance(device_id, str) else None,
+                    request_id=request_id if isinstance(request_id, str) else None,
                 )
 
                 yield command_result_message(
@@ -522,6 +525,7 @@ class BackendService:
                     error=str(exc),
                     status="failed",
                     adapter_name="service_guard",
+                    request_id=request_id if isinstance(request_id, str) else None,
                 )
                 return
 
@@ -537,6 +541,12 @@ class BackendService:
                 rejection_reason=dispatch_info.get("rejection_reason") if isinstance(dispatch_info.get("rejection_reason"), str) else None,
                 interlock_reason=dispatch_info.get("interlock_reason") if isinstance(dispatch_info.get("interlock_reason"), str) else None,
                 validation_errors=list(dispatch_info.get("validation_errors", [])) if isinstance(dispatch_info.get("validation_errors"), list) else None,
+                state_reasons=list(dispatch_info.get("state_reasons", [])) if isinstance(dispatch_info.get("state_reasons"), list) else None,
+                request_id=dispatch_info.get("request_id") if isinstance(dispatch_info.get("request_id"), str) else None,
+                request_source=dispatch_info.get("request_source") if isinstance(dispatch_info.get("request_source"), str) else None,
+                authority_level=dispatch_info.get("authority_level") if isinstance(dispatch_info.get("authority_level"), str) else None,
+                run_mode=dispatch_info.get("run_mode") if isinstance(dispatch_info.get("run_mode"), str) else None,
+                requested_at=dispatch_info.get("requested_at") if isinstance(dispatch_info.get("requested_at"), str) else None,
             )
             return
 
@@ -811,12 +821,42 @@ class BackendService:
         )
         return sessions
 
-    def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _dispatch_command_request(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        default_request_source: str,
+    ) -> dict[str, Any]:
         normalized = self._normalize_mapping_payload(payload)
-        operator_action_payload = self._get_optional_mapping(normalized, "operator_action")
-        if operator_action_payload is not None:
-            action_event = self._build_operator_action_event(operator_action_payload)
+        normalized.setdefault("request_source", default_request_source)
+
+        if default_request_source == "script":
+            normalized.setdefault("authority_level", "script")
+        else:
+            normalized.setdefault("authority_level", "operator")
+
+        action_payload = self._get_optional_mapping(normalized, "operator_action")
+        if action_payload is not None:
+            action_event = self._build_operator_action_event(action_payload)
             self._record_operator_action_if_running(action_event)
+
+        request_id = self._get_optional_string(normalized, "request_id")
+        request_source = self._get_optional_string(normalized, "request_source") or default_request_source
+        authority_level = self._get_optional_string(normalized, "authority_level") or (
+            "script" if request_source == "script" else "operator"
+        )
+        command_name = self._require_non_empty_string(normalized, "command_name")
+        device_id = self._get_optional_string(normalized, "device_id")
+
+        self.health.record_system_event(
+            "command_requested",
+            severity="info",
+            request_id=request_id,
+            request_source=request_source,
+            authority_level=authority_level,
+            command_name=command_name,
+            device_id=device_id,
+        )
 
         dispatch_result = self.command_router.route_command(normalized)
 
@@ -825,26 +865,67 @@ class BackendService:
                 dispatch_result.command_event,
                 result_summary=dispatch_result.result_summary,
             )
+            self.health.record_system_event(
+                "command_dispatched",
+                severity="info",
+                request_id=dispatch_result.request_id,
+                request_source=dispatch_result.request_source,
+                authority_level=dispatch_result.authority_level,
+                command_name=dispatch_result.command_name,
+                device_id=dispatch_result.device_id,
+                adapter_name=dispatch_result.adapter_name,
+                dispatched_via=dispatch_result.dispatched_via,
+                run_mode=dispatch_result.run_mode,
+            )
         elif dispatch_result.status == "rejected":
             self.health.record_system_event(
                 "command_rejected",
                 severity="warning",
+                request_id=dispatch_result.request_id,
+                request_source=dispatch_result.request_source,
+                authority_level=dispatch_result.authority_level,
                 command_name=dispatch_result.command_name,
                 device_id=dispatch_result.device_id,
                 adapter_name=dispatch_result.adapter_name,
                 rejection_reason=dispatch_result.rejection_reason,
                 interlock_reason=dispatch_result.interlock_reason,
                 validation_errors=list(dispatch_result.validation_errors),
+                state_reasons=list(dispatch_result.state_reasons),
+                run_mode=dispatch_result.run_mode,
             )
         elif dispatch_result.status == "failed":
             self.health.record_system_event(
                 "command_dispatch_failed",
                 severity="error",
+                request_id=dispatch_result.request_id,
+                request_source=dispatch_result.request_source,
+                authority_level=dispatch_result.authority_level,
                 command_name=dispatch_result.command_name,
                 device_id=dispatch_result.device_id,
                 adapter_name=dispatch_result.adapter_name,
                 message=dispatch_result.error,
+                run_mode=dispatch_result.run_mode,
             )
+
+        result_summary_mapping = dispatch_result.result_summary if isinstance(dispatch_result.result_summary, Mapping) else None
+        self.state_store.mark_command_result(
+            request_id=dispatch_result.request_id,
+            requested_at=dispatch_result.requested_at,
+            request_source=dispatch_result.request_source,
+            authority_level=dispatch_result.authority_level,
+            command_name=dispatch_result.command_name,
+            device_id=dispatch_result.device_id,
+            status=dispatch_result.status,
+            dispatched_via=dispatch_result.dispatched_via,
+            adapter_name=dispatch_result.adapter_name,
+            run_mode=dispatch_result.run_mode,
+            rejection_reason=dispatch_result.rejection_reason,
+            interlock_reason=dispatch_result.interlock_reason,
+            validation_errors=dispatch_result.validation_errors,
+            state_reasons=dispatch_result.state_reasons,
+            error=dispatch_result.error,
+            result_summary=result_summary_mapping,
+        )
 
         return {
             "success": dispatch_result.success,
@@ -857,8 +938,17 @@ class BackendService:
             "rejection_reason": dispatch_result.rejection_reason,
             "interlock_reason": dispatch_result.interlock_reason,
             "validation_errors": list(dispatch_result.validation_errors),
+            "state_reasons": list(dispatch_result.state_reasons),
             "error": dispatch_result.error,
+            "request_id": dispatch_result.request_id,
+            "request_source": dispatch_result.request_source,
+            "authority_level": dispatch_result.authority_level,
+            "run_mode": dispatch_result.run_mode,
+            "requested_at": dispatch_result.requested_at,
         }
+
+    def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._dispatch_command_request(payload, default_request_source="script")
 
     def _handle_script_progress(self, info: Mapping[str, Any]) -> None:
         progress_wall_time = info.get("progress_wall_time")
@@ -1138,6 +1228,7 @@ class BackendService:
             recording=status.get("recording"),
             mission_clock=status.get("mission_clock"),
             playback_clock=status.get("playback_clock"),
+            last_command=status.get("last_command"),
         )
 
     def _register_client_hello(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:

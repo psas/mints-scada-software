@@ -75,6 +75,7 @@ def backend_status_message(
     mission_clock: Mapping[str, Any] | None = None,
     playback_clock: Mapping[str, Any] | None = None,
     run_mode: str | None = None,
+    last_command: Mapping[str, Any] | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="backend_status",
@@ -89,6 +90,7 @@ def backend_status_message(
             "recording": dict(recording or {}),
             "mission_clock": dict(mission_clock or {}),
             "playback_clock": dict(playback_clock or {}),
+            "last_command": dict(last_command or {}),
         },
     )
 
@@ -144,6 +146,12 @@ def command_result_message(
     rejection_reason: str | None = None,
     interlock_reason: str | None = None,
     validation_errors: list[str] | None = None,
+    state_reasons: list[str] | None = None,
+    request_id: str | None = None,
+    request_source: str | None = None,
+    authority_level: str | None = None,
+    run_mode: str | None = None,
+    requested_at: str | None = None,
 ) -> IPCMessage:
     return IPCMessage(
         type="command_result",
@@ -159,6 +167,12 @@ def command_result_message(
             "rejection_reason": rejection_reason,
             "interlock_reason": interlock_reason,
             "validation_errors": list(validation_errors or []),
+            "state_reasons": list(state_reasons or []),
+            "request_id": request_id,
+            "request_source": request_source,
+            "authority_level": authority_level,
+            "run_mode": run_mode,
+            "requested_at": requested_at,
         },
     )
 
