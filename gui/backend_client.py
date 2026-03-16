@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -14,6 +15,9 @@ class BackendClient(QObject):
     connected = pyqtSignal()
     disconnected = pyqtSignal()
     disconnected_with_reason = pyqtSignal(dict)
+    reconnect_scheduled = pyqtSignal(dict)
+    reconnect_attempt_started = pyqtSignal(dict)
+    reconnect_succeeded = pyqtSignal(dict)
     hello_ack_received = pyqtSignal(dict)
     backend_status_received = pyqtSignal(dict)
     state_snapshot_received = pyqtSignal(dict)
@@ -27,7 +31,17 @@ class BackendClient(QObject):
     error_received = pyqtSignal(dict)
     raw_message_received = pyqtSignal(str, dict)
 
-    def __init__(self, *, socket_path: str | Path, auto_ping_interval_ms: int = 2000) -> None:
+    _schedule_reconnect_requested = pyqtSignal(dict)
+
+    def __init__(
+        self,
+        *,
+        socket_path: str | Path,
+        auto_ping_interval_ms: int = 2000,
+        auto_reconnect_enabled: bool = False,
+        reconnect_initial_interval_ms: int = 750,
+        reconnect_max_interval_ms: int = 5000,
+    ) -> None:
         super().__init__()
         self.socket_path = Path(socket_path).expanduser().resolve()
 
@@ -40,10 +54,30 @@ class BackendClient(QObject):
         self._is_connected = False
         self._last_hello_payload: dict[str, Any] | None = None
         self._last_disconnect_payload: dict[str, Any] | None = None
+        self._saved_connect_kwargs: dict[str, Any] | None = None
+        self._manual_disconnect = False
+        self._has_connected_once = False
+        self._reconnect_attempt_count = 0
+        self._reconnect_in_progress = False
+
         self._auto_ping_interval_ms = max(250, int(auto_ping_interval_ms))
+        self._auto_reconnect_enabled = bool(auto_reconnect_enabled)
+        self._reconnect_initial_interval_ms = max(250, int(reconnect_initial_interval_ms))
+        self._reconnect_max_interval_ms = max(
+            self._reconnect_initial_interval_ms,
+            int(reconnect_max_interval_ms),
+        )
+        self._next_reconnect_interval_ms = self._reconnect_initial_interval_ms
+
         self._heartbeat_timer = QTimer(self)
         self._heartbeat_timer.setInterval(self._auto_ping_interval_ms)
         self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._attempt_reconnect)
+
+        self._schedule_reconnect_requested.connect(self._handle_schedule_reconnect)
 
     @property
     def is_connected(self) -> bool:
@@ -51,15 +85,25 @@ class BackendClient(QObject):
             return self._is_connected
 
     @property
+    def auto_reconnect_enabled(self) -> bool:
+        with self._lock:
+            return self._auto_reconnect_enabled
+
+    @property
     def last_hello_payload(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._last_hello_payload) if self._last_hello_payload is not None else None
-
 
     @property
     def last_disconnect_payload(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._last_disconnect_payload) if self._last_disconnect_payload is not None else None
+
+    def set_auto_reconnect_enabled(self, enabled: bool) -> None:
+        with self._lock:
+            self._auto_reconnect_enabled = bool(enabled)
+            if not self._auto_reconnect_enabled and self._reconnect_timer.isActive():
+                self._reconnect_timer.stop()
 
     def connect_to_backend(
         self,
@@ -74,58 +118,83 @@ class BackendClient(QObject):
         launcher_pid: int | None = None,
         selected_test: str | None = None,
         hello_extra: Mapping[str, Any] | None = None,
-    ) -> None:
+        allow_deferred_reconnect: bool = False,
+    ) -> bool:
+        connect_kwargs: dict[str, Any] = {
+            "client_name": client_name,
+            "logical_client_id": logical_client_id,
+            "window_role": window_role,
+            "session_id": session_id,
+            "mode": mode,
+            "window_kind": window_kind,
+            "pid": pid,
+            "launcher_pid": launcher_pid,
+            "selected_test": selected_test,
+            "hello_extra": dict(hello_extra or {}),
+        }
+        hello_payload = self._build_hello_payload(
+            client_name=client_name,
+            logical_client_id=logical_client_id,
+            window_role=window_role,
+            session_id=session_id,
+            mode=mode,
+            window_kind=window_kind,
+            pid=pid,
+            launcher_pid=launcher_pid,
+            selected_test=selected_test,
+            hello_extra=hello_extra,
+        )
+
         with self._lock:
-            if self._is_connected:
-                return
-
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect(str(self.socket_path))
-            reader = sock.makefile("r", encoding="utf-8")
-            writer = sock.makefile("w", encoding="utf-8")
-
-            self._socket = sock
-            self._reader = reader
-            self._writer = writer
-            self._stop_event.clear()
-            self._is_connected = True
-
-            self._reader_thread = threading.Thread(
-                target=self._reader_loop,
-                name="gui-backend-client-reader",
-                daemon=True,
-            )
-            self._reader_thread.start()
-
-            hello_payload = self._build_hello_payload(
-                client_name=client_name,
-                logical_client_id=logical_client_id,
-                window_role=window_role,
-                session_id=session_id,
-                mode=mode,
-                window_kind=window_kind,
-                pid=pid,
-                launcher_pid=launcher_pid,
-                selected_test=selected_test,
-                hello_extra=hello_extra,
-            )
+            self._saved_connect_kwargs = dict(connect_kwargs)
             self._last_hello_payload = dict(hello_payload)
+            self._manual_disconnect = False
 
-        self.connected.emit()
-        self.send_message("hello", hello_payload)
-        if not self._heartbeat_timer.isActive():
-            self._heartbeat_timer.start()
+        try:
+            self._open_connection()
+        except Exception as exc:
+            if self.auto_reconnect_enabled or allow_deferred_reconnect:
+                payload = {
+                    "code": "backend_connect_failed",
+                    "message": f"Backend connection failed: {exc}",
+                    "socket_path": str(self.socket_path),
+                }
+                with self._lock:
+                    self._last_disconnect_payload = dict(payload)
+                self.disconnected_with_reason.emit(dict(payload))
+                self._schedule_reconnect_from_any_thread(payload, immediate=True)
+                return False
+            raise
+
+        self._complete_connection_handshake(hello_payload, was_reconnect=self._has_connected_once)
+        return True
 
     def disconnect_from_backend(self) -> None:
+        with self._lock:
+            self._manual_disconnect = True
         self._stop_event.set()
         if self._heartbeat_timer.isActive():
             self._heartbeat_timer.stop()
+        if self._reconnect_timer.isActive():
+            self._reconnect_timer.stop()
         self._close_io()
         self._emit_disconnected_once(
             {
                 "code": "client_disconnect",
                 "message": "BackendClient disconnected locally",
             }
+        )
+
+    def reconnect_now(self) -> None:
+        with self._lock:
+            if self._saved_connect_kwargs is None:
+                return
+        self._schedule_reconnect_from_any_thread(
+            {
+                "code": "manual_reconnect_request",
+                "message": "Manual backend reconnect requested",
+            },
+            immediate=True,
         )
 
     def send_message(self, message_type: str, payload: Mapping[str, Any] | None = None) -> None:
@@ -221,6 +290,64 @@ class BackendClient(QObject):
 
         return payload
 
+    def _open_connection(self) -> None:
+        with self._lock:
+            if self._is_connected:
+                return
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(str(self.socket_path))
+            reader = sock.makefile("r", encoding="utf-8")
+            writer = sock.makefile("w", encoding="utf-8")
+        except Exception:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            raise
+
+        with self._lock:
+            self._socket = sock
+            self._reader = reader
+            self._writer = writer
+            self._stop_event.clear()
+            self._is_connected = True
+
+            self._reader_thread = threading.Thread(
+                target=self._reader_loop,
+                name="gui-backend-client-reader",
+                daemon=True,
+            )
+            self._reader_thread.start()
+
+    def _complete_connection_handshake(self, hello_payload: Mapping[str, Any], *, was_reconnect: bool) -> None:
+        if self._reconnect_timer.isActive():
+            self._reconnect_timer.stop()
+
+        with self._lock:
+            self._next_reconnect_interval_ms = self._reconnect_initial_interval_ms
+            self._reconnect_attempt_count = 0
+            self._reconnect_in_progress = False
+            self._manual_disconnect = False
+            self._last_hello_payload = dict(hello_payload)
+            self._last_disconnect_payload = None
+            self._has_connected_once = True
+
+        self.connected.emit()
+        self.send_message("hello", hello_payload)
+        if not self._heartbeat_timer.isActive():
+            self._heartbeat_timer.start()
+
+        if was_reconnect:
+            self.reconnect_succeeded.emit(
+                {
+                    "code": "backend_reconnected",
+                    "message": "Backend connection restored",
+                    "socket_path": str(self.socket_path),
+                }
+            )
+
     def _send_heartbeat(self) -> None:
         if not self.is_connected:
             return
@@ -296,7 +423,7 @@ class BackendClient(QObject):
             self.error_received.emit(dict(disconnect_reason))
         finally:
             self._close_io()
-            if 'disconnect_reason' not in locals():
+            if "disconnect_reason" not in locals():
                 disconnect_reason = {
                     "code": "backend_connection_closed",
                     "message": "Backend connection closed",
@@ -358,15 +485,104 @@ class BackendClient(QObject):
     def _emit_disconnected_once(self, reason: Mapping[str, Any] | None = None) -> None:
         should_emit = False
         payload = dict(reason or {})
+        should_schedule_reconnect = False
+
         with self._lock:
             if self._is_connected:
                 self._is_connected = False
                 self._last_disconnect_payload = dict(payload)
                 should_emit = True
+                should_schedule_reconnect = self._auto_reconnect_enabled and not self._manual_disconnect
 
         if should_emit:
             self.disconnected.emit()
             self.disconnected_with_reason.emit(dict(payload))
+
+        if should_schedule_reconnect:
+            self._schedule_reconnect_from_any_thread(payload, immediate=False)
+
+    def _schedule_reconnect_from_any_thread(
+        self,
+        reason: Mapping[str, Any] | None,
+        *,
+        immediate: bool,
+    ) -> None:
+        payload = dict(reason or {})
+        payload["_immediate"] = bool(immediate)
+        self._schedule_reconnect_requested.emit(payload)
+
+    def _handle_schedule_reconnect(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            if not self._auto_reconnect_enabled or self._manual_disconnect:
+                return
+            if self._saved_connect_kwargs is None:
+                return
+            if self._is_connected:
+                return
+
+            immediate = bool(payload.pop("_immediate", False))
+            interval_ms = 0 if immediate else self._next_reconnect_interval_ms
+            self._reconnect_attempt_count += 1
+            self._reconnect_in_progress = True
+            if not immediate:
+                self._next_reconnect_interval_ms = min(
+                    self._next_reconnect_interval_ms * 2,
+                    self._reconnect_max_interval_ms,
+                )
+
+        scheduled_payload = {
+            "code": str(payload.get("code") or "backend_reconnect_scheduled"),
+            "message": str(payload.get("message") or "Backend reconnect scheduled"),
+            "socket_path": str(self.socket_path),
+            "attempt_count": self._reconnect_attempt_count,
+            "retry_in_ms": interval_ms,
+        }
+        self.reconnect_scheduled.emit(dict(scheduled_payload))
+        self._reconnect_timer.start(interval_ms)
+
+    def _attempt_reconnect(self) -> None:
+        with self._lock:
+            if self._saved_connect_kwargs is None or self._is_connected:
+                self._reconnect_in_progress = False
+                return
+            connect_kwargs = dict(self._saved_connect_kwargs)
+            hello_payload = self._build_hello_payload(
+                client_name=str(connect_kwargs.get("client_name") or "user-gui"),
+                logical_client_id=connect_kwargs.get("logical_client_id"),
+                window_role=connect_kwargs.get("window_role"),
+                session_id=connect_kwargs.get("session_id"),
+                mode=connect_kwargs.get("mode"),
+                window_kind=connect_kwargs.get("window_kind"),
+                pid=connect_kwargs.get("pid"),
+                launcher_pid=connect_kwargs.get("launcher_pid"),
+                selected_test=connect_kwargs.get("selected_test"),
+                hello_extra=connect_kwargs.get("hello_extra"),
+            )
+            attempt_number = self._reconnect_attempt_count or 1
+
+        self.reconnect_attempt_started.emit(
+            {
+                "code": "backend_reconnect_attempt",
+                "message": "Attempting backend reconnect",
+                "socket_path": str(self.socket_path),
+                "attempt_count": attempt_number,
+            }
+        )
+
+        try:
+            self._open_connection()
+        except Exception as exc:
+            self._handle_schedule_reconnect(
+                {
+                    "code": "backend_reconnect_failed",
+                    "message": f"Backend reconnect failed: {exc}",
+                    "socket_path": str(self.socket_path),
+                }
+            )
+            return
+
+        self._complete_connection_handshake(hello_payload, was_reconnect=True)
+
 
 class GuiBackendActionAPI(QObject):
     """Small action-only surface for GUI windows in backend-first mode.
@@ -469,3 +685,5 @@ class GuiBackendActionAPI(QObject):
     def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
         self._backend_client.stop_script(reason=reason)
 
+    def reconnect_backend_now(self) -> None:
+        self._backend_client.reconnect_now()

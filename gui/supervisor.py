@@ -29,6 +29,7 @@ _BACKEND_STATE_POLL_S = 1.0
 _RESPAWN_KILL_TIMEOUT_S = 2.0
 _RESPAWN_LIMIT_WINDOW_S = 60.0
 _RESPAWN_LIMIT_COUNT = 8
+_RESPAWN_BOOTSTRAP_GRACE_S = 6.0
 
 
 def _project_root() -> Path:
@@ -297,6 +298,10 @@ def _monitor_session(
         "controller": [],
         "scada": [],
     }
+    bootstrap_deadlines: dict[str, float] = {
+        name: time.monotonic() + _RESPAWN_BOOTSTRAP_GRACE_S
+        for name in child_map.keys()
+    }
     last_recording_state: bool = (mode == "live")
     last_backend_poll_monotonic = 0.0
     initial_start_run_consumed = False
@@ -351,6 +356,7 @@ def _monitor_session(
         )
         child_map[window_kind] = process
         respawn_times[window_kind].append(now)
+        bootstrap_deadlines[window_kind] = now + _RESPAWN_BOOTSTRAP_GRACE_S
         log.warning(
             "GuiSupervisor respawned %s window pid=%s because %s",
             window_kind,
@@ -424,6 +430,10 @@ def _monitor_session(
                 window_kind = str(record.get("window_kind") or "")
                 last_monotonic = record.get("last_monotonic")
                 if not window_role or not window_kind or not isinstance(last_monotonic, (int, float)):
+                    continue
+
+                bootstrap_deadline = bootstrap_deadlines.get(window_kind, 0.0)
+                if now < bootstrap_deadline:
                     continue
 
                 age = now - float(last_monotonic)

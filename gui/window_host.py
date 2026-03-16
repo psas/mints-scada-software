@@ -165,6 +165,14 @@ class WindowHealthBannerController(QObject):
             detail=detail,
         )
 
+    def show_backend_reconnecting(self, *, reason_text: str | None) -> None:
+        detail = reason_text or "Trying to reconnect this GUI window to the backend."
+        self._show_banner(
+            severity="warning",
+            title="BACKEND RECONNECTING",
+            detail=detail,
+        )
+
     def show_health_summary(self, summary: dict[str, Any]) -> None:
         normalized = _normalize_health_payload(summary)
         overall = normalized["overall_status"]
@@ -353,6 +361,15 @@ class WindowHostFacade:
             detail = reason_payload.get("message") or reason_payload.get("code")
         self.health_banner_controller.show_backend_disconnected(reason_text=detail)
 
+    def show_backend_reconnecting(self, reason_payload: dict[str, Any] | None) -> None:
+        detail = None
+        if isinstance(reason_payload, dict):
+            detail = reason_payload.get("message") or reason_payload.get("code")
+            retry_in_ms = reason_payload.get("retry_in_ms")
+            if isinstance(retry_in_ms, int) and retry_in_ms > 0:
+                detail = f"{detail or 'Backend reconnect scheduled.'} Retrying in {retry_in_ms / 1000:.1f}s."
+        self.health_banner_controller.show_backend_reconnecting(reason_text=detail)
+
     def show_backend_error_banner(self, payload: dict[str, Any]) -> None:
         self.health_banner_controller.show_backend_error(
             code=str(payload.get("code") or "") or None,
@@ -420,6 +437,12 @@ class GuiBackendBridge:
         self.backend_client.connected.connect(self.on_connected)
         self.backend_client.disconnected.connect(self.on_disconnected)
         self.backend_client.disconnected_with_reason.connect(self.on_disconnected_with_reason)
+        if hasattr(self.backend_client, "reconnect_scheduled"):
+            self.backend_client.reconnect_scheduled.connect(self.on_reconnect_scheduled)
+        if hasattr(self.backend_client, "reconnect_attempt_started"):
+            self.backend_client.reconnect_attempt_started.connect(self.on_reconnect_attempt_started)
+        if hasattr(self.backend_client, "reconnect_succeeded"):
+            self.backend_client.reconnect_succeeded.connect(self.on_reconnect_succeeded)
         self.backend_client.hello_ack_received.connect(self.on_hello_ack)
         self.backend_client.backend_status_received.connect(self.on_backend_status)
         self.backend_client.state_snapshot_received.connect(self.on_state_snapshot)
@@ -494,6 +517,9 @@ class GuiBackendBridge:
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
         self._last_disconnect_reason = None
+        setattr(self.window, "backend_reconnect_state", {"state": "connected"})
+        if hasattr(self.window, "health_banner_controller"):
+            self.window.health_banner_controller.clear()
         self.gui_action_api.list_devices()
         self.gui_action_api.request_full_state()
         self._poll_backend_health()
@@ -509,6 +535,7 @@ class GuiBackendBridge:
     def on_disconnected(self) -> None:
         log.warning("Disconnected from backend")
         setattr(self.window, "backend_connected", False)
+        setattr(self.window, "backend_reconnect_state", {"state": "disconnected"})
         if self._health_poll_timer.isActive():
             self._health_poll_timer.stop()
         if hasattr(self.window, "show_backend_disconnected"):
@@ -518,6 +545,22 @@ class GuiBackendBridge:
         self._last_disconnect_reason = dict(payload)
         setattr(self.window, "backend_disconnect_reason", dict(payload))
 
+    def on_reconnect_scheduled(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "backend_reconnect_state", {"state": "scheduled", **dict(payload)})
+        if hasattr(self.window, "show_backend_reconnecting"):
+            self.window.show_backend_reconnecting(dict(payload))
+
+    def on_reconnect_attempt_started(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "backend_reconnect_state", {"state": "attempting", **dict(payload)})
+        if hasattr(self.window, "show_backend_reconnecting"):
+            self.window.show_backend_reconnecting(dict(payload))
+
+    def on_reconnect_succeeded(self, payload: dict[str, Any]) -> None:
+        setattr(self.window, "backend_reconnect_state", {"state": "reconnected", **dict(payload)})
+        setattr(self.window, "backend_disconnect_reason", None)
+        if hasattr(self.window, "health_banner_controller"):
+            self.window.health_banner_controller.clear()
+
     def on_hello_ack(self, payload: dict[str, Any]) -> None:
         log.info(
             "Backend hello_ack: service=%s clients=%s",
@@ -526,6 +569,13 @@ class GuiBackendBridge:
         )
         setattr(self.window, "backend_connected", True)
         setattr(self.window, "backend_hello_ack", dict(payload))
+        setattr(self.window, "backend_reconnect_state", {"state": "hello_ack", **dict(payload)})
+
+        try:
+            self.gui_action_api.request_full_state()
+            self.gui_action_api.request_backend_status()
+        except Exception as exc:
+            log.debug("Failed to refresh backend state after hello_ack: %s", exc)
 
         if self.pending_start_run_payload is not None and not self._start_run_requested:
             try:
@@ -1433,7 +1483,12 @@ def _run_live_window(args: argparse.Namespace) -> int:
         layout_profile=_layout_profile("live"),
     )
 
-    backend_client = BackendClient(socket_path=Path(args.backend_socket))
+    backend_client = BackendClient(
+        socket_path=Path(args.backend_socket),
+        auto_reconnect_enabled=True,
+        reconnect_initial_interval_ms=750,
+        reconnect_max_interval_ms=5000,
+    )
     GuiBackendBridge(
         window=facade,
         backend_client=backend_client,
@@ -1452,7 +1507,12 @@ def _run_live_window(args: argparse.Namespace) -> int:
         )
         setattr(actual_window, "backend_client_identity", dict(backend_identity))
         setattr(facade, "backend_client_identity", dict(backend_identity))
-        backend_client.connect_to_backend(**backend_identity)
+        connected_now = backend_client.connect_to_backend(
+            **backend_identity,
+            allow_deferred_reconnect=True,
+        )
+        setattr(actual_window, "backend_initial_connect_succeeded", bool(connected_now))
+        setattr(facade, "backend_initial_connect_succeeded", bool(connected_now))
 
         heartbeat_client = SupervisorHeartbeatClient(
             socket_path=args.supervisor_socket,
@@ -1468,11 +1528,9 @@ def _run_live_window(args: argparse.Namespace) -> int:
         QMessageBox.critical(
             None,
             "Backend Connection Error",
-            "Failed to connect to backend service.\n\n"
+            "Failed to initialize the backend reconnect client.\n\n"
             f"Socket: {args.backend_socket}\n"
-            f"Error: {exc}\n\n"
-            "Please start the backend first with:\n"
-            "python3 main_backend.py",
+            f"Error: {exc}",
         )
         return 1
 
