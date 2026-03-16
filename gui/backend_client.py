@@ -249,6 +249,12 @@ class BackendClient(QObject):
     def stop_script(self, *, reason: str = "operator_stop") -> None:
         self.send_message("stop_script", {"reason": reason})
 
+    def hold_script(self, *, reason: str = "operator_hold") -> None:
+        self.send_message("hold_script", {"reason": reason})
+
+    def continue_script(self, *, reason: str = "operator_continue") -> None:
+        self.send_message("continue_script", {"reason": reason})
+
     def _build_hello_payload(
         self,
         *,
@@ -622,6 +628,12 @@ class GuiBackendActionAPI(QObject):
     def list_devices(self) -> None:
         self._backend_client.list_devices()
 
+    def refresh_runtime_views(self) -> None:
+        """Refresh the main backend-backed runtime views for this window."""
+        self.request_backend_status()
+        self.request_full_state()
+        self.list_devices()
+
     def initialize_live_hardware(self) -> None:
         self._backend_client.initialize_live_hardware()
 
@@ -684,6 +696,12 @@ class GuiBackendActionAPI(QObject):
 
     def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
         self._backend_client.stop_script(reason=reason)
+
+    def hold_backend_script(self, *, reason: str = "operator_hold") -> None:
+        self._backend_client.hold_script(reason=reason)
+
+    def continue_backend_script(self, *, reason: str = "operator_continue") -> None:
+        self._backend_client.continue_script(reason=reason)
 
     def reconnect_backend_now(self) -> None:
         self._backend_client.reconnect_now()

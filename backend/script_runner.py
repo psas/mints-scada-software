@@ -81,6 +81,12 @@ class ScriptRunner:
             plan_running = self._plan_thread is not None and self._plan_thread.is_alive()
             return process_running or plan_running
 
+    def get_status_snapshot(self) -> dict[str, Any]:
+        snapshot = self._script_progress_snapshot()
+        snapshot["is_running"] = self.is_running
+        snapshot["supports_hold_continue"] = bool(snapshot.get("launch_mode") == "plan")
+        return snapshot
+
     def start_script(
         self,
         payload: Mapping[str, Any],
@@ -152,6 +158,7 @@ class ScriptRunner:
                 "reason": reason,
                 "returncode": return_code,
                 "stopped_via": stopped_via,
+                "supports_hold_continue": True,
             }
 
         assert self._process is not None
@@ -182,6 +189,7 @@ class ScriptRunner:
             "reason": reason,
             "returncode": return_code,
             "stopped_via": stopped_via,
+            "supports_hold_continue": False,
         }
 
     def hold_script(self, *, reason: str = "operator_hold") -> dict[str, Any]:
@@ -855,6 +863,7 @@ class ScriptRunner:
                 "plan_steps_summary": list(self._plan_steps_summary),
                 "is_held": self._is_held,
                 "hold_requested": self._plan_hold_requested.is_set(),
+                "supports_hold_continue": bool(self._launch_mode == "plan"),
             }
 
     def _build_plan_control_result(self, *, status: str) -> dict[str, Any]:

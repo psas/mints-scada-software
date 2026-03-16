@@ -402,6 +402,9 @@ class GuiBackendBridge:
         self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
         self._health_poll_timer.setInterval(1000)
         self._health_poll_timer.timeout.connect(self._poll_backend_health)
+        self._state_sync_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
+        self._state_sync_timer.setInterval(3000 if self.mode == "live" else 5000)
+        self._state_sync_timer.timeout.connect(self._sync_backend_runtime_state)
         self.gui_action_api = GuiBackendActionAPI(
             backend_client=self.backend_client,
             mode=self.mode,
@@ -426,6 +429,8 @@ class GuiBackendBridge:
             setattr(target, "request_backend_command", self.request_backend_command)
             setattr(target, "start_backend_script", self.start_backend_script)
             setattr(target, "stop_backend_script", self.stop_backend_script)
+            setattr(target, "hold_backend_script", self.hold_backend_script)
+            setattr(target, "continue_backend_script", self.continue_backend_script)
             setattr(target, "request_backend_status_now", self.request_backend_status_now)
             setattr(target, "request_full_backend_state", self.request_full_backend_state)
             setattr(target, "finish_backend_run", self.finish_backend_run)
@@ -462,6 +467,14 @@ class GuiBackendBridge:
             self.gui_action_api.request_backend_status()
         except Exception as exc:
             log.debug("Failed to request backend status for health polling: %s", exc)
+
+    def _sync_backend_runtime_state(self) -> None:
+        if not self.backend_client.is_connected:
+            return
+        try:
+            self.gui_action_api.refresh_runtime_views()
+        except Exception as exc:
+            log.debug("Failed to refresh backend runtime state: %s", exc)
 
     def request_backend_status_now(self) -> None:
         self.gui_action_api.request_backend_status()
@@ -514,17 +527,24 @@ class GuiBackendBridge:
     def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
         self.gui_action_api.stop_backend_script(reason=reason)
 
+    def hold_backend_script(self, *, reason: str = "operator_hold") -> None:
+        self.gui_action_api.hold_backend_script(reason=reason)
+
+    def continue_backend_script(self, *, reason: str = "operator_continue") -> None:
+        self.gui_action_api.continue_backend_script(reason=reason)
+
     def on_connected(self) -> None:
         log.info("Connected to backend at %s", self.backend_client.socket_path)
         self._last_disconnect_reason = None
         setattr(self.window, "backend_reconnect_state", {"state": "connected"})
         if hasattr(self.window, "health_banner_controller"):
             self.window.health_banner_controller.clear()
-        self.gui_action_api.list_devices()
-        self.gui_action_api.request_full_state()
+        self.gui_action_api.refresh_runtime_views()
         self._poll_backend_health()
         if not self._health_poll_timer.isActive():
             self._health_poll_timer.start()
+        if not self._state_sync_timer.isActive():
+            self._state_sync_timer.start()
 
         if self.initialize_live_hardware_on_connect:
             try:
@@ -538,6 +558,8 @@ class GuiBackendBridge:
         setattr(self.window, "backend_reconnect_state", {"state": "disconnected"})
         if self._health_poll_timer.isActive():
             self._health_poll_timer.stop()
+        if self._state_sync_timer.isActive():
+            self._state_sync_timer.stop()
         if hasattr(self.window, "show_backend_disconnected"):
             self.window.show_backend_disconnected(self._last_disconnect_reason)
 
@@ -560,6 +582,10 @@ class GuiBackendBridge:
         setattr(self.window, "backend_disconnect_reason", None)
         if hasattr(self.window, "health_banner_controller"):
             self.window.health_banner_controller.clear()
+        try:
+            self.gui_action_api.refresh_runtime_views()
+        except Exception as exc:
+            log.debug("Failed to refresh backend runtime state after reconnect: %s", exc)
 
     def on_hello_ack(self, payload: dict[str, Any]) -> None:
         log.info(
@@ -572,8 +598,7 @@ class GuiBackendBridge:
         setattr(self.window, "backend_reconnect_state", {"state": "hello_ack", **dict(payload)})
 
         try:
-            self.gui_action_api.request_full_state()
-            self.gui_action_api.request_backend_status()
+            self.gui_action_api.refresh_runtime_views()
         except Exception as exc:
             log.debug("Failed to refresh backend state after hello_ack: %s", exc)
 
@@ -658,6 +683,13 @@ class GuiBackendBridge:
         handler = getattr(self.window, "handle_run_status", None)
         if callable(handler):
             handler(dict(payload))
+
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"running", "finished", "completed", "stopped"}:
+            try:
+                self.gui_action_api.refresh_runtime_views()
+            except Exception as exc:
+                log.debug("Failed to refresh backend runtime state after run_status: %s", exc)
 
     def on_operator_action_recorded(self, payload: dict[str, Any]) -> None:
         setattr(self.window, "last_operator_action_recorded", dict(payload))
