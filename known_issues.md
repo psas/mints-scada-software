@@ -30,3 +30,16 @@ Possible causes:
 - backend/*
 
 ---
+
+## 2. Logic bug after enter playback mode
+
+What happened: By design playback mode is entirely saparated from live mode, which means everything inside will be static including logs to make a full replay. Right now when enter playback mode, the logs still apply "live mode backend" and mix the logs.
+
+Reproducibility: Happen everytime when enter playback mode.
+
+Possible causes:
+
+- gui/controller_window.py
+- gui/scada_window.py
+
+---

@@ -24,3 +24,7 @@ testhistory/
 .ignitionraw/
 .ignitionrawbak/
 ignitionhistory/
+
+# ignore cache
+docs/
+/.*/
