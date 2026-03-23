@@ -523,6 +523,46 @@ class StateStore:
             self._state.script_runner.last_hold_wall_time = None
             self._state.script_runner.last_continue_wall_time = None
 
+    def upsert_device_runtime_shadow(
+        self,
+        *,
+        device_id: str,
+        wall_time: str,
+        source: str,
+        runtime_value: Any = None,
+        runtime_aux: Any = None,
+        runtime_time: Any = None,
+        runtime_state: Any = None,
+        runtime_position: Any = None,
+        runtime_status: Any = None,
+        online: bool | None = None,
+    ) -> None:
+        with self._lock:
+            current = dict(self._state.device_runtime.by_id.get(device_id, {}))
+            current["device_id"] = device_id
+            current["source"] = source
+            current["last_runtime_update_wall_time"] = wall_time
+
+            if online is None:
+                current.setdefault("online", False)
+            else:
+                current["online"] = bool(online)
+
+            if runtime_value is not None:
+                current["runtime_value"] = runtime_value
+            if runtime_aux is not None:
+                current["runtime_aux"] = runtime_aux
+            if runtime_time is not None:
+                current["runtime_time"] = runtime_time
+            if runtime_state is not None:
+                current["runtime_state"] = runtime_state
+            if runtime_position is not None:
+                current["runtime_position"] = runtime_position
+            if runtime_status is not None:
+                current["runtime_status"] = runtime_status
+
+            self._state.device_runtime.by_id[device_id] = current
+
     def mark_command_result(
         self,
         *,

@@ -943,6 +943,12 @@ class BackendService:
             result_summary=result_summary_mapping,
         )
 
+        if dispatch_result.success:
+            self._apply_optimistic_runtime_shadow_from_command(
+                command_name=dispatch_result.command_name,
+                device_id=dispatch_result.device_id,
+            )
+
         return {
             "success": dispatch_result.success,
             "status": dispatch_result.status,
@@ -962,6 +968,64 @@ class BackendService:
             "run_mode": dispatch_result.run_mode,
             "requested_at": dispatch_result.requested_at,
         }
+
+    def _apply_optimistic_runtime_shadow_from_command(
+        self,
+        *,
+        command_name: str | None,
+        device_id: str | None,
+    ) -> None:
+        if not isinstance(device_id, str) or not device_id:
+            return
+
+        normalized_command = str(command_name or "").strip().lower()
+        if normalized_command in {"open", "open_valve", "valve_open"}:
+            target_state = "open"
+            target_value = True
+        elif normalized_command in {"close", "close_valve", "valve_close"}:
+            target_state = "closed"
+            target_value = False
+        else:
+            return
+
+        if device_id not in self.device_registry:
+            return
+
+        try:
+            meta = self.device_registry.get_meta(device_id)
+        except Exception:
+            return
+
+        if str(meta.get("deviceGroup") or "").upper() != "XV":
+            return
+
+        runtime = None
+        try:
+            runtime = self.device_registry.get_runtime(device_id)
+        except Exception:
+            runtime = None
+
+        runtime_value = target_value
+        runtime_aux = getattr(runtime, "aux", None) if runtime is not None else None
+        runtime_time = getattr(runtime, "time", None) if runtime is not None else None
+        live_registered = bool(getattr(runtime, "live_registered", False)) if runtime is not None else False
+
+        if runtime is not None:
+            raw_value = getattr(runtime, "value", None)
+            if raw_value is not None:
+                runtime_value = raw_value
+
+        self.state_store.upsert_device_runtime_shadow(
+            device_id=device_id,
+            wall_time=isoformat_z(),
+            source="command_out_optimistic",
+            runtime_value=runtime_value,
+            runtime_aux=runtime_aux,
+            runtime_time=runtime_time,
+            runtime_state=target_state,
+            runtime_status=f"commanded_{target_state}",
+            online=live_registered,
+        )
 
     def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._dispatch_command_request(payload, default_request_source="script")

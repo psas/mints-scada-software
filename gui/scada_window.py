@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 
 class ScadaWindow(QMainWindow):
     XV_IDS = ("xv-23", "xv-24", "xv-25", "xv-26", "xv-27")
+    SVG_TO_BACKEND_XV_IDS = {
+        "xv-23": "IPA-XV-23",
+        "xv-24": "IG-XV-24",
+        "xv-25": "IPA-XV-25",
+        "xv-26": "LOX-XV-26",
+        "xv-27": "IG-XV-27",
+    }
+    BACKEND_TO_SVG_XV_IDS = {backend_id: svg_id for svg_id, backend_id in SVG_TO_BACKEND_XV_IDS.items()}
+
+    OPEN_COMMAND_NAMES = {"open", "open_valve", "valve_open"}
+    CLOSE_COMMAND_NAMES = {"close", "close_valve", "valve_close"}
 
     def __init__(self, playback_mode: bool = False, test_name: str | None = None, manager=None):
         super().__init__()
@@ -48,6 +59,7 @@ class ScadaWindow(QMainWindow):
         self.channel: QWebChannel | None = None
 
         self.xv_states = {valve_id: "default" for valve_id in self.XV_IDS}
+        self.pending_xv_commands: dict[str, str] = {}
 
         title_suffix = " - Playback" if self.playback_mode else " - Right Screen"
         self.setWindowTitle(f"minTS SCADA{title_suffix}")
@@ -212,12 +224,104 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         self.web_view.page().runJavaScript(js)
 
     def _normalize_state(self, state: Any) -> str:
+        if isinstance(state, bool):
+            return "open" if state else "closed"
+
         value = str(state or "default").strip().lower()
-        if value in {"open", "opened"}:
+        if value in {"open", "opened", "on", "true", "1", "commanded_open"}:
             return "open"
-        if value in {"closed", "close", "shut"}:
+        if value in {"closed", "close", "shut", "off", "false", "0", "commanded_closed"}:
             return "closed"
         return "default"
+
+    def _resolve_backend_device_id(self, valve_id: str) -> str | None:
+        return self.SVG_TO_BACKEND_XV_IDS.get(valve_id)
+
+    def _resolve_svg_valve_id(self, device_id: str) -> str | None:
+        return self.BACKEND_TO_SVG_XV_IDS.get(device_id)
+
+    def _state_to_command_name(self, state: str) -> str | None:
+        normalized = self._normalize_state(state)
+        if normalized == "open":
+            return "open"
+        if normalized == "closed":
+            return "close"
+        return None
+
+    def _command_name_to_state(self, command_name: Any) -> str | None:
+        name = str(command_name or "").strip().lower()
+        if name in self.OPEN_COMMAND_NAMES:
+            return "open"
+        if name in self.CLOSE_COMMAND_NAMES:
+            return "closed"
+        return None
+
+    def _device_is_live_registered(self, device_id: str) -> bool:
+        catalog = getattr(self, "backend_device_catalog", None)
+        getter = getattr(catalog, "get_proxy", None)
+        if callable(getter):
+            proxy = getter(device_id)
+            if proxy is not None:
+                return bool(getattr(proxy, "live_registered", False))
+
+        presentation = getattr(self, "backend_device_presentation", None)
+        if isinstance(presentation, dict):
+            for entry in presentation.get("devices", []):
+                if isinstance(entry, dict) and entry.get("device_id") == device_id:
+                    return bool(entry.get("live_registered", False))
+
+        return False
+
+    def _request_xv_command(self, valve_id: str, state: str, *, source: str) -> None:
+        if self.playback_mode:
+            return
+
+        normalized_state = self._normalize_state(state)
+        command_name = self._state_to_command_name(normalized_state)
+        if command_name is None:
+            logger.warning("[SCADA] Refusing to send XV command with unsupported state %s", state)
+            return
+
+        device_id = self._resolve_backend_device_id(valve_id)
+        if not device_id:
+            logger.warning("[SCADA] No backend device mapping for valve %s", valve_id)
+            return
+
+        request = getattr(self, "request_backend_command", None)
+        if not callable(request):
+            logger.warning("[SCADA] request_backend_command is not attached yet for %s", valve_id)
+            return
+
+        mock_only = not self._device_is_live_registered(device_id)
+
+        operator_action = {
+            "action": "scada_xv_command",
+            "source": source,
+            "valve_id": valve_id,
+            "device_id": device_id,
+            "requested_state": normalized_state,
+        }
+
+        self.pending_xv_commands[valve_id] = normalized_state
+
+        try:
+            request(
+                command_name,
+                device_id=device_id,
+                command_args=[],
+                command_kwargs={},
+                mock_only=mock_only,
+                operator_action=operator_action,
+            )
+            logger.info(
+                "[SCADA] Requested backend XV command %s for %s (%s), mock_only=%s",
+                command_name,
+                valve_id,
+                device_id,
+                mock_only,
+            )
+        except Exception:
+            logger.exception("[SCADA] Failed to request backend XV command for %s", valve_id)
 
     def _sync_all_states_to_svg(self) -> None:
         for valve_id, state in self.xv_states.items():
@@ -243,6 +347,7 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         if self.playback_mode:
             logger.info("[SCADA] Ignoring manual button click in playback mode: %s -> %s", valve_id, state)
             return
+        self._request_xv_command(valve_id, state, source="scada_manual_button")
         self.set_xv_state(valve_id, state)
 
     def on_valve_clicked(self, valve_id: str) -> None:
@@ -254,6 +359,7 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         current = self.xv_states.get(valve_id, "default")
         new_state = "open" if current in ("default", "closed") else "closed"
         logger.info("[SCADA] %s state change: %s -> %s", valve_id, current, new_state)
+        self._request_xv_command(valve_id, new_state, source="scada_svg_click")
         self.set_xv_state(valve_id, new_state)
 
     def set_xv_state(self, valve_id: str, state: str) -> None:
@@ -286,6 +392,36 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
                     feedback_state = entry.get("feedback_state") or entry.get("state")
                     if feedback_state is not None:
                         states[valve_id] = self._normalize_state(feedback_state)
+
+        device_runtime = payload.get("device_runtime")
+        if isinstance(device_runtime, dict):
+            runtime_by_id = device_runtime.get("by_id")
+            if isinstance(runtime_by_id, dict):
+                for device_id, entry in runtime_by_id.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    valve_id = self._resolve_svg_valve_id(device_id)
+                    if valve_id is None:
+                        continue
+
+                    runtime_state = entry.get("runtime_state")
+                    if runtime_state is None:
+                        runtime_state = entry.get("state")
+                    if runtime_state is None:
+                        runtime_state = entry.get("feedback_state")
+                    if runtime_state is None:
+                        runtime_state = entry.get("runtime_status")
+
+                    if runtime_state is not None:
+                        states[valve_id] = self._normalize_state(runtime_state)
+
+        event_kind = str(payload.get("event_kind") or "").strip().lower()
+        if event_kind == "command_out":
+            device_id = payload.get("device_id")
+            valve_id = self._resolve_svg_valve_id(device_id) if isinstance(device_id, str) else None
+            command_state = self._command_name_to_state(payload.get("command_name"))
+            if valve_id is not None and command_state is not None:
+                states[valve_id] = command_state
 
         return states
 
@@ -338,11 +474,35 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         if not isinstance(payload, dict):
             return
         event_kind = str(payload.get("event_kind") or "").strip().lower()
-        if event_kind != "telemetry_in":
+        if event_kind not in {"telemetry_in", "command_out"}:
             return
         states = self._extract_device_states(payload)
         if states:
             self._apply_device_states(states)
+
+    def handle_command_result(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+
+        device_id = payload.get("device_id")
+        valve_id = self._resolve_svg_valve_id(device_id) if isinstance(device_id, str) else None
+        if valve_id is None:
+            return
+
+        if bool(payload.get("success")):
+            self.pending_xv_commands.pop(valve_id, None)
+            return
+
+        logger.warning(
+            "[SCADA] Backend rejected XV command for %s (%s): status=%s error=%s rejection_reason=%s state_reasons=%s",
+            valve_id,
+            device_id,
+            payload.get("status"),
+            payload.get("error"),
+            payload.get("rejection_reason"),
+            payload.get("state_reasons"),
+        )
+        self.pending_xv_commands.pop(valve_id, None)
 
     def reset_all_xv(self) -> None:
         if self.playback_mode:

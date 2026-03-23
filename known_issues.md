@@ -43,3 +43,27 @@ Possible causes:
 - gui/scada_window.py
 
 ---
+
+## 3. Software crash after drag and drop widget to workspace
+
+What happened: By drag and drop widget to workspace in controller window, the software will frozen, crash and close itself.
+
+Reproducibility: Happen everytime when drag and drop to workspace.
+
+Possible causes:
+
+- gui/controller_window.py
+
+---
+
+## 4. Software crash after click run script button in script control
+
+What happened: By click run script button in script control in controller window, the software will crash.
+
+Reproducibility: Happen everytime when click on the button.
+
+Possible causes:
+
+- gui/controller_window.py
+
+---
