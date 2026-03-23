@@ -1406,7 +1406,7 @@ class ControllerWindow(QMainWindow):
             self.timeline.seek_requested.connect(self._on_timeline_seek)
 
         self.graph = GraphView()
-        self.console = ConsoleView(loghandler)
+        self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
         self.exporter = ExportView()
 
         self.device_library = DeviceLibraryPanel()
@@ -1559,12 +1559,12 @@ class ControllerWindow(QMainWindow):
         self.mission_time_label.setAlignment(Qt.AlignCenter)
         center_clock_lay.addWidget(self.mission_time_label, 0, Qt.AlignCenter)
 
-        self.aux_time_label = QLabel("Duration: --" if self.playback_mode else "Not Recording")
+        self.aux_time_label = QLabel("Total Duration: --" if self.playback_mode else "Not Recording")
         self.aux_time_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.aux_time_label.setAlignment(Qt.AlignCenter)
         center_clock_lay.addWidget(self.aux_time_label, 0, Qt.AlignCenter)
         self._set_aux_clock_display(
-            "Duration: --" if self.playback_mode else "Not Recording",
+            "Total Duration: --" if self.playback_mode else "Not Recording",
             accent="playback" if self.playback_mode else "neutral",
         )
 
@@ -1817,6 +1817,11 @@ class ControllerWindow(QMainWindow):
         self.btn_manual_auto.clicked.connect(self._on_manual_auto_clicked)
         blay.addWidget(self.btn_manual_auto)
 
+        if self.playback_mode:
+            for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
+                _btn.setEnabled(False)
+                _btn.setToolTip("Playback mode is view-only")
+
         blay.addStretch(1)
 
         outer_layout.addWidget(main_stack, 1)
@@ -1959,12 +1964,23 @@ class ControllerWindow(QMainWindow):
         duration_seconds = payload.get("duration_seconds")
         if isinstance(duration_seconds, (int, float)):
             self.playback_duration_seconds = max(0.0, float(duration_seconds))
+            self.timeline.set_total_duration(self.playback_duration_seconds)
 
         metadata = payload.get("metadata", {})
+        run_id = payload.get("run_id")
         if isinstance(metadata, dict):
             test_name = metadata.get("test_name") or payload.get("run_id")
+            run_id = metadata.get("run_id") or run_id
             if test_name:
                 self.setWindowTitle(f"minTS Controller - Playback - {test_name}")
+
+        if self.playback_mode:
+            self.console.load_playback_run(run_id=run_id, metadata=metadata if isinstance(metadata, dict) else None)
+            self.console.set_playback_time(self.playback_time)
+            self._refresh_aux_clock_display()
+            if isinstance(self.playback_duration_seconds, (int, float)):
+                self.timeline.set_total_duration(self.playback_duration_seconds)
+            self.timeline.set_current_time(max(0.0, float(self.playback_time)))
 
         self._refresh_aux_clock_display()
 
@@ -2002,6 +2018,11 @@ class ControllerWindow(QMainWindow):
             total_duration_seconds = playback_clock.get("total_duration_seconds")
             if isinstance(total_duration_seconds, (int, float)):
                 self.playback_duration_seconds = max(0.0, float(total_duration_seconds))
+                self.timeline.set_total_duration(self.playback_duration_seconds)
+
+            position_seconds = playback_clock.get("position_seconds")
+            if isinstance(position_seconds, (int, float)):
+                self.playback_time = max(0.0, float(position_seconds))
 
         self._update_time_displays()
 
@@ -2025,21 +2046,28 @@ class ControllerWindow(QMainWindow):
             return f"{hours:d}h {minutes:02d}m {seconds:02d}s"
         return f"{minutes:d}m {seconds:02d}s"
 
+    def _format_precise_duration(self, total_seconds: float | None) -> str:
+        if total_seconds is None:
+            return "--:--.---"
+
+        total_seconds = max(0.0, float(total_seconds))
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        seconds = int(total_seconds % 60)
+        milliseconds = int((total_seconds % 1) * 1000)
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
     def _refresh_aux_clock_display(self) -> None:
         if self.playback_mode:
-            playback_clock = self._backend_playback_clock if isinstance(self._backend_playback_clock, dict) else {}
-            display_text = playback_clock.get("display_text")
-            if isinstance(display_text, str) and display_text.strip():
-                self._set_aux_clock_display(display_text.strip(), accent="playback")
-                return
-
-            if isinstance(self.playback_duration_seconds, (int, float)):
-                self._set_aux_clock_display(
-                    f"Duration: {self._format_short_duration(float(self.playback_duration_seconds))}",
-                    accent="playback",
-                )
-            else:
-                self._set_aux_clock_display("Duration: --", accent="playback")
+            current_text = self._format_precise_duration(self.playback_time)
+            total_text = self._format_precise_duration(self.playback_duration_seconds)
+            self._set_aux_clock_display(
+                f"Playback {current_text} / {total_text}",
+                accent="playback",
+            )
             return
 
         recording_clock = self._backend_recording_clock if isinstance(self._backend_recording_clock, dict) else {}
@@ -2075,7 +2103,21 @@ class ControllerWindow(QMainWindow):
                 mission_seconds = float(backend_seconds)
 
         if self.playback_mode:
-            self._update_mission_time_label(self.playback_time)
+            playback_seconds = self.playback_time
+            if isinstance(self._backend_playback_clock, dict):
+                backend_position = self._backend_playback_clock.get("position_seconds")
+                if isinstance(backend_position, (int, float)):
+                    playback_seconds = max(0.0, float(backend_position))
+                    self.playback_time = playback_seconds
+
+                backend_total = self._backend_playback_clock.get("total_duration_seconds")
+                if isinstance(backend_total, (int, float)):
+                    self.playback_duration_seconds = max(0.0, float(backend_total))
+                    self.timeline.set_total_duration(self.playback_duration_seconds)
+
+            self._update_mission_time_label(playback_seconds)
+            self.timeline.set_current_time(playback_seconds)
+            self.console.set_playback_time(playback_seconds)
         elif mission_seconds is not None:
             self._update_mission_time_label(mission_seconds)
             self.timeline.set_current_time(max(0.0, mission_seconds))
@@ -2092,11 +2134,18 @@ class ControllerWindow(QMainWindow):
         self._refresh_aux_clock_display()
 
     def _update_mission_time_label(self, total_seconds: float):
-        abs_seconds = abs(total_seconds)
+        abs_seconds = abs(float(total_seconds))
         hours = int(abs_seconds // 3600)
         minutes = int((abs_seconds % 3600) // 60)
         seconds = int(abs_seconds % 60)
         milliseconds = int((abs_seconds % 1) * 1000)
+
+        if self.playback_mode:
+            # Playback keeps the script clock as a placeholder for now;
+            # duration lives in the blue subtitle instead.
+            self.mission_time_label.setText("00:00:00.000")
+            return
+
         sign = "+" if total_seconds >= 0 else "-"
         self.mission_time_label.setText(
             f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
@@ -2106,28 +2155,45 @@ class ControllerWindow(QMainWindow):
         self.playback_time = seek_time
         self.timeline.set_current_time(seek_time)
         self._update_mission_time_label(seek_time)
+        self.console.set_playback_time(seek_time)
+        self._refresh_aux_clock_display()
 
         handler = getattr(self.manager, "playback_seek_handler", None)
         if callable(handler):
             handler(seek_time)
 
+    def set_playback_time(self, seek_time: float):
+        self.playback_time = max(0.0, float(seek_time))
+        self.timeline.set_current_time(self.playback_time)
+        self._update_mission_time_label(self.playback_time)
+        self.console.set_playback_time(self.playback_time)
+        self._refresh_aux_clock_display()
+
     # =========================================================
     # Buttons (placeholder behavior)
     # =========================================================
     def _on_continue_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("normal")
         self.set_script_state("running")
 
     def _on_hold_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("hold")
         self.set_script_state("pause")
 
     def _on_abort_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("abort")
         self.set_script_state("pause")
         self.abort()
 
     def _on_manual_auto_clicked(self):
+        if self.playback_mode:
+            return
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import base64
 import json
 import logging
@@ -899,7 +900,13 @@ def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
 def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
     snapshot_state = snapshot_payload.get("state")
     if not isinstance(snapshot_state, dict):
-        return False
+        if isinstance(snapshot_payload, dict) and any(
+            key in snapshot_payload
+            for key in ("device_states", "playback_clock", "mission_clock", "recording_clock", "run")
+        ):
+            snapshot_state = dict(snapshot_payload)
+        else:
+            return False
 
     catalog = getattr(window, "backend_device_catalog", None)
     if catalog is None:
@@ -966,9 +973,15 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
     merged_events = getattr(window, "playback_merged_events", [])
     start_dt = getattr(window, "playback_start_dt", None)
 
+    seek_time = max(0.0, float(seek_time))
+    try:
+        setattr(window, "playback_time", seek_time)
+    except Exception:
+        pass
+
     seek_dt = None
     if isinstance(start_dt, datetime):
-        seek_dt = start_dt + timedelta(seconds=max(0.0, seek_time))
+        seek_dt = start_dt + timedelta(seconds=seek_time)
 
     selected_snapshot = _find_nearest_snapshot_entry(snapshot_index, seek_time)
     replay_start_dt = start_dt
@@ -977,6 +990,26 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
     if selected_snapshot is not None:
         try:
             snapshot_payload = _load_playback_snapshot_payload(selected_snapshot["path"])
+
+            # Keep the snapshot bootstrap, but rewrite its playback clock to the exact
+            # seek target so controller/SCADA do not snap back to the snapshot boundary
+            # (0s / 5s / 10s / 15s / 20s) on mouse release.
+            snapshot_state = snapshot_payload.get("state")
+            if isinstance(snapshot_state, dict):
+                updated_state = dict(snapshot_state)
+                playback_clock = updated_state.get("playback_clock")
+                if isinstance(playback_clock, dict):
+                    playback_clock = dict(playback_clock)
+                else:
+                    playback_clock = {}
+                playback_clock["position_seconds"] = seek_time
+                total_duration = getattr(window, "playback_duration_seconds", None)
+                if isinstance(total_duration, (int, float)):
+                    playback_clock.setdefault("total_duration_seconds", float(total_duration))
+                updated_state["playback_clock"] = playback_clock
+                snapshot_payload = dict(snapshot_payload)
+                snapshot_payload["state"] = updated_state
+
             restored_from_snapshot = _apply_playback_state_snapshot(window, snapshot_payload)
             snapshot_recorded_at = _parse_iso_wall_time(snapshot_payload.get("recorded_at"))
             if snapshot_recorded_at is not None:
@@ -1003,6 +1036,13 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
     setattr(window, "playback_seek_tail_events", tail_events)
     _dispatch_playback_seek_bootstrap(window, payload)
 
+    for event in tail_events:
+        handler = getattr(window, "handle_structured_event", None)
+        if callable(handler):
+            handler(dict(event))
+
+    _apply_exact_playback_seek_state(window, seek_time)
+
     if selected_snapshot is not None:
         log.info(
             "Playback seek %.3fs bootstrapped from snapshot %s with %s tail events",
@@ -1016,6 +1056,108 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
             seek_time,
             len(tail_events),
         )
+
+
+def _safe_get_timeline(window: Any):
+    try:
+        return window.timeline
+    except Exception:
+        return None
+
+def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
+    seek_time = max(0.0, float(seek_time))
+    try:
+        setattr(window, "playback_time", seek_time)
+    except Exception:
+        pass
+
+    def _retime_target(target: Any) -> None:
+        if target is None:
+            return
+
+        try:
+            playback_clock = getattr(target, "_backend_playback_clock", None)
+            if isinstance(playback_clock, dict):
+                updated_clock = dict(playback_clock)
+                updated_clock["position_seconds"] = seek_time
+                setattr(target, "_backend_playback_clock", updated_clock)
+        except Exception:
+            pass
+
+        timeline = _safe_get_timeline(target)
+        if timeline is not None:
+            setter = getattr(timeline, "set_current_time", None)
+            if callable(setter):
+                setter(seek_time)
+
+        console = getattr(target, "console", None)
+        setter = getattr(console, "set_playback_time", None)
+        if callable(setter):
+            setter(seek_time)
+
+        setter = getattr(target, "set_playback_time", None)
+        if callable(setter):
+            setter(seek_time)
+
+    _retime_target(window)
+    for child_name in ("controller", "scada", "script"):
+        _retime_target(getattr(window, child_name, None))
+
+
+def _playback_sync_path(selected_test: str) -> Path:
+    digest = hashlib.sha1(str(selected_test).encode("utf-8")).hexdigest()[:16]
+    return Path("/tmp") / f"mints_scada_playback_seek_{digest}.json"
+
+
+def _write_playback_seek_sync(sync_path: Path | None, seek_time: float) -> None:
+    if sync_path is None:
+        return
+    payload = {
+        "seek_time_seconds": max(0.0, float(seek_time)),
+        "updated_at": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+    }
+    tmp_path = sync_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(sync_path)
+
+
+def _install_playback_seek_sync_poller(parent: QObject, *, window: Any, sync_path: Path) -> QTimer:
+    timer = QTimer(parent)
+    timer.setInterval(120)
+    state = {"mtime_ns": None, "seek_time": None}
+
+    def _poll() -> None:
+        try:
+            stat = sync_path.stat()
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            log.debug("Playback seek sync stat failed for %s: %s", sync_path, exc)
+            return
+
+        if state["mtime_ns"] == stat.st_mtime_ns:
+            return
+        state["mtime_ns"] = stat.st_mtime_ns
+
+        try:
+            payload = json.loads(sync_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.debug("Playback seek sync read failed for %s: %s", sync_path, exc)
+            return
+
+        seek_time = payload.get("seek_time_seconds")
+        if not isinstance(seek_time, (int, float)):
+            return
+        seek_time = max(0.0, float(seek_time))
+        if state["seek_time"] is not None and abs(state["seek_time"] - seek_time) < 1e-9:
+            return
+        state["seek_time"] = seek_time
+        _handle_playback_seek(window, seek_time)
+
+    timer.timeout.connect(_poll)
+    timer.start()
+    _poll()
+    return timer
 
 
 def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
@@ -1058,7 +1200,17 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     setattr(window, "playback_end_dt", end_dt)
     setattr(window, "playback_duration_seconds", duration_s)
     setattr(window, "playback_snapshot_index", playback_snapshot_index)
-    setattr(window, "playback_seek_handler", lambda seek_time: _handle_playback_seek(window, seek_time))
+
+    sync_path_value = getattr(window, "playback_seek_sync_path", None)
+    sync_path = Path(sync_path_value) if isinstance(sync_path_value, str) and sync_path_value else None
+    sync_write = bool(getattr(window, "playback_seek_sync_write", False))
+
+    def _bound_seek_handler(seek_time: float) -> None:
+        _handle_playback_seek(window, seek_time)
+        if sync_write and sync_path is not None:
+            _write_playback_seek_sync(sync_path, seek_time)
+
+    setattr(window, "playback_seek_handler", _bound_seek_handler)
 
     if snapshot_files:
         try:
@@ -1068,23 +1220,27 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         except Exception as exc:
             log.warning("Failed to load initial playback snapshot: %s", exc)
 
-    window.timeline.min_time = 0.0
-    window.timeline.set_total_duration(duration_s)
-
+    timeline = _safe_get_timeline(window)
     added_labels = 0
-    for event in merged_events:
-        label = _build_playback_timeline_label(event)
-        if label is None:
-            continue
-        event_dt = _extract_event_wall_time(event)
-        if event_dt is None:
-            continue
-        relative_s = max(0.0, (event_dt - start_dt).total_seconds())
-        window.timeline.add_event(relative_s, label)
-        added_labels += 1
+    if timeline is not None:
+        timeline.min_time = 0.0
+        timeline.set_total_duration(duration_s)
+        for event in merged_events:
+            label = _build_playback_timeline_label(event)
+            if label is None:
+                continue
+            event_dt = _extract_event_wall_time(event)
+            if event_dt is None:
+                continue
+            relative_s = max(0.0, (event_dt - start_dt).total_seconds())
+            timeline.add_event(relative_s, label)
+            added_labels += 1
+        timeline.set_current_time(0.0)
 
-    window.timeline.set_current_time(0.0)
-    window.playback_time = 0.0
+    try:
+        setattr(window, "playback_time", 0.0)
+    except Exception:
+        pass
 
     playback_payload = {
         "run_id": metadata.get("run_id", run_dir.name),
@@ -1589,6 +1745,14 @@ def _run_playback_window(args: argparse.Namespace) -> int:
         test_name=selected_run_ref,
     )
     facade = WindowHostFacade(window_kind=args.window_kind, window=actual_window)
+    actual_window.manager = facade
+
+    sync_path = _playback_sync_path(args.selected_test)
+    setattr(facade, "playback_seek_sync_path", str(sync_path))
+    setattr(facade, "playback_seek_sync_write", args.window_kind == "controller")
+    setattr(actual_window, "playback_seek_sync_path", str(sync_path))
+    setattr(actual_window, "playback_seek_sync_write", args.window_kind == "controller")
+
     _apply_abort_relay_context(
         actual_window=actual_window,
         facade=facade,
@@ -1604,15 +1768,18 @@ def _run_playback_window(args: argparse.Namespace) -> int:
     )
 
     try:
-        if args.window_kind == "controller":
-            _load_playback_device_proxies(facade)
-            _load_ignitionhistory_playback(facade, args.selected_test)
-        else:
-            run_dir = _resolve_ignitionhistory_run_dir(selected_run_ref)
-            metadata = _load_json_file(run_dir / "metadata.json")
-            test_name = metadata.get("test_name") or metadata.get("run_id") or run_dir.name
+        _load_playback_device_proxies(facade)
+        _load_ignitionhistory_playback(facade, args.selected_test)
+
+        if args.window_kind == "scada":
+            metadata = getattr(facade, "playback_metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            test_name = metadata.get("test_name") or metadata.get("run_id") or selected_run_ref
             source_suffix = " (Rebuild)" if playback_source == _PLAYBACK_SOURCE_REBUILD else ""
             actual_window.setWindowTitle(f"minTS SCADA - Playback - {test_name}{source_suffix}")
+        else:
+            _write_playback_seek_sync(sync_path, 0.0)
     except Exception as exc:
         log.error("Failed to load playback window %s: %s", args.window_kind, exc)
         QMessageBox.critical(
@@ -1624,6 +1791,13 @@ def _run_playback_window(args: argparse.Namespace) -> int:
             f"Error: {exc}",
         )
         return 1
+
+    if args.window_kind == "scada":
+        try:
+            timer = _install_playback_seek_sync_poller(app, window=facade, sync_path=sync_path)
+            setattr(actual_window, "_playback_seek_sync_timer", timer)
+        except Exception as exc:
+            log.warning("Failed to start playback seek sync poller for scada: %s", exc)
 
     playback_identity = _build_backend_client_identity(
         mode="playback",
