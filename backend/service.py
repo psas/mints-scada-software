@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+import settings
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
 from nexus import DataPacket
@@ -36,6 +38,8 @@ from .script_runner import ScriptRunner
 from .state_store import StateStore
 from .structured_builder import StructuredEventBuilder
 from .telemetry_models import NormalizedTelemetryPacket
+
+log = logging.getLogger(__name__)
 
 
 class BackendService:
@@ -118,6 +122,7 @@ class BackendService:
         self._lock = threading.RLock()
         self._connected_clients: set[str] = set()
         self._client_sessions_by_connection_id: dict[str, dict[str, Any]] = {}
+        self._live_startup_state_applied = False
 
         self.supported_messages = [
             "hello",
@@ -313,6 +318,7 @@ class BackendService:
                 skipped_count=result.skipped_count,
             )
             self.health_monitor.sample_once()
+            self._apply_live_startup_state()
 
             yield hardware_status_message(
                 connected=True,
@@ -1026,6 +1032,67 @@ class BackendService:
             runtime_status=f"commanded_{target_state}",
             online=live_registered,
         )
+
+    _VALID_STARTUP_STATES = frozenset({"open", "closed"})
+
+    def _apply_live_startup_state(self) -> None:
+        """Backend-process-lifetime bootstrap from settings.LIVE_STARTUP_STATE.
+
+        Runs at most once per backend process.  For each XV in the config,
+        seeds runtime state only if that device does not already have a
+        stored ``runtime_state``.  Does NOT send hardware commands.  Later
+        command-driven state updates overwrite seeded entries normally.
+        """
+        if self._live_startup_state_applied:
+            return
+        self._live_startup_state_applied = True
+
+        startup_state = getattr(settings, "LIVE_STARTUP_STATE", None)
+        if not startup_state:
+            return
+
+        valid_ids = set(settings.get_controllable_valve_ids())
+        snapshot = self.state_store.get_snapshot()
+        existing_by_id = snapshot.get("device_runtime", {}).get("by_id", {})
+        wall_time = isoformat_z()
+        applied = []
+
+        for device_id, raw_value in startup_state.items():
+            if device_id not in valid_ids:
+                log.warning(
+                    "LIVE_STARTUP_STATE: skipping %r - not an active controllable valve",
+                    device_id,
+                )
+                continue
+
+            state_value = str(raw_value).strip().lower()
+            if state_value not in self._VALID_STARTUP_STATES:
+                log.warning(
+                    "LIVE_STARTUP_STATE: skipping %r for %r - expected 'open' or 'closed'",
+                    raw_value,
+                    device_id,
+                )
+                continue
+
+            existing = existing_by_id.get(device_id, {})
+            if existing.get("runtime_state") is not None:
+                continue
+
+            self.state_store.upsert_device_runtime_shadow(
+                device_id=device_id,
+                wall_time=wall_time,
+                source="live_startup_seed",
+                runtime_state=state_value,
+            )
+            applied.append(device_id)
+
+        if applied:
+            self.health.record_system_event(
+                "live_startup_state_applied",
+                severity="info",
+                device_ids=applied,
+                count=len(applied),
+            )
 
     def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._dispatch_command_request(payload, default_request_source="script")

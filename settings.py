@@ -146,6 +146,26 @@ receiver = "/dev/ttyACM1"
 bitrate = 1000000
 
 
+
+# ---------------------------------------------------------------------
+# Live startup state seed
+# ---------------------------------------------------------------------
+
+# One-time software-side state seed applied when live hardware initializes.
+# Keys are canonical device IDs; values are the expected startup valve state.
+# This does NOT send commands to hardware - it only initializes runtime state
+# so the operator sees correct XV positions immediately on live startup.
+# Later command-driven state updates overwrite these normally.  (Current XVs
+# are blind-controlled with no position-feedback telemetry.)
+LIVE_STARTUP_STATE: dict[str, str] = {
+    "ipa-xv-23": "closed",
+    "ig-xv-24": "closed",
+    "ipa-xv-25": "closed",
+    "lox-xv-26": "open",
+    "ig-xv-27": "closed",
+}
+
+
 # 
 # Schema and ordering constants
 # 
