@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize
 import qdarkstyle
 import logging
 import math
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from gui import (
@@ -49,6 +50,13 @@ def classify_system_bucket(device_systems):
 
     combo = " + ".join(systems)
     return "Cross-System", combo
+
+
+@dataclass
+class GraphCardState:
+    title: str = "Signal Graph"
+    device_ids: list[str] = field(default_factory=list)
+    duration_s: int = 60
 
 
 class CollapsibleSection(QFrame):
@@ -833,7 +841,193 @@ class DeviceLibraryPanel(QWidget):
             self.deviceActivated.emit(device_id)
 
 
-class DeviceWorkspace(QWidget):
+class GraphLegendChip(QFrame):
+    def __init__(self, label: str, color: str, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: #1a1d1f;
+                border: 1px solid #3b3f42;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #d9d9d9;
+                border: none;
+                background: transparent;
+            }
+        """
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {color}; border: none; background: transparent;")
+        text = QLabel(label)
+        layout.addWidget(dot, 0)
+        layout.addWidget(text, 0)
+
+
+class GraphWidgetCard(QFrame):
+    dropDeviceRequested = pyqtSignal(str)
+    settingsRequested = pyqtSignal()
+
+    def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.graph_widget = None
+
+        self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: #15181a;
+                border: 1px solid #3a3f44;
+                border-radius: 12px;
+            }
+            QLabel {
+                color: #f0f0f0;
+                background: transparent;
+                border: none;
+            }
+            QPushButton {
+                color: #e8e8e8;
+                background: #202428;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background: #2a2f34;
+            }
+        """
+        )
+
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(12, 12, 12, 12)
+        self.main_layout.setSpacing(10)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
+        title_block = QVBoxLayout()
+        title_block.setContentsMargins(0, 0, 0, 0)
+        title_block.setSpacing(2)
+
+        self.title_label = QLabel()
+        title_font = QFont()
+        title_font.setPointSize(13)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+
+        self.summary_label = QLabel()
+        self.summary_label.setStyleSheet("color: #aab2bd; border: none; background: transparent;")
+
+        title_block.addWidget(self.title_label)
+        title_block.addWidget(self.summary_label)
+
+        header_layout.addLayout(title_block, 1)
+
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setFixedSize(34, 30)
+        self.settings_button.setToolTip("Graph widget settings will be wired in the next commit.")
+        self.settings_button.clicked.connect(self.settingsRequested.emit)
+        header_layout.addWidget(self.settings_button, 0, Qt.AlignTop)
+
+        self.main_layout.addLayout(header_layout)
+
+        self.graph_host = QFrame()
+        self.graph_host.setFrameShape(QFrame.NoFrame)
+        self.graph_host.setStyleSheet(
+            "QFrame { background: #101214; border: 1px solid #2c3136; border-radius: 10px; }"
+        )
+        self.graph_layout = QVBoxLayout(self.graph_host)
+        self.graph_layout.setContentsMargins(8, 8, 8, 8)
+        self.graph_layout.setSpacing(0)
+        self.main_layout.addWidget(self.graph_host, 1)
+
+        self.legend_row = QWidget()
+        self.legend_layout = QHBoxLayout(self.legend_row)
+        self.legend_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_layout.setSpacing(8)
+        self.main_layout.addWidget(self.legend_row, 0)
+
+        self._set_graph_widget(graph_widget)
+        self.sync_from_state()
+        self.sync_legend([])
+
+    def _set_graph_widget(self, graph_widget: QWidget | None):
+        while self.graph_layout.count():
+            item = self.graph_layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.setParent(None)
+
+        self.graph_widget = graph_widget
+        if graph_widget is None:
+            placeholder = QLabel("Graph area will appear here when channels are added.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            self.graph_layout.addWidget(placeholder)
+        else:
+            self.graph_layout.addWidget(graph_widget)
+
+    def sync_from_state(self):
+        self.title_label.setText(self.state.title or "Signal Graph")
+        count = len(self.state.device_ids)
+        input_word = "input" if count == 1 else "inputs"
+        self.summary_label.setText(f"{count} {input_word} · {int(self.state.duration_s)}s")
+
+    def sync_legend(self, entries: list[tuple[str, str]]):
+        while self.legend_layout.count():
+            item = self.legend_layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.deleteLater()
+
+        if not entries:
+            label = QLabel("Legend will appear here when channels are graphed.")
+            label.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            self.legend_layout.addWidget(label, 0)
+            self.legend_layout.addStretch(1)
+            return
+
+        for name, color in entries:
+            self.legend_layout.addWidget(GraphLegendChip(name, color), 0)
+
+        self.legend_layout.addStretch(1)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.ignore()
+            return
+
+        raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
+        if raw:
+            self.dropDeviceRequested.emit(raw)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
+class GraphWorkspace(QWidget):
     deviceDropped = pyqtSignal(str)
 
     def __init__(self, graph_widget: QWidget, parent=None):
@@ -844,10 +1038,14 @@ class DeviceWorkspace(QWidget):
         self.graph_widget.hide()
 
         self._graph_device_ids = set()
+        self._graph_device_order: list[str] = []
+        self._device_names: dict[str, str] = {}
+        self._cards: list[GraphWidgetCard] = []
+        self._primary_card: GraphWidgetCard | None = None
 
         self.placeholder = QLabel(
             "Drag active signal devices here\n\n"
-            "Only active devices with electrical I/O can be added to the workspace."
+            "A scrollable graph workspace shell is ready. New graph cards will stack here."
         )
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setStyleSheet(
@@ -862,37 +1060,123 @@ class DeviceWorkspace(QWidget):
         """
         )
 
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent;")
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll_layout.setSpacing(12)
+        self.scroll_layout.addStretch(1)
+        self.scroll_area.setWidget(self.scroll_content)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         layout.addWidget(self.placeholder)
-        layout.addWidget(self.graph_widget, 1)
+        layout.addWidget(self.scroll_area, 1)
+
+        duration_changed = getattr(self.graph_widget, "durationChanged", None)
+        if duration_changed is not None:
+            duration_changed.connect(self._on_graph_duration_changed)
+
+        self._refresh_empty_state()
 
     def _refresh_empty_state(self):
-        has_graph = bool(self._graph_device_ids)
-        self.placeholder.setVisible(not has_graph)
-        self.graph_widget.setVisible(has_graph)
+        has_cards = bool(self._cards)
+        self.placeholder.setVisible(not has_cards)
+        self.scroll_area.setVisible(has_cards)
+        self.graph_widget.setVisible(has_cards)
+
+    def _insert_card(self, card: GraphWidgetCard):
+        self.scroll_layout.insertWidget(max(0, self.scroll_layout.count() - 1), card)
+
+    def _default_duration(self) -> int:
+        try:
+            return int(getattr(self.graph_widget, "duration", 60))
+        except Exception:
+            return 60
+
+    def _default_title(self) -> str:
+        if not self._graph_device_order:
+            return "Signal Graph"
+
+        labels = [self._device_names.get(device_id, device_id) for device_id in self._graph_device_order]
+        return ", ".join(labels)
+
+    def _ensure_primary_card(self) -> GraphWidgetCard:
+        if self._primary_card is None:
+            state = GraphCardState(
+                title=self._default_title(),
+                device_ids=list(self._graph_device_order),
+                duration_s=self._default_duration(),
+            )
+            self._primary_card = GraphWidgetCard(state, graph_widget=self.graph_widget)
+            self._primary_card.dropDeviceRequested.connect(self.deviceDropped.emit)
+            self._primary_card.settingsRequested.connect(self._on_settings_requested)
+            self._cards.append(self._primary_card)
+            self._insert_card(self._primary_card)
+
+        self._refresh_empty_state()
+        return self._primary_card
+
+
+    def _legend_entries(self) -> list[tuple[str, str]]:
+        entries = []
+        sensors = getattr(self.graph_widget, "sensors", [])
+        lines = getattr(self.graph_widget, "lines", [])
+
+        for sensor, line in zip(sensors, lines):
+            label = getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
+            color = line.get_color() if hasattr(line, "get_color") else "#d0d0d0"
+            entries.append((label, color))
+
+        return entries
+
+    def _sync_primary_card(self):
+        if self._primary_card is None:
+            return
+
+        self._primary_card.state.title = self._default_title()
+        self._primary_card.state.device_ids = list(self._graph_device_order)
+        self._primary_card.state.duration_s = self._default_duration()
+        self._primary_card.sync_from_state()
+        self._primary_card.sync_legend(self._legend_entries())
+
+    def _on_graph_duration_changed(self, value: int):
+        if self._primary_card is None:
+            return
+
+        self._primary_card.state.duration_s = int(value)
+        self._primary_card.sync_from_state()
+
+    def _on_settings_requested(self):
+        log.info("Graph widget settings shell added. Wiring lands in the next commit.")
 
     def add_graph_device(self, device):
         device_id = getattr(device, "device_id", None)
         if not device_id or device_id in self._graph_device_ids:
+            self._sync_primary_card()
             self._refresh_empty_state()
             return False
 
-        add_sensor = getattr(self.graph_widget, "addSensor", None)
-        if not callable(add_sensor):
-            logging.getLogger("ControllerWindow").error(
-                "[WORKSPACE] Graph widget cannot accept dropped devices."
-            )
-            self._refresh_empty_state()
-            return False
-
-        added = add_sensor(device, True)
-        if added is False:
-            self._refresh_empty_state()
-            return False
-
+        self.graph_widget.addSensor(device, True)
         self._graph_device_ids.add(device_id)
+        self._graph_device_order.append(device_id)
+        self._device_names[device_id] = getattr(device, "display_name", device_id)
+
+        card = self._ensure_primary_card()
+        card.state.title = self._default_title()
+        card.state.device_ids = list(self._graph_device_order)
+        card.state.duration_s = self._default_duration()
+        card.sync_from_state()
+        card.sync_legend(self._legend_entries())
+
+        self.graph_widget.show()
         self._refresh_empty_state()
         return True
 
@@ -919,7 +1203,6 @@ class DeviceWorkspace(QWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
-
 
 
 class EngineForceWidget(QWidget):
@@ -1424,7 +1707,7 @@ class ControllerWindow(QMainWindow):
         self.exporter = ExportView()
 
         self.device_library = DeviceLibraryPanel()
-        self.workspace = DeviceWorkspace(self.graph)
+        self.workspace = GraphWorkspace(self.graph)
         self.workspace.deviceDropped.connect(self._on_device_requested)
         self.device_library.deviceActivated.connect(self._on_device_requested)
 
@@ -2227,10 +2510,10 @@ class ControllerWindow(QMainWindow):
             self.log.info(f"Ignoring mechanical device request: {device_id}")
             return
 
-        added = self.workspace.add_graph_device(device)
-        if added:
+        if self.workspace.add_graph_device(device):
             self.log.info(f"Added active signal device to workspace: {device_id}")
-
+        else:
+            self.log.info(f"Workspace request was ignored for device: {device_id}")
 
     # =========================================================
     # Device hooks

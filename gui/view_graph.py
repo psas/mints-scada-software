@@ -11,7 +11,7 @@ import matplotlib.lines
 import matplotlib.pyplot
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg  # type: ignore
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import time
 import numpy as np
 from nexus import GenericSensor
@@ -21,6 +21,8 @@ log = logging.getLogger("Graph")
 
 
 class GraphView(QWidget):
+    durationChanged = pyqtSignal(int)
+
     FOREGROUND_COLOR = "#f4f4f4"
     BACKGROUND_COLOR = "#19232d"
     LEGEND_COLOR = "#353535"
@@ -117,6 +119,7 @@ class GraphView(QWidget):
 
     def _updateSpin(self):
         self.duration = self.spin_box.value()
+        self.durationChanged.emit(int(self.duration))
         self._update()
 
     def _update(self):
@@ -193,6 +196,7 @@ class GraphView(QWidget):
     def setDuration(self, duration: int):
         """Sets the duration of the graph"""
         self.duration = duration
+        self.durationChanged.emit(int(self.duration))
         self._update()
 
     def enableChannel(self, channel: str, state: bool = True) -> bool:
