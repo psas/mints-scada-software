@@ -1028,6 +1028,8 @@ class GraphWidgetSettingsPanel(QFrame):
 class GraphWidgetCard(QFrame):
     dropDeviceRequested = pyqtSignal(str, object)
     settingsSaved = pyqtSignal(object, list, int)
+    moveUpRequested = pyqtSignal(object)
+    moveDownRequested = pyqtSignal(object)
 
     def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, name_resolver=None, parent=None):
         super().__init__(parent)
@@ -1088,6 +1090,18 @@ class GraphWidgetCard(QFrame):
 
         header_layout.addLayout(title_block, 1)
 
+        self.move_up_button = QPushButton("↑")
+        self.move_up_button.setFixedSize(34, 30)
+        self.move_up_button.setToolTip("Move widget up")
+        self.move_up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
+        header_layout.addWidget(self.move_up_button, 0, Qt.AlignTop)
+
+        self.move_down_button = QPushButton("↓")
+        self.move_down_button.setFixedSize(34, 30)
+        self.move_down_button.setToolTip("Move widget down")
+        self.move_down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
+        header_layout.addWidget(self.move_down_button, 0, Qt.AlignTop)
+
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFixedSize(34, 30)
         self.settings_button.setToolTip("Show graph widget settings")
@@ -1143,6 +1157,10 @@ class GraphWidgetCard(QFrame):
         count = len(self.state.device_ids)
         input_word = "input" if count == 1 else "inputs"
         self.summary_label.setText(f"{count} {input_word} · {int(self.state.duration_s)}s")
+
+    def set_reorder_enabled(self, can_move_up: bool, can_move_down: bool):
+        self.move_up_button.setEnabled(bool(can_move_up))
+        self.move_down_button.setEnabled(bool(can_move_down))
 
     def sync_legend(self, entries: list[tuple[str, str]]):
         while self.legend_layout.count():
@@ -1351,11 +1369,15 @@ class GraphWorkspace(QWidget):
         card = GraphWidgetCard(state, graph_widget=graph_widget, name_resolver=self._device_name)
         card.dropDeviceRequested.connect(self.deviceDropped.emit)
         card.settingsSaved.connect(self._apply_card_settings)
+        card.moveUpRequested.connect(self.move_card_up)
+        card.moveDownRequested.connect(self.move_card_down)
         self._wire_card_graph_signals(card)
         self._cards.append(card)
         self._insert_card(card)
         self._sync_card(card)
         self._refresh_empty_state()
+        self._update_reorder_controls()
+        self._update_reorder_controls()
         return card
 
     def _sync_card(self, card: GraphWidgetCard):
@@ -1381,6 +1403,36 @@ class GraphWorkspace(QWidget):
     def _device_name(self, device_id: str) -> str:
         return self._device_names.get(device_id, device_id)
 
+    def _update_reorder_controls(self):
+        total = len(self._cards)
+        for index, card in enumerate(self._cards):
+            card.set_reorder_enabled(index > 0, index < total - 1)
+
+    def move_card_up(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+        index = self._cards.index(card)
+        if index <= 0:
+            self._update_reorder_controls()
+            return
+        self._cards[index - 1], self._cards[index] = self._cards[index], self._cards[index - 1]
+        insert_at = max(0, self.scroll_layout.count() - 1)
+        self.scroll_layout.removeWidget(card)
+        self.scroll_layout.insertWidget(index - 1, card)
+        self._update_reorder_controls()
+
+    def move_card_down(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+        index = self._cards.index(card)
+        if index >= len(self._cards) - 1:
+            self._update_reorder_controls()
+            return
+        self._cards[index], self._cards[index + 1] = self._cards[index + 1], self._cards[index]
+        self.scroll_layout.removeWidget(card)
+        self.scroll_layout.insertWidget(index + 1, card)
+        self._update_reorder_controls()
+
     def _remove_card(self, card: GraphWidgetCard):
         if card not in self._cards:
             return
@@ -1404,6 +1456,7 @@ class GraphWorkspace(QWidget):
         card.setParent(None)
         card.deleteLater()
         self._refresh_empty_state()
+        self._update_reorder_controls()
 
     def _apply_card_settings(self, card: GraphWidgetCard, device_ids: list[str], duration_s: int):
         if card not in self._cards:
@@ -1443,6 +1496,7 @@ class GraphWorkspace(QWidget):
 
         self._sync_card(card)
         self._refresh_empty_state()
+        self._update_reorder_controls()
 
     def add_graph_device(self, device, target_card: GraphWidgetCard | None = None):
         device_id = getattr(device, "device_id", None)
