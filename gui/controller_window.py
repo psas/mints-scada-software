@@ -8,6 +8,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
+from logging import log
 
 from gui import (
     GraphView,
@@ -841,34 +842,134 @@ class DeviceLibraryPanel(QWidget):
             self.deviceActivated.emit(device_id)
 
 
-class GraphLegendChip(QFrame):
-    def __init__(self, label: str, color: str, parent=None):
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, h_spacing=8, v_spacing=8):
         super().__init__(parent)
+        self._items = []
+        self._h_spacing = h_spacing
+        self._v_spacing = v_spacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x = effective.x()
+        y = effective.y()
+        line_height = 0
+
+        for item in self._items:
+            widget = item.widget()
+            space_x = self._h_spacing
+            space_y = self._v_spacing
+            hint = item.sizeHint()
+            next_x = x + hint.width() + space_x
+            if line_height > 0 and next_x - space_x > effective.right() + 1:
+                x = effective.x()
+                y += line_height + space_y
+                next_x = x + hint.width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(x, y, hint.width(), hint.height()))
+
+            x = next_x
+            line_height = max(line_height, hint.height())
+
+        total_height = (y + line_height - rect.y()) + margins.bottom()
+        return max(total_height, 0)
+
+
+class GraphLegendChip(QFrame):
+    toggled = pyqtSignal(str, bool)
+
+    def __init__(self, device_id: str, label: str, color: str, enabled: bool = True, parent=None):
+        super().__init__(parent)
+        self.device_id = device_id
+        self._label_text = label
+        self._accent_color = color
+        self._enabled_state = bool(enabled)
+
+        self.setCursor(Qt.PointingHandCursor)
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet(
-            """
-            QFrame {
-                background: #1a1d1f;
-                border: 1px solid #3b3f42;
-                border-radius: 10px;
-            }
-            QLabel {
-                color: #d9d9d9;
-                border: none;
-                background: transparent;
-            }
-        """
-        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
 
-        dot = QLabel("●")
-        dot.setStyleSheet(f"color: {color}; border: none; background: transparent;")
-        text = QLabel(label)
-        layout.addWidget(dot, 0)
-        layout.addWidget(text, 0)
+        self.dot_label = QLabel("●")
+        self.text_label = QLabel(label)
+        self.text_label.setWordWrap(False)
+        layout.addWidget(self.dot_label, 0)
+        layout.addWidget(self.text_label, 0)
+
+        self.set_series_enabled(self._enabled_state)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.set_series_enabled(not self._enabled_state)
+            self.toggled.emit(self.device_id, self._enabled_state)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def set_series_enabled(self, enabled: bool):
+        self._enabled_state = bool(enabled)
+        if self._enabled_state:
+            self.setStyleSheet(
+                f"QFrame {{ background: #1a1d1f; border: 1px solid #3b3f42; border-radius: 10px; }} "
+                f"QLabel {{ color: #d9d9d9; border: none; background: transparent; }}"
+            )
+            self.dot_label.setStyleSheet(
+                f"color: {self._accent_color}; border: none; background: transparent;"
+            )
+            self.text_label.setStyleSheet("color: #d9d9d9; border: none; background: transparent;")
+        else:
+            self.setStyleSheet(
+                "QFrame { background: #141618; border: 1px solid #2d3134; border-radius: 10px; } "
+                "QLabel { color: #6f7478; border: none; background: transparent; }"
+            )
+            self.dot_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
+            self.text_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
 
 
 class GraphWidgetSettingsPanel(QFrame):
@@ -1072,23 +1173,30 @@ class GraphWidgetCard(QFrame):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
 
-        title_block = QVBoxLayout()
+        self.title_container = QWidget()
+        self.title_container.setStyleSheet("background: transparent; border: none;")
+        self.title_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        title_block = QVBoxLayout(self.title_container)
         title_block.setContentsMargins(0, 0, 0, 0)
         title_block.setSpacing(2)
 
         self.title_label = QLabel()
+        self.title_label.setWordWrap(True)
+        self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         title_font = QFont()
         title_font.setPointSize(13)
         title_font.setBold(True)
         self.title_label.setFont(title_font)
 
         self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.summary_label.setStyleSheet("color: #aab2bd; border: none; background: transparent;")
 
         title_block.addWidget(self.title_label)
         title_block.addWidget(self.summary_label)
 
-        header_layout.addLayout(title_block, 1)
+        header_layout.addWidget(self.title_container, 1)
 
         self.move_up_button = QPushButton("↑")
         self.move_up_button.setFixedSize(34, 30)
@@ -1126,9 +1234,8 @@ class GraphWidgetCard(QFrame):
         self.main_layout.addWidget(self.graph_host, 1)
 
         self.legend_row = QWidget()
-        self.legend_layout = QHBoxLayout(self.legend_row)
-        self.legend_layout.setContentsMargins(0, 0, 0, 0)
-        self.legend_layout.setSpacing(8)
+        self.legend_layout = FlowLayout(self.legend_row, margin=0, h_spacing=8, v_spacing=8)
+        self.legend_row.setLayout(self.legend_layout)
         self.main_layout.addWidget(self.legend_row, 0)
 
         self._set_graph_widget(graph_widget)
@@ -1156,13 +1263,15 @@ class GraphWidgetCard(QFrame):
         self.title_label.setText(self.state.title or "Signal Graph")
         count = len(self.state.device_ids)
         input_word = "input" if count == 1 else "inputs"
-        self.summary_label.setText(f"{count} {input_word} · {int(self.state.duration_s)}s")
+        self.summary_label.setText(f"{count} {input_word} · Duration: {int(self.state.duration_s)}s")
+        self.title_label.updateGeometry()
+        self.summary_label.updateGeometry()
 
     def set_reorder_enabled(self, can_move_up: bool, can_move_down: bool):
         self.move_up_button.setEnabled(bool(can_move_up))
         self.move_down_button.setEnabled(bool(can_move_down))
 
-    def sync_legend(self, entries: list[tuple[str, str]]):
+    def sync_legend(self, entries):
         while self.legend_layout.count():
             item = self.legend_layout.takeAt(0)
             child = item.widget()
@@ -1171,15 +1280,43 @@ class GraphWidgetCard(QFrame):
 
         if not entries:
             label = QLabel("Legend will appear here when channels are graphed.")
+            label.setWordWrap(True)
             label.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
-            self.legend_layout.addWidget(label, 0)
-            self.legend_layout.addStretch(1)
+            self.legend_layout.addWidget(label)
             return
 
-        for name, color in entries:
-            self.legend_layout.addWidget(GraphLegendChip(name, color), 0)
+        for entry in entries:
+            if isinstance(entry, dict):
+                device_id = entry.get("device_id", "")
+                name = entry.get("label", device_id or "Unknown")
+                color = entry.get("color", "#d0d0d0")
+                enabled = bool(entry.get("enabled", True))
+            else:
+                if len(entry) >= 4:
+                    device_id, name, color, enabled = entry[0], entry[1], entry[2], bool(entry[3])
+                elif len(entry) >= 3:
+                    device_id, name, color = entry[0], entry[1], entry[2]
+                    enabled = True
+                else:
+                    device_id = name = entry[0]
+                    color = entry[1] if len(entry) > 1 else "#d0d0d0"
+                    enabled = True
 
-        self.legend_layout.addStretch(1)
+            chip = GraphLegendChip(device_id, name, color, enabled=enabled)
+            chip.toggled.connect(self._on_legend_toggled)
+            self.legend_layout.addWidget(chip)
+
+        self.legend_row.updateGeometry()
+
+    def _on_legend_toggled(self, device_id: str, enabled: bool):
+        if self.graph_widget is None:
+            return
+        toggle = getattr(self.graph_widget, "enableChannel", None)
+        if callable(toggle):
+            try:
+                toggle(device_id, enabled)
+            except Exception:
+                log.exception("Failed to toggle graph series %s", device_id)
 
     def _device_name(self, device_id: str) -> str:
         try:
@@ -1207,6 +1344,12 @@ class GraphWidgetCard(QFrame):
     def _on_settings_saved(self, device_ids: list[str], duration_s: int):
         self.close_settings_panel()
         self.settingsSaved.emit(self, list(device_ids), int(duration_s))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.title_label.updateGeometry()
+        self.summary_label.updateGeometry()
+        self.legend_row.updateGeometry()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
@@ -1310,7 +1453,7 @@ class GraphWorkspace(QWidget):
         labels = [self._device_names.get(device_id, device_id) for device_id in device_ids]
         return ", ".join(labels)
 
-    def _legend_entries_for(self, graph_widget: QWidget | None) -> list[tuple[str, str]]:
+    def _legend_entries_for(self, graph_widget: QWidget | None):
         if graph_widget is None:
             return []
 
@@ -1324,11 +1467,19 @@ class GraphWorkspace(QWidget):
         entries = []
         sensors = getattr(graph_widget, "sensors", [])
         lines = getattr(graph_widget, "lines", [])
+        is_enabled = getattr(graph_widget, "is_channel_enabled", None)
 
         for sensor, line in zip(sensors, lines):
-            label = getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
+            device_id = getattr(sensor, "device_id", "")
+            label = getattr(sensor, "display_name", device_id or "Unknown")
             color = line.get_color() if hasattr(line, "get_color") else "#d0d0d0"
-            entries.append((label, color))
+            enabled = True
+            if callable(is_enabled) and device_id:
+                try:
+                    enabled = bool(is_enabled(device_id))
+                except Exception:
+                    enabled = True
+            entries.append((device_id, label, color, enabled))
 
         return entries
 

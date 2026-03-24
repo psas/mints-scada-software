@@ -146,10 +146,19 @@ class GraphView(QWidget):
         self.axes.set_xlim(-self.duration, 0)
         self.canvas.draw_idle()
 
-    def legend_entries(self) -> list[tuple[str, str]]:
+    def is_channel_enabled(self, channel: str) -> bool:
+        return self._enabled_channels.get(channel, True)
+
+    def legend_entries(self) -> list[tuple[str, str, str, bool]]:
         entries = []
         for sensor, line in zip(self.sensors, self.lines):
-            entries.append((self._display_label(sensor), line.get_color()))
+            runtime_id = self._runtime_id(sensor)
+            entries.append((
+                runtime_id,
+                self._display_label(sensor),
+                line.get_color(),
+                self.is_channel_enabled(runtime_id),
+            ))
         return entries
 
     def add_device(self, sensor: object, graphed: bool = True) -> bool:
@@ -229,6 +238,7 @@ class GraphView(QWidget):
         for sensor in self.sensors:
             if self._runtime_id(sensor) == channel:
                 self._enabled_channels[channel] = bool(state)
+                self.seriesChanged.emit()
                 self._update()
                 return True
         return False
