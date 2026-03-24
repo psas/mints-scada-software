@@ -872,8 +872,8 @@ class GraphLegendChip(QFrame):
 
 
 class GraphWidgetCard(QFrame):
-    dropDeviceRequested = pyqtSignal(str)
-    settingsRequested = pyqtSignal()
+    dropDeviceRequested = pyqtSignal(str, object)
+    settingsRequested = pyqtSignal(object)
 
     def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, parent=None):
         super().__init__(parent)
@@ -935,8 +935,8 @@ class GraphWidgetCard(QFrame):
 
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFixedSize(34, 30)
-        self.settings_button.setToolTip("Graph widget settings will be wired in the next commit.")
-        self.settings_button.clicked.connect(self.settingsRequested.emit)
+        self.settings_button.setToolTip("Graph widget settings land in the next commit.")
+        self.settings_button.clicked.connect(lambda: self.settingsRequested.emit(self))
         header_layout.addWidget(self.settings_button, 0, Qt.AlignTop)
 
         self.main_layout.addLayout(header_layout)
@@ -1021,31 +1021,26 @@ class GraphWidgetCard(QFrame):
 
         raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
         if raw:
-            self.dropDeviceRequested.emit(raw)
+            self.dropDeviceRequested.emit(raw, self)
             event.acceptProposedAction()
         else:
             event.ignore()
 
 
 class GraphWorkspace(QWidget):
-    deviceDropped = pyqtSignal(str)
+    deviceDropped = pyqtSignal(str, object)
 
     def __init__(self, graph_widget: QWidget, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
 
-        self.graph_widget = graph_widget
-        self.graph_widget.hide()
-
-        self._graph_device_ids = set()
-        self._graph_device_order: list[str] = []
+        self._primary_graph_widget = graph_widget
+        self._primary_graph_claimed = False
         self._device_names: dict[str, str] = {}
         self._cards: list[GraphWidgetCard] = []
-        self._primary_card: GraphWidgetCard | None = None
-
         self.placeholder = QLabel(
             "Drag active signal devices here\n\n"
-            "A scrollable graph workspace shell is ready. New graph cards will stack here."
+            "Drop on empty workspace to create a new graph widget, or drop on a card to add another input."
         )
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setStyleSheet(
@@ -1080,57 +1075,40 @@ class GraphWorkspace(QWidget):
         layout.addWidget(self.placeholder)
         layout.addWidget(self.scroll_area, 1)
 
-        duration_changed = getattr(self.graph_widget, "durationChanged", None)
-        if duration_changed is not None:
-            duration_changed.connect(self._on_graph_duration_changed)
-
-        series_changed = getattr(self.graph_widget, "seriesChanged", None)
-        if series_changed is not None:
-            series_changed.connect(self._sync_primary_card)
-
         self._refresh_empty_state()
 
     def _refresh_empty_state(self):
         has_cards = bool(self._cards)
         self.placeholder.setVisible(not has_cards)
         self.scroll_area.setVisible(has_cards)
-        self.graph_widget.setVisible(has_cards)
 
     def _insert_card(self, card: GraphWidgetCard):
         self.scroll_layout.insertWidget(max(0, self.scroll_layout.count() - 1), card)
 
     def _default_duration(self) -> int:
+        if self._cards:
+            first_graph = getattr(self._cards[0], "graph_widget", None)
+            try:
+                return int(getattr(first_graph, "duration", 60))
+            except Exception:
+                return 60
+
         try:
-            return int(getattr(self.graph_widget, "duration", 60))
+            return int(getattr(self._primary_graph_widget, "duration", 60))
         except Exception:
             return 60
 
-    def _default_title(self) -> str:
-        if not self._graph_device_order:
+    def _title_for_ids(self, device_ids: list[str]) -> str:
+        if not device_ids:
             return "Signal Graph"
-
-        labels = [self._device_names.get(device_id, device_id) for device_id in self._graph_device_order]
+        labels = [self._device_names.get(device_id, device_id) for device_id in device_ids]
         return ", ".join(labels)
 
-    def _ensure_primary_card(self) -> GraphWidgetCard:
-        if self._primary_card is None:
-            state = GraphCardState(
-                title=self._default_title(),
-                device_ids=list(self._graph_device_order),
-                duration_s=self._default_duration(),
-            )
-            self._primary_card = GraphWidgetCard(state, graph_widget=self.graph_widget)
-            self._primary_card.dropDeviceRequested.connect(self.deviceDropped.emit)
-            self._primary_card.settingsRequested.connect(self._on_settings_requested)
-            self._cards.append(self._primary_card)
-            self._insert_card(self._primary_card)
+    def _legend_entries_for(self, graph_widget: QWidget | None) -> list[tuple[str, str]]:
+        if graph_widget is None:
+            return []
 
-        self._refresh_empty_state()
-        return self._primary_card
-
-
-    def _legend_entries(self) -> list[tuple[str, str]]:
-        legend_entries = getattr(self.graph_widget, "legend_entries", None)
+        legend_entries = getattr(graph_widget, "legend_entries", None)
         if callable(legend_entries):
             try:
                 return list(legend_entries())
@@ -1138,8 +1116,8 @@ class GraphWorkspace(QWidget):
                 log.exception("Failed to read graph legend entries from GraphView")
 
         entries = []
-        sensors = getattr(self.graph_widget, "sensors", [])
-        lines = getattr(self.graph_widget, "lines", [])
+        sensors = getattr(graph_widget, "sensors", [])
+        lines = getattr(graph_widget, "lines", [])
 
         for sensor, line in zip(sensors, lines):
             label = getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
@@ -1148,46 +1126,104 @@ class GraphWorkspace(QWidget):
 
         return entries
 
-    def _sync_primary_card(self):
-        if self._primary_card is None:
+    def _wire_card_graph_signals(self, card: GraphWidgetCard):
+        graph_widget = card.graph_widget
+        if graph_widget is None:
             return
 
-        self._primary_card.state.title = self._default_title()
-        self._primary_card.state.device_ids = list(self._graph_device_order)
-        self._primary_card.state.duration_s = self._default_duration()
-        self._primary_card.sync_from_state()
-        self._primary_card.sync_legend(self._legend_entries())
+        duration_changed = getattr(graph_widget, "durationChanged", None)
+        if duration_changed is not None:
+            duration_changed.connect(lambda value, c=card: self._on_card_duration_changed(c, value))
 
-    def _on_graph_duration_changed(self, value: int):
-        if self._primary_card is None:
+        series_changed = getattr(graph_widget, "seriesChanged", None)
+        if series_changed is not None:
+            series_changed.connect(lambda c=card: self._sync_card(c))
+
+    def _new_graph_widget(self) -> QWidget:
+        if not self._primary_graph_claimed:
+            self._primary_graph_claimed = True
+            return self._primary_graph_widget
+        return GraphView()
+
+    def _create_card(self) -> GraphWidgetCard:
+        graph_widget = self._new_graph_widget()
+        state = GraphCardState(
+            title="Signal Graph",
+            device_ids=[],
+            duration_s=self._default_duration(),
+        )
+
+        set_duration = getattr(graph_widget, "set_duration", None)
+        if callable(set_duration):
+            try:
+                set_duration(int(state.duration_s))
+            except Exception:
+                log.exception("Failed to apply initial duration to graph widget")
+
+        card = GraphWidgetCard(state, graph_widget=graph_widget)
+        card.dropDeviceRequested.connect(self.deviceDropped.emit)
+        card.settingsRequested.connect(self._on_settings_requested)
+        self._wire_card_graph_signals(card)
+        self._cards.append(card)
+        self._insert_card(card)
+        self._sync_card(card)
+        self._refresh_empty_state()
+        return card
+
+    def _sync_card(self, card: GraphWidgetCard):
+        if card not in self._cards:
             return
 
-        self._primary_card.state.duration_s = int(value)
-        self._primary_card.sync_from_state()
+        card.state.title = self._title_for_ids(list(card.state.device_ids))
+        try:
+            card.state.duration_s = int(getattr(card.graph_widget, "duration", card.state.duration_s))
+        except Exception:
+            pass
+        card.sync_from_state()
+        card.sync_legend(self._legend_entries_for(card.graph_widget))
 
-    def _on_settings_requested(self):
+    def _on_card_duration_changed(self, card: GraphWidgetCard, value: int):
+        if card not in self._cards:
+            return
+        card.state.duration_s = int(value)
+        card.sync_from_state()
+
+    def _on_settings_requested(self, card=None):
         log.info("Graph widget settings shell added. Wiring lands in the next commit.")
 
-    def add_graph_device(self, device):
+    def add_graph_device(self, device, target_card: GraphWidgetCard | None = None):
         device_id = getattr(device, "device_id", None)
-        if not device_id or device_id in self._graph_device_ids:
-            self._sync_primary_card()
-            self._refresh_empty_state()
+        if not device_id:
             return False
 
-        self.graph_widget.addSensor(device, True)
-        self._graph_device_ids.add(device_id)
-        self._graph_device_order.append(device_id)
+        if target_card is None or target_card not in self._cards:
+            target_card = self._create_card()
+
+        graph_widget = target_card.graph_widget
+        if graph_widget is None:
+            return False
+
+        if device_id in target_card.state.device_ids:
+            self._sync_card(target_card)
+            return False
+
         self._device_names[device_id] = getattr(device, "display_name", device_id)
 
-        card = self._ensure_primary_card()
-        card.state.title = self._default_title()
-        card.state.device_ids = list(self._graph_device_order)
-        card.state.duration_s = self._default_duration()
-        card.sync_from_state()
-        card.sync_legend(self._legend_entries())
+        add_device = getattr(graph_widget, "add_device", None)
+        if not callable(add_device):
+            add_device = getattr(graph_widget, "addSensor", None)
+        if not callable(add_device):
+            log.warning("Graph widget does not provide an add-device API")
+            return False
 
-        self.graph_widget.show()
+        try:
+            add_device(device, True)
+        except Exception:
+            log.exception("Failed to add device %s to graph widget", device_id)
+            return False
+
+        target_card.state.device_ids.append(device_id)
+        self._sync_card(target_card)
         self._refresh_empty_state()
         return True
 
@@ -1210,7 +1246,7 @@ class GraphWorkspace(QWidget):
 
         raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
         if raw:
-            self.deviceDropped.emit(raw)
+            self.deviceDropped.emit(raw, None)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -2505,7 +2541,7 @@ class ControllerWindow(QMainWindow):
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 
-    def _on_device_requested(self, device_id: str):
+    def _on_device_requested(self, device_id: str, target_card=None):
         meta = self.device_meta.get(device_id)
         device = self.devices.get(device_id)
 
@@ -2521,8 +2557,11 @@ class ControllerWindow(QMainWindow):
             self.log.info(f"Ignoring mechanical device request: {device_id}")
             return
 
-        if self.workspace.add_graph_device(device):
-            self.log.info(f"Added active signal device to workspace: {device_id}")
+        if self.workspace.add_graph_device(device, target_card=target_card):
+            if target_card is None:
+                self.log.info(f"Added active signal device to new graph widget: {device_id}")
+            else:
+                self.log.info(f"Added active signal device to existing graph widget: {device_id}")
         else:
             self.log.info(f"Workspace request was ignored for device: {device_id}")
 
