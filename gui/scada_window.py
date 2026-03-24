@@ -20,6 +20,7 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 import qdarkstyle
 
+from settings import get_controllable_valve_ids
 from gui.scada_bridge import ScadaBridge
 from gui.scada_webpage import ScadaWebPage
 from historymanager.paths import HISTORY_ROOT_DIRNAME
@@ -28,16 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 class ScadaWindow(QMainWindow):
-    XV_IDS = ("xv-23", "xv-24", "xv-25", "xv-26", "xv-27")
-    SVG_TO_BACKEND_XV_IDS = {
-        "xv-23": "IPA-XV-23",
-        "xv-24": "IG-XV-24",
-        "xv-25": "IPA-XV-25",
-        "xv-26": "LOX-XV-26",
-        "xv-27": "IG-XV-27",
-    }
-    BACKEND_TO_SVG_XV_IDS = {backend_id: svg_id for svg_id, backend_id in SVG_TO_BACKEND_XV_IDS.items()}
-
     OPEN_COMMAND_NAMES = {"open", "open_valve", "valve_open"}
     CLOSE_COMMAND_NAMES = {"close", "close_valve", "valve_close"}
 
@@ -58,7 +49,8 @@ class ScadaWindow(QMainWindow):
         self.bridge: ScadaBridge | None = None
         self.channel: QWebChannel | None = None
 
-        self.xv_states = {valve_id: "default" for valve_id in self.XV_IDS}
+        self.xv_device_ids: tuple[str, ...] = get_controllable_valve_ids()
+        self.xv_states = {device_id: "default" for device_id in self.xv_device_ids}
         self.pending_xv_commands: dict[str, str] = {}
 
         title_suffix = " - Playback" if self.playback_mode else " - Right Screen"
@@ -133,14 +125,14 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         blay.setContentsMargins(16, 16, 16, 16)
         blay.setSpacing(14)
 
-        self.open_26_button = QPushButton("Open XV-26")
+        self.open_26_button = QPushButton("Open LOX-XV-26")
         self.open_26_button.setMinimumHeight(72)
-        self.open_26_button.clicked.connect(lambda: self._on_manual_button("xv-26", "open"))
+        self.open_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "open"))
         blay.addWidget(self.open_26_button)
 
-        self.close_26_button = QPushButton("Close XV-26")
+        self.close_26_button = QPushButton("Close LOX-XV-26")
         self.close_26_button.setMinimumHeight(72)
-        self.close_26_button.clicked.connect(lambda: self._on_manual_button("xv-26", "closed"))
+        self.close_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "closed"))
         blay.addWidget(self.close_26_button)
 
         self.reset_button = QPushButton("Reset XV")
@@ -187,39 +179,44 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
     def _apply_playback_lock_to_svg(self) -> None:
         if self.web_view is None:
             return
-        ids = ",".join(f"'{valve_id}'" for valve_id in self.XV_IDS)
-        js = f"""
-        (function() {{
-            const ids = [{ids}];
-            const blockedIds = new Set(ids);
-            ids.forEach(function(id) {{
-                const root = document.getElementById(id);
-                if (!root) return;
-                const nodes = [root].concat(Array.from(root.querySelectorAll('*')));
-                nodes.forEach(function(node) {{
-                    try {{
+        js = """
+        (function() {
+            var groups = document.querySelectorAll('.xv-control');
+            var blockedIds = new Set();
+            groups.forEach(function(group) {
+                blockedIds.add(group.id);
+                var nodes = [group].concat(Array.from(group.querySelectorAll('*')));
+                nodes.forEach(function(node) {
+                    try {
                         node.style.pointerEvents = 'none';
                         node.style.cursor = 'default';
-                    }} catch (e) {{}}
-                }});
-            }});
-            if (!window.__mintsPlaybackReadOnlyClickBlockerInstalled) {{
-                document.addEventListener('click', function(evt) {{
-                    let node = evt.target;
-                    while (node) {{
-                        if (node.id && blockedIds.has(node.id)) {{
+                    } catch (e) {}
+                });
+            });
+            document.querySelectorAll('.xv-state-label').forEach(function(label) {
+                blockedIds.add(label.id);
+                try {
+                    label.style.pointerEvents = 'none';
+                    label.style.cursor = 'default';
+                } catch (e) {}
+            });
+            if (!window.__mintsPlaybackReadOnlyClickBlockerInstalled) {
+                document.addEventListener('click', function(evt) {
+                    var node = evt.target;
+                    while (node) {
+                        if (node.id && blockedIds.has(node.id)) {
                             evt.preventDefault();
                             evt.stopPropagation();
                             if (evt.stopImmediatePropagation) evt.stopImmediatePropagation();
                             return false;
-                        }}
+                        }
                         node = node.parentElement;
-                    }}
+                    }
                     return true;
-                }}, true);
+                }, true);
                 window.__mintsPlaybackReadOnlyClickBlockerInstalled = true;
-            }}
-        }})();
+            }
+        })();
         """
         self.web_view.page().runJavaScript(js)
 
@@ -235,10 +232,10 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         return "default"
 
     def _resolve_backend_device_id(self, valve_id: str) -> str | None:
-        return self.SVG_TO_BACKEND_XV_IDS.get(valve_id)
+        return valve_id if valve_id in self.xv_states else None
 
     def _resolve_svg_valve_id(self, device_id: str) -> str | None:
-        return self.BACKEND_TO_SVG_XV_IDS.get(device_id)
+        return device_id if device_id in self.xv_states else None
 
     def _state_to_command_name(self, state: str) -> str | None:
         normalized = self._normalize_state(state)
@@ -386,7 +383,7 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
 
         telemetry = payload.get("telemetry")
         if isinstance(telemetry, dict):
-            for valve_id in self.XV_IDS:
+            for valve_id in self.xv_device_ids:
                 entry = telemetry.get(valve_id)
                 if isinstance(entry, dict):
                     feedback_state = entry.get("feedback_state") or entry.get("state")

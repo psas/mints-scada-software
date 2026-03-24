@@ -8,50 +8,9 @@ from typing import Any, Callable
 from nexus import Bus, BusRider
 
 import settings
+from settings import REQUIRED_DEVICE_FIELDS, normalize_device_desc
 
 log = logging.getLogger(__name__)
-
-REQUIRED_DEVICE_FIELDS = (
-    "id",
-    "name",
-    "deviceType",
-    "deviceGroup",
-    "deviceSystems",
-    "address",
-    "hasElectricalIO",
-    "isControllable",
-    "widgetType",
-    "isActive",
-)
-
-
-def normalize_device_desc(device_desc: dict[str, Any]) -> dict[str, Any]:
-    missing = [key for key in REQUIRED_DEVICE_FIELDS if key not in device_desc]
-    if missing:
-        raise KeyError(
-            f"Device config is missing required fields: {missing}\nConfig: {device_desc}"
-        )
-
-    meta = {
-        "id": device_desc["id"],
-        "name": device_desc["name"],
-        "deviceType": device_desc["deviceType"],
-        "deviceGroup": device_desc["deviceGroup"],
-        "deviceSystems": (
-            list(device_desc["deviceSystems"]) if device_desc["deviceSystems"] else []
-        ),
-        "address": device_desc["address"],
-        "hasElectricalIO": bool(device_desc["hasElectricalIO"]),
-        "isControllable": bool(device_desc["isControllable"]),
-        "widgetType": device_desc["widgetType"],
-        "isActive": bool(device_desc["isActive"]),
-        "config": dict(device_desc.get("config", {})),
-    }
-
-    if not isinstance(meta["deviceSystems"], list):
-        raise TypeError(f"deviceSystems must be a list for device {meta['id']}")
-
-    return meta
 
 
 def resolve_device_class(device_type: str):

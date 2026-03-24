@@ -20,10 +20,11 @@ from gui import (
 )
 from gui.timelineview import TimelineView
 from nexus import BusRider
+from settings import SYSTEM_ORDER
 
 
 DEVICE_MIME_TYPE = "application/x-mints-device-id"
-SYSTEM_ORDER = {"IG": 0, "IPA": 1, "LOX": 2}
+_SYSTEM_ORDER_MAP = {system: idx for idx, system in enumerate(SYSTEM_ORDER)}
 
 
 def normalize_systems(device_systems):
@@ -37,7 +38,7 @@ def normalize_systems(device_systems):
             seen.add(s)
             ordered.append(s)
 
-    ordered.sort(key=lambda s: (SYSTEM_ORDER.get(s, 999), s))
+    ordered.sort(key=lambda s: (_SYSTEM_ORDER_MAP.get(s, 999), s))
     return ordered
 
 
