@@ -877,11 +877,24 @@ class DeviceWorkspace(QWidget):
         device_id = getattr(device, "device_id", None)
         if not device_id or device_id in self._graph_device_ids:
             self._refresh_empty_state()
-            return
+            return False
 
-        self.graph_widget.addSensor(device, True)
+        add_sensor = getattr(self.graph_widget, "addSensor", None)
+        if not callable(add_sensor):
+            logging.getLogger("ControllerWindow").error(
+                "[WORKSPACE] Graph widget cannot accept dropped devices."
+            )
+            self._refresh_empty_state()
+            return False
+
+        added = add_sensor(device, True)
+        if added is False:
+            self._refresh_empty_state()
+            return False
+
         self._graph_device_ids.add(device_id)
         self._refresh_empty_state()
+        return True
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
@@ -906,6 +919,7 @@ class DeviceWorkspace(QWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+
 
 
 class EngineForceWidget(QWidget):
@@ -2213,8 +2227,10 @@ class ControllerWindow(QMainWindow):
             self.log.info(f"Ignoring mechanical device request: {device_id}")
             return
 
-        self.workspace.add_graph_device(device)
-        self.log.info(f"Added active signal device to workspace: {device_id}")
+        added = self.workspace.add_graph_device(device)
+        if added:
+            self.log.info(f"Added active signal device to workspace: {device_id}")
+
 
     # =========================================================
     # Device hooks

@@ -34,7 +34,7 @@ class GraphView(QWidget):
         self.x = [0]
         self.y = [0]
 
-        self.sensors: list[GenericSensor] = []
+        self.sensors: list[object] = []
 
         logging.getLogger("matplotlib").setLevel(logging.INFO)
 
@@ -93,11 +93,27 @@ class GraphView(QWidget):
 
         self.checkboxes: list[QCheckBox] = []
 
-    def _display_label(self, sensor: GenericSensor) -> str:
+    def _display_label(self, sensor: object) -> str:
         return getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
 
-    def _runtime_id(self, sensor: GenericSensor) -> str:
+    def _runtime_id(self, sensor: object) -> str:
         return getattr(sensor, "device_id", "")
+
+    def _extract_history(self, sensor: object):
+        hist = getattr(sensor, "history", None)
+        if hist is None:
+            return None
+
+        try:
+            hist = np.asarray(hist)
+        except Exception:
+            log.exception("Failed to convert history for sensor %s", self._runtime_id(sensor))
+            return None
+
+        if hist.ndim != 2 or hist.shape[0] < 2:
+            return None
+
+        return hist
 
     def _updateSpin(self):
         self.duration = self.spin_box.value()
@@ -111,21 +127,39 @@ class GraphView(QWidget):
         thresh = start - self.duration
         count = 0
 
+        if hasattr(self, "legend") and self.legend is not None:
+            try:
+                self.legend.remove()
+            except Exception:
+                pass
+            self.legend = None
+
         for i in range(len(self.sensors)):
-            if self.checkboxes[i].isChecked():
-                hist = self.sensors[i].history
-                vals = hist[:, hist[0] > thresh]
-                x = vals[0] - start
-                y = vals[1]
-                if len(y) > 0:
-                    self.lines[i].set_xdata(x)
-                    self.lines[i].set_ydata(y)
-                    ymin = min(np.min(vals[1]), ymin)
-                    ymax = max(np.max(vals[1]), ymax)
-                    self.axes.draw_artist(self.lines[i])
-                    self.lines[i].set_label(self._display_label(self.sensors[i]))
-                    count += 1
+            try:
+                if i >= len(self.checkboxes) or i >= len(self.lines):
                     continue
+
+                if self.checkboxes[i].isChecked():
+                    hist = self._extract_history(self.sensors[i])
+                    if hist is not None:
+                        vals = hist[:, hist[0] > thresh]
+                        x = vals[0] - start
+                        y = vals[1]
+                        if len(y) > 0:
+                            self.lines[i].set_xdata(x)
+                            self.lines[i].set_ydata(y)
+                            ymin = min(np.min(vals[1]), ymin)
+                            ymax = max(np.max(vals[1]), ymax)
+                            self.axes.draw_artist(self.lines[i])
+                            self.lines[i].set_label(self._display_label(self.sensors[i]))
+                            count += 1
+                            continue
+
+            except Exception:
+                log.exception(
+                    "Graph update failed for sensor %s",
+                    self._runtime_id(self.sensors[i]),
+                )
 
             self.lines[i].set_xdata([None])
             self.lines[i].set_ydata([None])
@@ -133,7 +167,6 @@ class GraphView(QWidget):
 
         self.axes.set_ylim(ymin - 0.1, ymax + 0.1)
         self.axes.set_xlim(-self.duration, 0)
-        # self.axes.legend(loc='upper left')
         if count > 0:
             self.legend = self.axes.legend(loc="upper left")
             self.legend.get_frame().set_facecolor(self.LEGEND_COLOR)
@@ -154,6 +187,7 @@ class GraphView(QWidget):
         self.controlLayout.addWidget(cb)
         self.checkboxes.append(cb)
         cb.setChecked(graphed)
+        return True
 
     # Functions for use in scripts
     def setDuration(self, duration: int):
