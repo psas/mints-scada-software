@@ -871,14 +871,169 @@ class GraphLegendChip(QFrame):
         layout.addWidget(text, 0)
 
 
+class GraphWidgetSettingsPanel(QFrame):
+    saveRequested = pyqtSignal(list, int)
+    cancelRequested = pyqtSignal()
+
+    def __init__(self, name_resolver, parent=None):
+        super().__init__(parent)
+        self._name_resolver = name_resolver
+        self._device_ids = []
+        self._duration_s = 60
+
+        self.setObjectName("InlineGraphSettingsPanel")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVisible(False)
+        self.setStyleSheet(
+            """
+            QFrame#InlineGraphSettingsPanel {
+                background: #101214;
+                border: 1px solid #31363b;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f0f0f0;
+                background: transparent;
+                border: none;
+            }
+            QPushButton {
+                color: #e8e8e8;
+                background: #202428;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background: #2a2f34;
+            }
+            QSpinBox {
+                background: #202428;
+                color: #f0f0f0;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 6px;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        intro = QLabel(
+            "Current inputs are listed below. Add new ones by dragging from the library."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aab2bd;")
+        layout.addWidget(intro)
+
+        inputs_title = QLabel("Inputs")
+        inputs_title.setStyleSheet("font-weight: 700;")
+        layout.addWidget(inputs_title)
+
+        self.inputs_container = QWidget()
+        self.inputs_layout = QVBoxLayout(self.inputs_container)
+        self.inputs_layout.setContentsMargins(0, 0, 0, 0)
+        self.inputs_layout.setSpacing(8)
+        layout.addWidget(self.inputs_container)
+
+        duration_row = QHBoxLayout()
+        duration_row.setContentsMargins(0, 0, 0, 0)
+        duration_row.setSpacing(10)
+        duration_row.addWidget(QLabel("Duration time:"), 0)
+        self.duration_spin = QSpinBox()
+        self.duration_spin.setRange(1, 3600)
+        self.duration_spin.setSuffix(" s")
+        self.duration_spin.setFixedWidth(120)
+        duration_row.addWidget(self.duration_spin, 0)
+        duration_row.addStretch(1)
+        layout.addLayout(duration_row)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        button_row.addStretch(1)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.cancelRequested.emit)
+        button_row.addWidget(self.cancel_button, 0)
+
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self._emit_save)
+        button_row.addWidget(self.save_button, 0)
+
+        layout.addLayout(button_row)
+
+    def set_state(self, state: GraphCardState):
+        self._device_ids = list(state.device_ids)
+        self._duration_s = max(1, int(state.duration_s))
+        self.duration_spin.setValue(self._duration_s)
+        self._refresh_inputs()
+
+    def _device_name(self, device_id: str) -> str:
+        try:
+            return self._name_resolver(device_id)
+        except Exception:
+            return device_id
+
+    def _refresh_inputs(self):
+        while self.inputs_layout.count():
+            item = self.inputs_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self._device_ids:
+            empty = QLabel(
+                "All inputs have been removed. Click Save to delete this widget."
+            )
+            empty.setWordWrap(True)
+            empty.setStyleSheet("color: #aab2bd;")
+            self.inputs_layout.addWidget(empty)
+            return
+
+        for device_id in list(self._device_ids):
+            row = QFrame()
+            row.setFrameShape(QFrame.NoFrame)
+            row.setStyleSheet(
+                "QFrame { background: #1a1d1f; border: 1px solid #31363b; border-radius: 8px; }"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 6, 10, 6)
+            row_layout.setSpacing(8)
+
+            label = QLabel(self._device_name(device_id))
+            row_layout.addWidget(label, 1)
+
+            remove_button = QPushButton("Delete")
+            remove_button.setFixedWidth(78)
+            remove_button.clicked.connect(lambda _=False, d=device_id: self._remove_device(d))
+            row_layout.addWidget(remove_button, 0)
+
+            self.inputs_layout.addWidget(row)
+
+        self.inputs_layout.addStretch(1)
+
+    def _remove_device(self, device_id: str):
+        try:
+            self._device_ids.remove(device_id)
+        except ValueError:
+            pass
+        self._refresh_inputs()
+
+    def _emit_save(self):
+        self.saveRequested.emit(list(self._device_ids), max(1, int(self.duration_spin.value())))
+
+
 class GraphWidgetCard(QFrame):
     dropDeviceRequested = pyqtSignal(str, object)
-    settingsRequested = pyqtSignal(object)
+    settingsSaved = pyqtSignal(object, list, int)
 
-    def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, parent=None):
+    def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, name_resolver=None, parent=None):
         super().__init__(parent)
         self.state = state
         self.graph_widget = None
+        self._name_resolver = name_resolver or (lambda value: value)
 
         self.setAcceptDrops(True)
         self.setFrameShape(QFrame.NoFrame)
@@ -935,11 +1090,16 @@ class GraphWidgetCard(QFrame):
 
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFixedSize(34, 30)
-        self.settings_button.setToolTip("Graph widget settings land in the next commit.")
-        self.settings_button.clicked.connect(lambda: self.settingsRequested.emit(self))
+        self.settings_button.setToolTip("Show graph widget settings")
+        self.settings_button.clicked.connect(self.toggle_settings_panel)
         header_layout.addWidget(self.settings_button, 0, Qt.AlignTop)
 
         self.main_layout.addLayout(header_layout)
+
+        self.settings_panel = GraphWidgetSettingsPanel(self._device_name, parent=self)
+        self.settings_panel.saveRequested.connect(self._on_settings_saved)
+        self.settings_panel.cancelRequested.connect(self.close_settings_panel)
+        self.main_layout.addWidget(self.settings_panel, 1)
 
         self.graph_host = QFrame()
         self.graph_host.setFrameShape(QFrame.NoFrame)
@@ -960,6 +1120,7 @@ class GraphWidgetCard(QFrame):
         self._set_graph_widget(graph_widget)
         self.sync_from_state()
         self.sync_legend([])
+        self._set_settings_mode(False)
 
     def _set_graph_widget(self, graph_widget: QWidget | None):
         while self.graph_layout.count():
@@ -1001,6 +1162,33 @@ class GraphWidgetCard(QFrame):
             self.legend_layout.addWidget(GraphLegendChip(name, color), 0)
 
         self.legend_layout.addStretch(1)
+
+    def _device_name(self, device_id: str) -> str:
+        try:
+            return self._name_resolver(device_id)
+        except Exception:
+            return device_id
+
+    def _set_settings_mode(self, enabled: bool):
+        self.settings_panel.setVisible(enabled)
+        self.graph_host.setVisible(not enabled)
+        self.legend_row.setVisible(not enabled)
+        self.settings_button.setToolTip("Hide graph widget settings" if enabled else "Show graph widget settings")
+        self.settings_button.setText("✕" if enabled else "⚙")
+
+    def toggle_settings_panel(self):
+        if self.settings_panel.isVisible():
+            self.close_settings_panel()
+            return
+        self.settings_panel.set_state(self.state)
+        self._set_settings_mode(True)
+
+    def close_settings_panel(self):
+        self._set_settings_mode(False)
+
+    def _on_settings_saved(self, device_ids: list[str], duration_s: int):
+        self.close_settings_panel()
+        self.settingsSaved.emit(self, list(device_ids), int(duration_s))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
@@ -1160,9 +1348,9 @@ class GraphWorkspace(QWidget):
             except Exception:
                 log.exception("Failed to apply initial duration to graph widget")
 
-        card = GraphWidgetCard(state, graph_widget=graph_widget)
+        card = GraphWidgetCard(state, graph_widget=graph_widget, name_resolver=self._device_name)
         card.dropDeviceRequested.connect(self.deviceDropped.emit)
-        card.settingsRequested.connect(self._on_settings_requested)
+        card.settingsSaved.connect(self._apply_card_settings)
         self._wire_card_graph_signals(card)
         self._cards.append(card)
         self._insert_card(card)
@@ -1181,6 +1369,8 @@ class GraphWorkspace(QWidget):
             pass
         card.sync_from_state()
         card.sync_legend(self._legend_entries_for(card.graph_widget))
+        if getattr(card, "settings_panel", None) is not None and card.settings_panel.isVisible():
+            card.settings_panel.set_state(card.state)
 
     def _on_card_duration_changed(self, card: GraphWidgetCard, value: int):
         if card not in self._cards:
@@ -1188,8 +1378,71 @@ class GraphWorkspace(QWidget):
         card.state.duration_s = int(value)
         card.sync_from_state()
 
-    def _on_settings_requested(self, card=None):
-        log.info("Graph widget settings shell added. Wiring lands in the next commit.")
+    def _device_name(self, device_id: str) -> str:
+        return self._device_names.get(device_id, device_id)
+
+    def _remove_card(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+
+        self._cards.remove(card)
+        graph_widget = card.graph_widget
+
+        if graph_widget is self._primary_graph_widget:
+            clear_devices = getattr(graph_widget, "clear_devices", None)
+            if callable(clear_devices):
+                try:
+                    clear_devices()
+                except Exception:
+                    log.exception("Failed to clear primary graph widget during card removal")
+            try:
+                graph_widget.setParent(None)
+            except Exception:
+                pass
+            self._primary_graph_claimed = False
+
+        card.setParent(None)
+        card.deleteLater()
+        self._refresh_empty_state()
+
+    def _apply_card_settings(self, card: GraphWidgetCard, device_ids: list[str], duration_s: int):
+        if card not in self._cards:
+            return
+
+        duration_s = max(1, int(duration_s))
+        graph_widget = card.graph_widget
+
+        if graph_widget is not None:
+            set_duration = getattr(graph_widget, "set_duration", None)
+            if not callable(set_duration):
+                set_duration = getattr(graph_widget, "setDuration", None)
+            if callable(set_duration):
+                try:
+                    set_duration(duration_s)
+                except Exception:
+                    log.exception("Failed to update graph duration from settings")
+
+        current_ids = list(card.state.device_ids)
+        removed_ids = [device_id for device_id in current_ids if device_id not in device_ids]
+
+        if graph_widget is not None and removed_ids:
+            remove_device = getattr(graph_widget, "remove_device", None)
+            if callable(remove_device):
+                for device_id in removed_ids:
+                    try:
+                        remove_device(device_id)
+                    except Exception:
+                        log.exception("Failed to remove device %s from graph widget", device_id)
+
+        card.state.device_ids = list(device_ids)
+        card.state.duration_s = duration_s
+
+        if not card.state.device_ids:
+            self._remove_card(card)
+            return
+
+        self._sync_card(card)
+        self._refresh_empty_state()
 
     def add_graph_device(self, device, target_card: GraphWidgetCard | None = None):
         device_id = getattr(device, "device_id", None)
