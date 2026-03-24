@@ -1,17 +1,9 @@
-from PyQt5.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QVBoxLayout,
-    QCheckBox,
-    QSpinBox,
-    QLabel,
-)
+from PyQt5.QtWidgets import QWidget, QVBoxLayout
 import matplotlib
 import matplotlib.lines
-import matplotlib.pyplot
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg  # type: ignore
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QTimer, pyqtSignal
 import time
 import numpy as np
 from nexus import GenericSensor
@@ -22,6 +14,7 @@ log = logging.getLogger("Graph")
 
 class GraphView(QWidget):
     durationChanged = pyqtSignal(int)
+    seriesChanged = pyqtSignal()
 
     FOREGROUND_COLOR = "#f4f4f4"
     BACKGROUND_COLOR = "#19232d"
@@ -29,14 +22,15 @@ class GraphView(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.layout = QHBoxLayout()
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
         self.setLayout(self.layout)
 
         self.duration = 60
-        self.x = [0]
-        self.y = [0]
-
         self.sensors: list[object] = []
+        self.lines: list[matplotlib.lines.Line2D] = []
+        self._enabled_channels: dict[str, bool] = {}
 
         logging.getLogger("matplotlib").setLevel(logging.INFO)
 
@@ -58,42 +52,15 @@ class GraphView(QWidget):
         self.axes.grid("both", "major")
 
         self.fig.tight_layout(pad=2)
-
-        self.lines: list[matplotlib.lines.Line2D] = []
-
         self.axes.set_xlim(0, 100)
         self.axes.set_ylim(0, 2)
 
-        self.layout.addWidget(self.canvas, 999)
+        self.layout.addWidget(self.canvas, 1)
 
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self._update)
         self.timer.start()
-
-        self.controlLayout = QVBoxLayout()
-        self.layout.addLayout(self.controlLayout, 0)
-        self.controlLayout.setAlignment(Qt.AlignTop)
-
-        self.durlayout = QHBoxLayout()
-
-        self.durlabel = QLabel("Graph Duration:")
-        self.durlayout.addWidget(self.durlabel)
-
-        # Create spin box
-        self.spin_box = QSpinBox()
-        self.spin_box.setValue(self.duration)
-        self.spin_box.setRange(1, 9999)
-        self.spin_box.setSuffix("s")
-        self.spin_box.valueChanged.connect(
-            self._updateSpin
-        )  # Connect valueChanged signal to function
-
-        # Add spin box to layout
-        self.durlayout.addWidget(self.spin_box)
-        self.controlLayout.addLayout(self.durlayout)
-
-        self.checkboxes: list[QCheckBox] = []
 
     def _display_label(self, sensor: object) -> str:
         return getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
@@ -117,87 +84,140 @@ class GraphView(QWidget):
 
         return hist
 
-    def _updateSpin(self):
-        self.duration = self.spin_box.value()
-        self.durationChanged.emit(int(self.duration))
-        self._update()
+    def _is_enabled(self, sensor: object) -> bool:
+        runtime_id = self._runtime_id(sensor)
+        return self._enabled_channels.get(runtime_id, True)
+
+    def _set_empty_line(self, idx: int):
+        if 0 <= idx < len(self.lines):
+            self.lines[idx].set_xdata([None])
+            self.lines[idx].set_ydata([None])
 
     def _update(self):
-        ymin = 0
-        ymax = 0
+        ymin = 0.0
+        ymax = 0.0
+        visible_count = 0
 
         start = time.time()
         thresh = start - self.duration
-        count = 0
 
-        if hasattr(self, "legend") and self.legend is not None:
+        for idx, sensor in enumerate(self.sensors):
             try:
-                self.legend.remove()
-            except Exception:
-                pass
-            self.legend = None
-
-        for i in range(len(self.sensors)):
-            try:
-                if i >= len(self.checkboxes) or i >= len(self.lines):
+                if idx >= len(self.lines):
                     continue
 
-                if self.checkboxes[i].isChecked():
-                    hist = self._extract_history(self.sensors[i])
-                    if hist is not None:
-                        vals = hist[:, hist[0] > thresh]
-                        x = vals[0] - start
-                        y = vals[1]
-                        if len(y) > 0:
-                            self.lines[i].set_xdata(x)
-                            self.lines[i].set_ydata(y)
-                            ymin = min(np.min(vals[1]), ymin)
-                            ymax = max(np.max(vals[1]), ymax)
-                            self.axes.draw_artist(self.lines[i])
-                            self.lines[i].set_label(self._display_label(self.sensors[i]))
-                            count += 1
-                            continue
+                if not self._is_enabled(sensor):
+                    self._set_empty_line(idx)
+                    continue
+
+                hist = self._extract_history(sensor)
+                if hist is None:
+                    self._set_empty_line(idx)
+                    continue
+
+                vals = hist[:, hist[0] > thresh]
+                if vals.shape[1] == 0:
+                    self._set_empty_line(idx)
+                    continue
+
+                x = vals[0] - start
+                y = vals[1]
+                if len(y) == 0:
+                    self._set_empty_line(idx)
+                    continue
+
+                self.lines[idx].set_xdata(x)
+                self.lines[idx].set_ydata(y)
+                ymin = min(float(np.min(y)), ymin)
+                ymax = max(float(np.max(y)), ymax)
+                visible_count += 1
 
             except Exception:
                 log.exception(
                     "Graph update failed for sensor %s",
-                    self._runtime_id(self.sensors[i]),
+                    self._runtime_id(sensor),
                 )
+                self._set_empty_line(idx)
 
-            self.lines[i].set_xdata([None])
-            self.lines[i].set_ydata([None])
-            self.lines[i].set_label(None)
-
-        self.axes.set_ylim(ymin - 0.1, ymax + 0.1)
+        if visible_count == 0:
+            self.axes.set_ylim(-0.1, 0.1)
+        else:
+            self.axes.set_ylim(ymin - 0.1, ymax + 0.1)
         self.axes.set_xlim(-self.duration, 0)
-        if count > 0:
-            self.legend = self.axes.legend(loc="upper left")
-            self.legend.get_frame().set_facecolor(self.LEGEND_COLOR)
-            self.legend.get_frame().set_edgecolor(self.FOREGROUND_COLOR)
-            for text in self.legend.get_texts():
-                text.set_color(self.FOREGROUND_COLOR)
-
         self.canvas.draw_idle()
-        # print(f"{(time.time() - start)*1000:.2f}")
+
+    def legend_entries(self) -> list[tuple[str, str]]:
+        entries = []
+        for sensor, line in zip(self.sensors, self.lines):
+            entries.append((self._display_label(sensor), line.get_color()))
+        return entries
+
+    def add_device(self, sensor: object, graphed: bool = True) -> bool:
+        runtime_id = self._runtime_id(sensor)
+        if runtime_id and any(self._runtime_id(existing) == runtime_id for existing in self.sensors):
+            self.enableChannel(runtime_id, graphed)
+            return False
+
+        self.sensors.append(sensor)
+        label = self._display_label(sensor)
+        line = self.axes.plot([None], [None], label=label)[0]
+        self.lines.append(line)
+
+        if runtime_id:
+            self._enabled_channels[runtime_id] = bool(graphed)
+
+        self.seriesChanged.emit()
+        self._update()
+        return True
 
     def addSensor(self, sensor: GenericSensor, graphed=True):
-        self.sensors.append(sensor)
+        return self.add_device(sensor, graphed)
 
-        label = self._display_label(sensor)
-        self.lines.append(self.axes.plot([None], [None], label=label)[0])
+    def remove_device(self, channel: str) -> bool:
+        for idx, sensor in enumerate(self.sensors):
+            if self._runtime_id(sensor) != channel:
+                continue
 
-        cb = QCheckBox(label)
-        self.controlLayout.addWidget(cb)
-        self.checkboxes.append(cb)
-        cb.setChecked(graphed)
-        return True
+            self.sensors.pop(idx)
+            line = self.lines.pop(idx)
+            try:
+                line.remove()
+            except Exception:
+                pass
+            self._enabled_channels.pop(channel, None)
+            self.seriesChanged.emit()
+            self._update()
+            return True
+        return False
+
+    def clear_devices(self):
+        self.sensors.clear()
+        while self.lines:
+            line = self.lines.pop()
+            try:
+                line.remove()
+            except Exception:
+                pass
+        self._enabled_channels.clear()
+        self.seriesChanged.emit()
+        self._update()
+
+    def set_devices(self, devices: list[object], graphed: bool = True):
+        self.clear_devices()
+        for device in devices:
+            self.add_device(device, graphed)
+        self.seriesChanged.emit()
+        self._update()
+
+    def set_duration(self, duration: int):
+        self.duration = max(1, int(duration))
+        self.durationChanged.emit(int(self.duration))
+        self._update()
 
     # Functions for use in scripts
     def setDuration(self, duration: int):
         """Sets the duration of the graph"""
-        self.duration = duration
-        self.durationChanged.emit(int(self.duration))
-        self._update()
+        self.set_duration(duration)
 
     def enableChannel(self, channel: str, state: bool = True) -> bool:
         """Set if a channel is enabled in the graph.
@@ -206,8 +226,9 @@ class GraphView(QWidget):
         * state is a boolean if the channel should be enabled or not, defaults to true
         * Returns if the channel was changed
         """
-        for i in range(len(self.sensors)):
-            if self._runtime_id(self.sensors[i]) == channel:
-                self.checkboxes[i].setChecked(state)
+        for sensor in self.sensors:
+            if self._runtime_id(sensor) == channel:
+                self._enabled_channels[channel] = bool(state)
+                self._update()
                 return True
         return False

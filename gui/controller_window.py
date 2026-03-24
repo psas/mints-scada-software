@@ -1084,6 +1084,10 @@ class GraphWorkspace(QWidget):
         if duration_changed is not None:
             duration_changed.connect(self._on_graph_duration_changed)
 
+        series_changed = getattr(self.graph_widget, "seriesChanged", None)
+        if series_changed is not None:
+            series_changed.connect(self._sync_primary_card)
+
         self._refresh_empty_state()
 
     def _refresh_empty_state(self):
@@ -1126,6 +1130,13 @@ class GraphWorkspace(QWidget):
 
 
     def _legend_entries(self) -> list[tuple[str, str]]:
+        legend_entries = getattr(self.graph_widget, "legend_entries", None)
+        if callable(legend_entries):
+            try:
+                return list(legend_entries())
+            except Exception:
+                log.exception("Failed to read graph legend entries from GraphView")
+
         entries = []
         sensors = getattr(self.graph_widget, "sensors", [])
         lines = getattr(self.graph_widget, "lines", [])
