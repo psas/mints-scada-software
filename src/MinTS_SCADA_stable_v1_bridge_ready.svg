@@ -3281,10 +3281,10 @@
        tabindex="0"
        role="button"
        aria-label="XV-26 toggle"
-       id="xv-26-control"
+       id="lox-xv-26-control"
        data-state="neutral">
       <title
-         id="title294">XV-26 — click to toggle open / closed</title>
+         id="title294">XV-26 - click to toggle open / closed</title>
       <g
          transform="translate(0.5,0.5)"
          id="g296">
@@ -3340,10 +3340,10 @@
        tabindex="0"
        role="button"
        aria-label="XV-25 toggle"
-       id="xv-25-control"
+       id="ipa-xv-25-control"
        data-state="neutral">
       <title
-         id="title296">XV-25 — click to toggle open / closed</title>
+         id="title296">XV-25 - click to toggle open / closed</title>
       <g
          transform="translate(0.5,0.5)"
          id="g298">
@@ -3399,10 +3399,10 @@
        tabindex="0"
        role="button"
        aria-label="XV-23 toggle"
-       id="xv-23-control"
+       id="ipa-xv-23-control"
        data-state="neutral">
       <title
-         id="title298">XV-23 — click to toggle open / closed</title>
+         id="title298">XV-23 - click to toggle open / closed</title>
       <g
          transform="translate(0.5,0.5)"
          id="g300">
@@ -3458,10 +3458,10 @@
        tabindex="0"
        role="button"
        aria-label="XV-27 toggle"
-       id="xv-27-control"
+       id="ig-xv-27-control"
        data-state="neutral">
       <title
-         id="title300">XV-27 — click to toggle open / closed</title>
+         id="title300">XV-27 - click to toggle open / closed</title>
       <g
          transform="translate(0.5,0.5)"
          id="g302">
@@ -3521,10 +3521,10 @@
        tabindex="0"
        role="button"
        aria-label="XV-24 toggle"
-       id="xv-24-control"
+       id="ig-xv-24-control"
        data-state="neutral">
       <title
-         id="title302">XV-24 — click to toggle open / closed</title>
+         id="title302">XV-24 - click to toggle open / closed</title>
       <g
          transform="translate(0.5,0.5)"
          id="g304">
@@ -3858,7 +3858,7 @@
        id="ink-label-17-xv-26"
        inkscape:label="XV 26 State"
        class="xv-state-label"
-       data-for="xv-26-control"
+       data-for="lox-xv-26-control"
        tabindex="0"
        role="button"
        aria-label="XV-26 state toggle">
@@ -3927,7 +3927,7 @@
        id="ink-label-21-xv-25"
        inkscape:label="XV 25 State"
        class="xv-state-label"
-       data-for="xv-25-control"
+       data-for="ipa-xv-25-control"
        tabindex="0"
        role="button"
        aria-label="XV-25 state toggle">
@@ -4074,7 +4074,7 @@
        id="ink-label-30-xv-23"
        inkscape:label="XV 23 State"
        class="xv-state-label"
-       data-for="xv-23-control"
+       data-for="ipa-xv-23-control"
        tabindex="0"
        role="button"
        aria-label="XV-23 state toggle">
@@ -4169,7 +4169,7 @@
        id="ink-label-35-xv-27"
        inkscape:label="XV 27 State"
        class="xv-state-label"
-       data-for="xv-27-control"
+       data-for="ig-xv-27-control"
        tabindex="0"
        role="button"
        aria-label="XV-27 state toggle">
@@ -4296,7 +4296,7 @@
        id="ink-label-42-xv-24"
        inkscape:label="XV 24 State"
        class="xv-state-label"
-       data-for="xv-24-control"
+       data-for="ig-xv-24-control"
        tabindex="0"
        role="button"
        aria-label="XV-24 state toggle">

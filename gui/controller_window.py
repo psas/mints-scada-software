@@ -6,7 +6,9 @@ from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize
 import qdarkstyle
 import logging
 import math
+from dataclasses import dataclass, field
 from datetime import datetime
+from logging import log
 
 from gui import (
     GraphView,
@@ -18,10 +20,11 @@ from gui import (
 )
 from gui.timelineview import TimelineView
 from nexus import BusRider
+from settings import SYSTEM_ORDER
 
 
 DEVICE_MIME_TYPE = "application/x-mints-device-id"
-SYSTEM_ORDER = {"IG": 0, "IPA": 1, "LOX": 2}
+_SYSTEM_ORDER_MAP = {system: idx for idx, system in enumerate(SYSTEM_ORDER)}
 
 
 def normalize_systems(device_systems):
@@ -35,7 +38,7 @@ def normalize_systems(device_systems):
             seen.add(s)
             ordered.append(s)
 
-    ordered.sort(key=lambda s: (SYSTEM_ORDER.get(s, 999), s))
+    ordered.sort(key=lambda s: (_SYSTEM_ORDER_MAP.get(s, 999), s))
     return ordered
 
 
@@ -49,6 +52,13 @@ def classify_system_bucket(device_systems):
 
     combo = " + ".join(systems)
     return "Cross-System", combo
+
+
+@dataclass
+class GraphCardState:
+    title: str = "Signal Graph"
+    device_ids: list[str] = field(default_factory=list)
+    duration_s: int = 60
 
 
 class CollapsibleSection(QFrame):
@@ -833,55 +843,514 @@ class DeviceLibraryPanel(QWidget):
             self.deviceActivated.emit(device_id)
 
 
-class DeviceWorkspace(QWidget):
-    deviceDropped = pyqtSignal(str)
-
-    def __init__(self, graph_widget: QWidget, parent=None):
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, h_spacing=8, v_spacing=8):
         super().__init__(parent)
-        self.setAcceptDrops(True)
+        self._items = []
+        self._h_spacing = h_spacing
+        self._v_spacing = v_spacing
+        self.setContentsMargins(margin, margin, margin, margin)
 
-        self.graph_widget = graph_widget
-        self.graph_widget.hide()
+    def addItem(self, item):
+        self._items.append(item)
 
-        self._graph_device_ids = set()
+    def count(self):
+        return len(self._items)
 
-        self.placeholder = QLabel(
-            "Drag active signal devices here\n\n"
-            "Only active devices with electrical I/O can be added to the workspace."
-        )
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.placeholder.setStyleSheet(
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x = effective.x()
+        y = effective.y()
+        line_height = 0
+
+        for item in self._items:
+            widget = item.widget()
+            space_x = self._h_spacing
+            space_y = self._v_spacing
+            hint = item.sizeHint()
+            next_x = x + hint.width() + space_x
+            if line_height > 0 and next_x - space_x > effective.right() + 1:
+                x = effective.x()
+                y += line_height + space_y
+                next_x = x + hint.width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(x, y, hint.width(), hint.height()))
+
+            x = next_x
+            line_height = max(line_height, hint.height())
+
+        total_height = (y + line_height - rect.y()) + margins.bottom()
+        return max(total_height, 0)
+
+
+class GraphLegendChip(QFrame):
+    toggled = pyqtSignal(str, bool)
+
+    def __init__(self, device_id: str, label: str, color: str, enabled: bool = True, parent=None):
+        super().__init__(parent)
+        self.device_id = device_id
+        self._label_text = label
+        self._accent_color = color
+        self._enabled_state = bool(enabled)
+
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFrameShape(QFrame.NoFrame)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        self.dot_label = QLabel("●")
+        self.text_label = QLabel(label)
+        self.text_label.setWordWrap(False)
+        layout.addWidget(self.dot_label, 0)
+        layout.addWidget(self.text_label, 0)
+
+        self.set_series_enabled(self._enabled_state)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.set_series_enabled(not self._enabled_state)
+            self.toggled.emit(self.device_id, self._enabled_state)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def set_series_enabled(self, enabled: bool):
+        self._enabled_state = bool(enabled)
+        if self._enabled_state:
+            self.setStyleSheet(
+                f"QFrame {{ background: #1a1d1f; border: 1px solid #3b3f42; border-radius: 10px; }} "
+                f"QLabel {{ color: #d9d9d9; border: none; background: transparent; }}"
+            )
+            self.dot_label.setStyleSheet(
+                f"color: {self._accent_color}; border: none; background: transparent;"
+            )
+            self.text_label.setStyleSheet("color: #d9d9d9; border: none; background: transparent;")
+        else:
+            self.setStyleSheet(
+                "QFrame { background: #141618; border: 1px solid #2d3134; border-radius: 10px; } "
+                "QLabel { color: #6f7478; border: none; background: transparent; }"
+            )
+            self.dot_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
+            self.text_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
+
+
+class GraphWidgetSettingsPanel(QFrame):
+    saveRequested = pyqtSignal(list, int)
+    cancelRequested = pyqtSignal()
+
+    def __init__(self, name_resolver, parent=None):
+        super().__init__(parent)
+        self._name_resolver = name_resolver
+        self._device_ids = []
+        self._duration_s = 60
+
+        self.setObjectName("InlineGraphSettingsPanel")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVisible(False)
+        self.setStyleSheet(
             """
+            QFrame#InlineGraphSettingsPanel {
+                background: #101214;
+                border: 1px solid #31363b;
+                border-radius: 10px;
+            }
             QLabel {
-                color: #9a9a9a;
-                border: 2px dashed #444;
+                color: #f0f0f0;
+                background: transparent;
+                border: none;
+            }
+            QPushButton {
+                color: #e8e8e8;
+                background: #202428;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background: #2a2f34;
+            }
+            QSpinBox {
+                background: #202428;
+                color: #f0f0f0;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 6px;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        intro = QLabel(
+            "Current inputs are listed below. Add new ones by dragging from the library."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aab2bd;")
+        layout.addWidget(intro)
+
+        inputs_title = QLabel("Inputs")
+        inputs_title.setStyleSheet("font-weight: 700;")
+        layout.addWidget(inputs_title)
+
+        self.inputs_container = QWidget()
+        self.inputs_layout = QVBoxLayout(self.inputs_container)
+        self.inputs_layout.setContentsMargins(0, 0, 0, 0)
+        self.inputs_layout.setSpacing(8)
+        layout.addWidget(self.inputs_container)
+
+        duration_row = QHBoxLayout()
+        duration_row.setContentsMargins(0, 0, 0, 0)
+        duration_row.setSpacing(10)
+        duration_row.addWidget(QLabel("Duration time:"), 0)
+        self.duration_spin = QSpinBox()
+        self.duration_spin.setRange(1, 3600)
+        self.duration_spin.setSuffix(" s")
+        self.duration_spin.setFixedWidth(120)
+        duration_row.addWidget(self.duration_spin, 0)
+        duration_row.addStretch(1)
+        layout.addLayout(duration_row)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        button_row.addStretch(1)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.cancelRequested.emit)
+        button_row.addWidget(self.cancel_button, 0)
+
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self._emit_save)
+        button_row.addWidget(self.save_button, 0)
+
+        layout.addLayout(button_row)
+
+    def set_state(self, state: GraphCardState):
+        self._device_ids = list(state.device_ids)
+        self._duration_s = max(1, int(state.duration_s))
+        self.duration_spin.setValue(self._duration_s)
+        self._refresh_inputs()
+
+    def _device_name(self, device_id: str) -> str:
+        try:
+            return self._name_resolver(device_id)
+        except Exception:
+            return device_id
+
+    def _refresh_inputs(self):
+        while self.inputs_layout.count():
+            item = self.inputs_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self._device_ids:
+            empty = QLabel(
+                "All inputs have been removed. Click Save to delete this widget."
+            )
+            empty.setWordWrap(True)
+            empty.setStyleSheet("color: #aab2bd;")
+            self.inputs_layout.addWidget(empty)
+            return
+
+        for device_id in list(self._device_ids):
+            row = QFrame()
+            row.setFrameShape(QFrame.NoFrame)
+            row.setStyleSheet(
+                "QFrame { background: #1a1d1f; border: 1px solid #31363b; border-radius: 8px; }"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 6, 10, 6)
+            row_layout.setSpacing(8)
+
+            label = QLabel(self._device_name(device_id))
+            row_layout.addWidget(label, 1)
+
+            remove_button = QPushButton("Delete")
+            remove_button.setFixedWidth(78)
+            remove_button.clicked.connect(lambda _=False, d=device_id: self._remove_device(d))
+            row_layout.addWidget(remove_button, 0)
+
+            self.inputs_layout.addWidget(row)
+
+        self.inputs_layout.addStretch(1)
+
+    def _remove_device(self, device_id: str):
+        try:
+            self._device_ids.remove(device_id)
+        except ValueError:
+            pass
+        self._refresh_inputs()
+
+    def _emit_save(self):
+        self.saveRequested.emit(list(self._device_ids), max(1, int(self.duration_spin.value())))
+
+
+class GraphWidgetCard(QFrame):
+    dropDeviceRequested = pyqtSignal(str, object)
+    settingsSaved = pyqtSignal(object, list, int)
+    moveUpRequested = pyqtSignal(object)
+    moveDownRequested = pyqtSignal(object)
+
+    def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, name_resolver=None, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.graph_widget = None
+        self._name_resolver = name_resolver or (lambda value: value)
+
+        self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: #15181a;
+                border: 1px solid #3a3f44;
                 border-radius: 12px;
-                padding: 28px;
-                background: #181818;
+            }
+            QLabel {
+                color: #f0f0f0;
+                background: transparent;
+                border: none;
+            }
+            QPushButton {
+                color: #e8e8e8;
+                background: #202428;
+                border: 1px solid #454b50;
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background: #2a2f34;
             }
         """
         )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(self.placeholder)
-        layout.addWidget(self.graph_widget, 1)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(12, 12, 12, 12)
+        self.main_layout.setSpacing(10)
 
-    def _refresh_empty_state(self):
-        has_graph = bool(self._graph_device_ids)
-        self.placeholder.setVisible(not has_graph)
-        self.graph_widget.setVisible(has_graph)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
 
-    def add_graph_device(self, device):
-        device_id = getattr(device, "device_id", None)
-        if not device_id or device_id in self._graph_device_ids:
-            self._refresh_empty_state()
+        self.title_container = QWidget()
+        self.title_container.setStyleSheet("background: transparent; border: none;")
+        self.title_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        title_block = QVBoxLayout(self.title_container)
+        title_block.setContentsMargins(0, 0, 0, 0)
+        title_block.setSpacing(2)
+
+        self.title_label = QLabel()
+        self.title_label.setWordWrap(True)
+        self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        title_font = QFont()
+        title_font.setPointSize(13)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.summary_label.setStyleSheet("color: #aab2bd; border: none; background: transparent;")
+
+        title_block.addWidget(self.title_label)
+        title_block.addWidget(self.summary_label)
+
+        header_layout.addWidget(self.title_container, 1)
+
+        self.move_up_button = QPushButton("↑")
+        self.move_up_button.setFixedSize(34, 30)
+        self.move_up_button.setToolTip("Move widget up")
+        self.move_up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
+        header_layout.addWidget(self.move_up_button, 0, Qt.AlignTop)
+
+        self.move_down_button = QPushButton("↓")
+        self.move_down_button.setFixedSize(34, 30)
+        self.move_down_button.setToolTip("Move widget down")
+        self.move_down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
+        header_layout.addWidget(self.move_down_button, 0, Qt.AlignTop)
+
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setFixedSize(34, 30)
+        self.settings_button.setToolTip("Show graph widget settings")
+        self.settings_button.clicked.connect(self.toggle_settings_panel)
+        header_layout.addWidget(self.settings_button, 0, Qt.AlignTop)
+
+        self.main_layout.addLayout(header_layout)
+
+        self.settings_panel = GraphWidgetSettingsPanel(self._device_name, parent=self)
+        self.settings_panel.saveRequested.connect(self._on_settings_saved)
+        self.settings_panel.cancelRequested.connect(self.close_settings_panel)
+        self.main_layout.addWidget(self.settings_panel, 1)
+
+        self.graph_host = QFrame()
+        self.graph_host.setFrameShape(QFrame.NoFrame)
+        self.graph_host.setStyleSheet(
+            "QFrame { background: #101214; border: 1px solid #2c3136; border-radius: 10px; }"
+        )
+        self.graph_layout = QVBoxLayout(self.graph_host)
+        self.graph_layout.setContentsMargins(8, 8, 8, 8)
+        self.graph_layout.setSpacing(0)
+        self.main_layout.addWidget(self.graph_host, 1)
+
+        self.legend_row = QWidget()
+        self.legend_layout = FlowLayout(self.legend_row, margin=0, h_spacing=8, v_spacing=8)
+        self.legend_row.setLayout(self.legend_layout)
+        self.main_layout.addWidget(self.legend_row, 0)
+
+        self._set_graph_widget(graph_widget)
+        self.sync_from_state()
+        self.sync_legend([])
+        self._set_settings_mode(False)
+
+    def _set_graph_widget(self, graph_widget: QWidget | None):
+        while self.graph_layout.count():
+            item = self.graph_layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.setParent(None)
+
+        self.graph_widget = graph_widget
+        if graph_widget is None:
+            placeholder = QLabel("Graph area will appear here when channels are added.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            self.graph_layout.addWidget(placeholder)
+        else:
+            self.graph_layout.addWidget(graph_widget)
+
+    def sync_from_state(self):
+        self.title_label.setText(self.state.title or "Signal Graph")
+        count = len(self.state.device_ids)
+        input_word = "input" if count == 1 else "inputs"
+        self.summary_label.setText(f"{count} {input_word} · Duration: {int(self.state.duration_s)}s")
+        self.title_label.updateGeometry()
+        self.summary_label.updateGeometry()
+
+    def set_reorder_enabled(self, can_move_up: bool, can_move_down: bool):
+        self.move_up_button.setEnabled(bool(can_move_up))
+        self.move_down_button.setEnabled(bool(can_move_down))
+
+    def sync_legend(self, entries):
+        while self.legend_layout.count():
+            item = self.legend_layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.deleteLater()
+
+        if not entries:
+            label = QLabel("Legend will appear here when channels are graphed.")
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            self.legend_layout.addWidget(label)
             return
 
-        self.graph_widget.addSensor(device, True)
-        self._graph_device_ids.add(device_id)
-        self._refresh_empty_state()
+        for entry in entries:
+            if isinstance(entry, dict):
+                device_id = entry.get("device_id", "")
+                name = entry.get("label", device_id or "Unknown")
+                color = entry.get("color", "#d0d0d0")
+                enabled = bool(entry.get("enabled", True))
+            else:
+                if len(entry) >= 4:
+                    device_id, name, color, enabled = entry[0], entry[1], entry[2], bool(entry[3])
+                elif len(entry) >= 3:
+                    device_id, name, color = entry[0], entry[1], entry[2]
+                    enabled = True
+                else:
+                    device_id = name = entry[0]
+                    color = entry[1] if len(entry) > 1 else "#d0d0d0"
+                    enabled = True
+
+            chip = GraphLegendChip(device_id, name, color, enabled=enabled)
+            chip.toggled.connect(self._on_legend_toggled)
+            self.legend_layout.addWidget(chip)
+
+        self.legend_row.updateGeometry()
+
+    def _on_legend_toggled(self, device_id: str, enabled: bool):
+        if self.graph_widget is None:
+            return
+        toggle = getattr(self.graph_widget, "enableChannel", None)
+        if callable(toggle):
+            try:
+                toggle(device_id, enabled)
+            except Exception:
+                log.exception("Failed to toggle graph series %s", device_id)
+
+    def _device_name(self, device_id: str) -> str:
+        try:
+            return self._name_resolver(device_id)
+        except Exception:
+            return device_id
+
+    def _set_settings_mode(self, enabled: bool):
+        self.settings_panel.setVisible(enabled)
+        self.graph_host.setVisible(not enabled)
+        self.legend_row.setVisible(not enabled)
+        self.settings_button.setToolTip("Hide graph widget settings" if enabled else "Show graph widget settings")
+        self.settings_button.setText("✕" if enabled else "⚙")
+
+    def toggle_settings_panel(self):
+        if self.settings_panel.isVisible():
+            self.close_settings_panel()
+            return
+        self.settings_panel.set_state(self.state)
+        self._set_settings_mode(True)
+
+    def close_settings_panel(self):
+        self._set_settings_mode(False)
+
+    def _on_settings_saved(self, device_ids: list[str], duration_s: int):
+        self.close_settings_panel()
+        self.settingsSaved.emit(self, list(device_ids), int(duration_s))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.title_label.updateGeometry()
+        self.summary_label.updateGeometry()
+        self.legend_row.updateGeometry()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
@@ -902,7 +1371,341 @@ class DeviceWorkspace(QWidget):
 
         raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
         if raw:
-            self.deviceDropped.emit(raw)
+            self.dropDeviceRequested.emit(raw, self)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
+class GraphWorkspace(QWidget):
+    deviceDropped = pyqtSignal(str, object)
+
+    def __init__(self, graph_widget: QWidget, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+        self._primary_graph_widget = graph_widget
+        self._primary_graph_claimed = False
+        self._device_names: dict[str, str] = {}
+        self._cards: list[GraphWidgetCard] = []
+        self.placeholder = QLabel(
+            "Drag active signal devices here\n\n"
+            "Drop on empty workspace to create a new graph widget, or drop on a card to add another input."
+        )
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setStyleSheet(
+            """
+            QLabel {
+                color: #9a9a9a;
+                border: 2px dashed #444;
+                border-radius: 12px;
+                padding: 28px;
+                background: #181818;
+            }
+        """
+        )
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent;")
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll_layout.setSpacing(12)
+        self.scroll_layout.addStretch(1)
+        self.scroll_area.setWidget(self.scroll_content)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.placeholder)
+        layout.addWidget(self.scroll_area, 1)
+
+        self._refresh_empty_state()
+
+    def _refresh_empty_state(self):
+        has_cards = bool(self._cards)
+        self.placeholder.setVisible(not has_cards)
+        self.scroll_area.setVisible(has_cards)
+
+    def _insert_card(self, card: GraphWidgetCard):
+        self.scroll_layout.insertWidget(max(0, self.scroll_layout.count() - 1), card)
+
+    def _default_duration(self) -> int:
+        if self._cards:
+            first_graph = getattr(self._cards[0], "graph_widget", None)
+            try:
+                return int(getattr(first_graph, "duration", 60))
+            except Exception:
+                return 60
+
+        try:
+            return int(getattr(self._primary_graph_widget, "duration", 60))
+        except Exception:
+            return 60
+
+    def _title_for_ids(self, device_ids: list[str]) -> str:
+        if not device_ids:
+            return "Signal Graph"
+        labels = [self._device_names.get(device_id, device_id) for device_id in device_ids]
+        return ", ".join(labels)
+
+    def _legend_entries_for(self, graph_widget: QWidget | None):
+        if graph_widget is None:
+            return []
+
+        legend_entries = getattr(graph_widget, "legend_entries", None)
+        if callable(legend_entries):
+            try:
+                return list(legend_entries())
+            except Exception:
+                log.exception("Failed to read graph legend entries from GraphView")
+
+        entries = []
+        sensors = getattr(graph_widget, "sensors", [])
+        lines = getattr(graph_widget, "lines", [])
+        is_enabled = getattr(graph_widget, "is_channel_enabled", None)
+
+        for sensor, line in zip(sensors, lines):
+            device_id = getattr(sensor, "device_id", "")
+            label = getattr(sensor, "display_name", device_id or "Unknown")
+            color = line.get_color() if hasattr(line, "get_color") else "#d0d0d0"
+            enabled = True
+            if callable(is_enabled) and device_id:
+                try:
+                    enabled = bool(is_enabled(device_id))
+                except Exception:
+                    enabled = True
+            entries.append((device_id, label, color, enabled))
+
+        return entries
+
+    def _wire_card_graph_signals(self, card: GraphWidgetCard):
+        graph_widget = card.graph_widget
+        if graph_widget is None:
+            return
+
+        duration_changed = getattr(graph_widget, "durationChanged", None)
+        if duration_changed is not None:
+            duration_changed.connect(lambda value, c=card: self._on_card_duration_changed(c, value))
+
+        series_changed = getattr(graph_widget, "seriesChanged", None)
+        if series_changed is not None:
+            series_changed.connect(lambda c=card: self._sync_card(c))
+
+    def _new_graph_widget(self) -> QWidget:
+        if not self._primary_graph_claimed:
+            self._primary_graph_claimed = True
+            return self._primary_graph_widget
+        return GraphView()
+
+    def _create_card(self) -> GraphWidgetCard:
+        graph_widget = self._new_graph_widget()
+        state = GraphCardState(
+            title="Signal Graph",
+            device_ids=[],
+            duration_s=self._default_duration(),
+        )
+
+        set_duration = getattr(graph_widget, "set_duration", None)
+        if callable(set_duration):
+            try:
+                set_duration(int(state.duration_s))
+            except Exception:
+                log.exception("Failed to apply initial duration to graph widget")
+
+        card = GraphWidgetCard(state, graph_widget=graph_widget, name_resolver=self._device_name)
+        card.dropDeviceRequested.connect(self.deviceDropped.emit)
+        card.settingsSaved.connect(self._apply_card_settings)
+        card.moveUpRequested.connect(self.move_card_up)
+        card.moveDownRequested.connect(self.move_card_down)
+        self._wire_card_graph_signals(card)
+        self._cards.append(card)
+        self._insert_card(card)
+        self._sync_card(card)
+        self._refresh_empty_state()
+        self._update_reorder_controls()
+        self._update_reorder_controls()
+        return card
+
+    def _sync_card(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+
+        card.state.title = self._title_for_ids(list(card.state.device_ids))
+        try:
+            card.state.duration_s = int(getattr(card.graph_widget, "duration", card.state.duration_s))
+        except Exception:
+            pass
+        card.sync_from_state()
+        card.sync_legend(self._legend_entries_for(card.graph_widget))
+        if getattr(card, "settings_panel", None) is not None and card.settings_panel.isVisible():
+            card.settings_panel.set_state(card.state)
+
+    def _on_card_duration_changed(self, card: GraphWidgetCard, value: int):
+        if card not in self._cards:
+            return
+        card.state.duration_s = int(value)
+        card.sync_from_state()
+
+    def _device_name(self, device_id: str) -> str:
+        return self._device_names.get(device_id, device_id)
+
+    def _update_reorder_controls(self):
+        total = len(self._cards)
+        for index, card in enumerate(self._cards):
+            card.set_reorder_enabled(index > 0, index < total - 1)
+
+    def move_card_up(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+        index = self._cards.index(card)
+        if index <= 0:
+            self._update_reorder_controls()
+            return
+        self._cards[index - 1], self._cards[index] = self._cards[index], self._cards[index - 1]
+        insert_at = max(0, self.scroll_layout.count() - 1)
+        self.scroll_layout.removeWidget(card)
+        self.scroll_layout.insertWidget(index - 1, card)
+        self._update_reorder_controls()
+
+    def move_card_down(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+        index = self._cards.index(card)
+        if index >= len(self._cards) - 1:
+            self._update_reorder_controls()
+            return
+        self._cards[index], self._cards[index + 1] = self._cards[index + 1], self._cards[index]
+        self.scroll_layout.removeWidget(card)
+        self.scroll_layout.insertWidget(index + 1, card)
+        self._update_reorder_controls()
+
+    def _remove_card(self, card: GraphWidgetCard):
+        if card not in self._cards:
+            return
+
+        self._cards.remove(card)
+        graph_widget = card.graph_widget
+
+        if graph_widget is self._primary_graph_widget:
+            clear_devices = getattr(graph_widget, "clear_devices", None)
+            if callable(clear_devices):
+                try:
+                    clear_devices()
+                except Exception:
+                    log.exception("Failed to clear primary graph widget during card removal")
+            try:
+                graph_widget.setParent(None)
+            except Exception:
+                pass
+            self._primary_graph_claimed = False
+
+        card.setParent(None)
+        card.deleteLater()
+        self._refresh_empty_state()
+        self._update_reorder_controls()
+
+    def _apply_card_settings(self, card: GraphWidgetCard, device_ids: list[str], duration_s: int):
+        if card not in self._cards:
+            return
+
+        duration_s = max(1, int(duration_s))
+        graph_widget = card.graph_widget
+
+        if graph_widget is not None:
+            set_duration = getattr(graph_widget, "set_duration", None)
+            if not callable(set_duration):
+                set_duration = getattr(graph_widget, "setDuration", None)
+            if callable(set_duration):
+                try:
+                    set_duration(duration_s)
+                except Exception:
+                    log.exception("Failed to update graph duration from settings")
+
+        current_ids = list(card.state.device_ids)
+        removed_ids = [device_id for device_id in current_ids if device_id not in device_ids]
+
+        if graph_widget is not None and removed_ids:
+            remove_device = getattr(graph_widget, "remove_device", None)
+            if callable(remove_device):
+                for device_id in removed_ids:
+                    try:
+                        remove_device(device_id)
+                    except Exception:
+                        log.exception("Failed to remove device %s from graph widget", device_id)
+
+        card.state.device_ids = list(device_ids)
+        card.state.duration_s = duration_s
+
+        if not card.state.device_ids:
+            self._remove_card(card)
+            return
+
+        self._sync_card(card)
+        self._refresh_empty_state()
+        self._update_reorder_controls()
+
+    def add_graph_device(self, device, target_card: GraphWidgetCard | None = None):
+        device_id = getattr(device, "device_id", None)
+        if not device_id:
+            return False
+
+        if target_card is None or target_card not in self._cards:
+            target_card = self._create_card()
+
+        graph_widget = target_card.graph_widget
+        if graph_widget is None:
+            return False
+
+        if device_id in target_card.state.device_ids:
+            self._sync_card(target_card)
+            return False
+
+        self._device_names[device_id] = getattr(device, "display_name", device_id)
+
+        add_device = getattr(graph_widget, "add_device", None)
+        if not callable(add_device):
+            add_device = getattr(graph_widget, "addSensor", None)
+        if not callable(add_device):
+            log.warning("Graph widget does not provide an add-device API")
+            return False
+
+        try:
+            add_device(device, True)
+        except Exception:
+            log.exception("Failed to add device %s to graph widget", device_id)
+            return False
+
+        target_card.state.device_ids.append(device_id)
+        self._sync_card(target_card)
+        self._refresh_empty_state()
+        return True
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(DEVICE_MIME_TYPE):
+            event.ignore()
+            return
+
+        raw = bytes(event.mimeData().data(DEVICE_MIME_TYPE)).decode("utf-8").strip()
+        if raw:
+            self.deviceDropped.emit(raw, None)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1327,6 +2130,7 @@ class TelemetryWidget(QWidget):
         self.info_label.setText(text)
 
 
+
 class ControllerWindow(QMainWindow):
     STATUS_STYLE = {
         "idle": ("Idle", "#616161", "#ffffff"),
@@ -1350,6 +2154,12 @@ class ControllerWindow(QMainWindow):
         "idle": ("Idle", "#616161", "#ffffff"),
         "running": ("Running", "#EF6C00", "#ffffff"),
         "pause": ("Paused", "#1565C0", "#ffffff"),
+    }
+    AUX_CLOCK_STYLE = {
+        "neutral": ("#f5f5f5", "transparent"),
+        "recording": ("#4aa3ff", "transparent"),
+        "playback": ("#4aa3ff", "transparent"),
+        "warning": ("#ffca28", "transparent"),
     }
 
     def __init__(
@@ -1376,6 +2186,12 @@ class ControllerWindow(QMainWindow):
         self.mission_start_time = None
         self.mission_running = False
         self.playback_time = 0.0
+        self.playback_duration_seconds = None
+
+        self._backend_mission_clock = None
+        self._backend_recording_clock = None
+        self._backend_playback_clock = None
+        self._recording_started_dt: datetime | None = None
 
         self.setWindowTitle("minTS Controller - Left Screen")
 
@@ -1394,11 +2210,11 @@ class ControllerWindow(QMainWindow):
             self.timeline.seek_requested.connect(self._on_timeline_seek)
 
         self.graph = GraphView()
-        self.console = ConsoleView(loghandler)
+        self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
         self.exporter = ExportView()
 
         self.device_library = DeviceLibraryPanel()
-        self.workspace = DeviceWorkspace(self.graph)
+        self.workspace = GraphWorkspace(self.graph)
         self.workspace.deviceDropped.connect(self._on_device_requested)
         self.device_library.deviceActivated.connect(self._on_device_requested)
 
@@ -1534,13 +2350,29 @@ class ControllerWindow(QMainWindow):
 
         lay.addStretch(1)
 
+        center_clock = QWidget()
+        center_clock_lay = QVBoxLayout(center_clock)
+        center_clock_lay.setContentsMargins(0, 0, 0, 0)
+        center_clock_lay.setSpacing(0)
+
         self.mission_time_label = QLabel("T+00:00:00.000")
         self.mission_time_label.setFont(QFont("Courier New", 22, QFont.Bold))
         self.mission_time_label.setStyleSheet(
             "color:#21c45a; padding:0 12px; background: transparent; border:none;"
         )
         self.mission_time_label.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.mission_time_label, 0, Qt.AlignVCenter)
+        center_clock_lay.addWidget(self.mission_time_label, 0, Qt.AlignCenter)
+
+        self.aux_time_label = QLabel("Total Duration: --" if self.playback_mode else "Not Recording")
+        self.aux_time_label.setFont(QFont("Arial", 11, QFont.Bold))
+        self.aux_time_label.setAlignment(Qt.AlignCenter)
+        center_clock_lay.addWidget(self.aux_time_label, 0, Qt.AlignCenter)
+        self._set_aux_clock_display(
+            "Total Duration: --" if self.playback_mode else "Not Recording",
+            accent="playback" if self.playback_mode else "neutral",
+        )
+
+        lay.addWidget(center_clock, 0, Qt.AlignVCenter)
 
         lay.addStretch(1)
 
@@ -1789,6 +2621,31 @@ class ControllerWindow(QMainWindow):
         self.btn_manual_auto.clicked.connect(self._on_manual_auto_clicked)
         blay.addWidget(self.btn_manual_auto)
 
+        self.btn_finish_run = QPushButton("Finish Run")
+        self.btn_finish_run.setMinimumHeight(76)
+        self.btn_finish_run.setStyleSheet(
+            """
+            QPushButton{
+                background:#c62828;
+                color:white;
+                border:none;
+                border-radius:10px;
+                font-size:16px;
+                font-weight:800;
+            }
+            QPushButton:hover{ background:#b71c1c; }
+            """
+        )
+        self.btn_finish_run.setToolTip("Stop the active recording and finish the run")
+        self.btn_finish_run.clicked.connect(self._on_finish_run_clicked)
+        self.btn_finish_run.setVisible(False)
+        blay.addWidget(self.btn_finish_run)
+
+        if self.playback_mode:
+            for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
+                _btn.setEnabled(False)
+                _btn.setToolTip("Playback mode is view-only")
+
         blay.addStretch(1)
 
         outer_layout.addWidget(main_stack, 1)
@@ -1921,14 +2778,183 @@ class ControllerWindow(QMainWindow):
     def _on_tank_clicked(self, name: str):
         self.set_tank_info(f"{name} tank selected. (put more details here)")
 
+    def handle_playback_loaded(self, payload: dict):
+        if not self.playback_mode:
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        duration_seconds = payload.get("duration_seconds")
+        if isinstance(duration_seconds, (int, float)):
+            self.playback_duration_seconds = max(0.0, float(duration_seconds))
+            self.timeline.set_total_duration(self.playback_duration_seconds)
+
+        metadata = payload.get("metadata", {})
+        run_id = payload.get("run_id")
+        if isinstance(metadata, dict):
+            test_name = metadata.get("test_name") or payload.get("run_id")
+            run_id = metadata.get("run_id") or run_id
+            if test_name:
+                self.setWindowTitle(f"minTS Controller - Playback - {test_name}")
+
+        if self.playback_mode:
+            self.console.load_playback_run(run_id=run_id, metadata=metadata if isinstance(metadata, dict) else None)
+            self.console.set_playback_time(self.playback_time)
+            self._refresh_aux_clock_display()
+            if isinstance(self.playback_duration_seconds, (int, float)):
+                self.timeline.set_total_duration(self.playback_duration_seconds)
+            self.timeline.set_current_time(max(0.0, float(self.playback_time)))
+
+        self._refresh_aux_clock_display()
+
+    def handle_backend_status(self, payload: dict):
+        if not isinstance(payload, dict):
+            return
+
+        mission_clock = payload.get("mission_clock")
+        recording = payload.get("recording")
+        playback_clock = payload.get("playback_clock")
+
+        self._backend_mission_clock = dict(mission_clock) if isinstance(mission_clock, dict) else self._backend_mission_clock
+        self._backend_recording_clock = dict(recording) if isinstance(recording, dict) else self._backend_recording_clock
+        self._backend_playback_clock = dict(playback_clock) if isinstance(playback_clock, dict) else self._backend_playback_clock
+
+        run_mode = payload.get("run_mode")
+        if isinstance(run_mode, str) and run_mode.strip().lower() == "playback":
+            self.set_mode("playback")
+
+        self._update_time_displays()
+
+    def apply_backend_state_snapshot(self, snapshot: dict):
+        if not isinstance(snapshot, dict):
+            return
+
+        mission_clock = snapshot.get("mission_clock")
+        recording_clock = snapshot.get("recording_clock")
+        playback_clock = snapshot.get("playback_clock")
+
+        self._backend_mission_clock = dict(mission_clock) if isinstance(mission_clock, dict) else self._backend_mission_clock
+        self._backend_recording_clock = dict(recording_clock) if isinstance(recording_clock, dict) else self._backend_recording_clock
+        self._backend_playback_clock = dict(playback_clock) if isinstance(playback_clock, dict) else self._backend_playback_clock
+
+        self._recording_started_dt = self._parse_recording_start_time(recording_clock)
+
+        if isinstance(playback_clock, dict):
+            total_duration_seconds = playback_clock.get("total_duration_seconds")
+            if isinstance(total_duration_seconds, (int, float)):
+                self.playback_duration_seconds = max(0.0, float(total_duration_seconds))
+                self.timeline.set_total_duration(self.playback_duration_seconds)
+
+            position_seconds = playback_clock.get("position_seconds")
+            if isinstance(position_seconds, (int, float)):
+                self.playback_time = max(0.0, float(position_seconds))
+
+        self._update_time_displays()
+        self._sync_finish_run_button(snapshot)
+
+    def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
+        fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
+        self.aux_time_label.setText(text)
+        self.aux_time_label.setStyleSheet(
+            f"color:{fg}; background:{bg}; border:none; padding:0 12px 2px 12px;"
+        )
+
+    def _format_short_duration(self, total_seconds: float | None) -> str:
+        if total_seconds is None:
+            return "--"
+
+        total_seconds = max(0, int(round(float(total_seconds))))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+
+        if hours > 0:
+            return f"{hours:d}h {minutes:02d}m {seconds:02d}s"
+        return f"{minutes:d}m {seconds:02d}s"
+
+    def _format_precise_duration(self, total_seconds: float | None) -> str:
+        if total_seconds is None:
+            return "--:--.---"
+
+        total_seconds = max(0.0, float(total_seconds))
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        seconds = int(total_seconds % 60)
+        milliseconds = int((total_seconds % 1) * 1000)
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+    def _refresh_aux_clock_display(self) -> None:
+        if self.playback_mode:
+            current_text = self._format_precise_duration(self.playback_time)
+            total_text = self._format_precise_duration(self.playback_duration_seconds)
+            self._set_aux_clock_display(
+                f"Playback {current_text} / {total_text}",
+                accent="playback",
+            )
+            return
+
+        recording_clock = self._backend_recording_clock if isinstance(self._backend_recording_clock, dict) else {}
+        active = bool(recording_clock.get("active"))
+
+        # When recording is active and we have an authoritative start time,
+        # compute elapsed locally so the 100ms display timer advances smoothly
+        # between backend snapshot polls (~3s).
+        if active and self._recording_started_dt is not None:
+            elapsed = (datetime.now(self._recording_started_dt.tzinfo) - self._recording_started_dt).total_seconds()
+            elapsed = max(0.0, elapsed)
+            self._set_aux_clock_display(
+                f"Recording: {self._format_short_duration(elapsed)}",
+                accent="recording",
+            )
+            return
+
+        # Fallback: use backend-provided display_text for non-active states
+        # (stopped/completed/idle).
+        display_text = recording_clock.get("display_text")
+        if isinstance(display_text, str) and display_text.strip():
+            self._set_aux_clock_display(
+                display_text.strip(),
+                accent="recording" if active else "neutral",
+            )
+            return
+
+        self._set_aux_clock_display("Not Recording", accent="neutral")
+
     # =========================================================
     # Timer update
     # =========================================================
     def _update_time_displays(self):
         self.clock_label.setText(datetime.now().strftime("%H:%M:%S"))
 
+        mission_seconds = None
+        if isinstance(self._backend_mission_clock, dict):
+            backend_seconds = self._backend_mission_clock.get("seconds")
+            if isinstance(backend_seconds, (int, float)):
+                mission_seconds = float(backend_seconds)
+
         if self.playback_mode:
-            self._update_mission_time_label(self.playback_time)
+            playback_seconds = self.playback_time
+            if isinstance(self._backend_playback_clock, dict):
+                backend_position = self._backend_playback_clock.get("position_seconds")
+                if isinstance(backend_position, (int, float)):
+                    playback_seconds = max(0.0, float(backend_position))
+                    self.playback_time = playback_seconds
+
+                backend_total = self._backend_playback_clock.get("total_duration_seconds")
+                if isinstance(backend_total, (int, float)):
+                    self.playback_duration_seconds = max(0.0, float(backend_total))
+                    self.timeline.set_total_duration(self.playback_duration_seconds)
+
+            self._update_mission_time_label(playback_seconds)
+            self.timeline.set_current_time(playback_seconds)
+            self.console.set_playback_time(playback_seconds)
+        elif mission_seconds is not None:
+            self._update_mission_time_label(mission_seconds)
+            self.timeline.set_current_time(max(0.0, mission_seconds))
         elif self.mission_running and self.mission_start_time:
             elapsed = datetime.now() - self.mission_start_time
             total_seconds = elapsed.total_seconds()
@@ -1939,12 +2965,21 @@ class ControllerWindow(QMainWindow):
             if not self.playback_mode:
                 self.timeline.set_current_time(0.0)
 
+        self._refresh_aux_clock_display()
+
     def _update_mission_time_label(self, total_seconds: float):
-        abs_seconds = abs(total_seconds)
+        abs_seconds = abs(float(total_seconds))
         hours = int(abs_seconds // 3600)
         minutes = int((abs_seconds % 3600) // 60)
         seconds = int(abs_seconds % 60)
         milliseconds = int((abs_seconds % 1) * 1000)
+
+        if self.playback_mode:
+            # Playback keeps the script clock as a placeholder for now;
+            # duration lives in the blue subtitle instead.
+            self.mission_time_label.setText("00:00:00.000")
+            return
+
         sign = "+" if total_seconds >= 0 else "-"
         self.mission_time_label.setText(
             f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
@@ -1954,28 +2989,91 @@ class ControllerWindow(QMainWindow):
         self.playback_time = seek_time
         self.timeline.set_current_time(seek_time)
         self._update_mission_time_label(seek_time)
+        self.console.set_playback_time(seek_time)
+        self._refresh_aux_clock_display()
+
+        handler = getattr(self.manager, "playback_seek_handler", None)
+        if callable(handler):
+            handler(seek_time)
+
+    def set_playback_time(self, seek_time: float):
+        self.playback_time = max(0.0, float(seek_time))
+        self.timeline.set_current_time(self.playback_time)
+        self._update_mission_time_label(self.playback_time)
+        self.console.set_playback_time(self.playback_time)
+        self._refresh_aux_clock_display()
 
     # =========================================================
     # Buttons (placeholder behavior)
     # =========================================================
     def _on_continue_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("normal")
         self.set_script_state("running")
 
     def _on_hold_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("hold")
         self.set_script_state("pause")
 
     def _on_abort_clicked(self):
+        if self.playback_mode:
+            return
         self.set_status("abort")
         self.set_script_state("pause")
         self.abort()
 
     def _on_manual_auto_clicked(self):
+        if self.playback_mode:
+            return
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 
-    def _on_device_requested(self, device_id: str):
+    def _on_finish_run_clicked(self):
+        if self.playback_mode:
+            return
+        finish = getattr(self, "finish_backend_run", None)
+        if callable(finish):
+            self.log.info("Operator requested finish run via controller button")
+            finish(reason="operator_stop")
+        else:
+            self.log.warning("finish_backend_run not available — backend bridge may not be attached")
+
+    def _sync_finish_run_button(self, snapshot: dict) -> None:
+        """Show or hide the Finish Run button based on backend run state."""
+        run = snapshot.get("run")
+        if isinstance(run, dict) and run.get("is_running"):
+            self.btn_finish_run.setVisible(True)
+        else:
+            self.btn_finish_run.setVisible(False)
+
+    @staticmethod
+    def _parse_recording_start_time(recording_clock) -> datetime | None:
+        """Extract and parse the authoritative recording start time from a
+        backend recording_clock snapshot section.
+
+        Returns a timezone-aware datetime if ``recording_clock.active`` is
+        truthy and ``started_wall_time`` is a valid ISO-8601 timestamp, or
+        ``None`` otherwise.
+        """
+        if not isinstance(recording_clock, dict):
+            return None
+        if not recording_clock.get("active"):
+            return None
+        raw = recording_clock.get("started_wall_time")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            text = raw.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return datetime.fromisoformat(text)
+        except (ValueError, TypeError):
+            return None
+
+    def _on_device_requested(self, device_id: str, target_card=None):
         meta = self.device_meta.get(device_id)
         device = self.devices.get(device_id)
 
@@ -1991,8 +3089,13 @@ class ControllerWindow(QMainWindow):
             self.log.info(f"Ignoring mechanical device request: {device_id}")
             return
 
-        self.workspace.add_graph_device(device)
-        self.log.info(f"Added active signal device to workspace: {device_id}")
+        if self.workspace.add_graph_device(device, target_card=target_card):
+            if target_card is None:
+                self.log.info(f"Added active signal device to new graph widget: {device_id}")
+            else:
+                self.log.info(f"Added active signal device to existing graph widget: {device_id}")
+        else:
+            self.log.info(f"Workspace request was ignored for device: {device_id}")
 
     # =========================================================
     # Device hooks

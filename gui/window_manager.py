@@ -6,6 +6,7 @@ from .controller_window import ControllerWindow
 from .scada_window import ScadaWindow
 
 
+
 class WindowManager(QObject):
     """
     Dispatch hub:

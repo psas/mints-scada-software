@@ -19,3 +19,12 @@ log/
 
 # test history playback
 testhistory/
+
+# ignition details
+.ignitionraw/
+.ignitionrawbak/
+ignitionhistory/
+
+# ignore cache
+docs/
+/.*/

@@ -78,18 +78,26 @@ class TimelineView(QWidget):
     # ---- helpers ----
     def _effective_max_time(self) -> float:
         """
-        In live mode total_duration may be 0, so derive an effective max time from current_time.
+        Live mode keeps a readable rolling window, while playback mode should honor
+        the archived run duration exactly so scrubbing stays smooth and does not snap
+        visually back to coarse snapshot boundaries.
         """
+        if self.playback_mode:
+            return max(self.total_duration, self.current_time, self.min_time)
         return max(self.total_duration, self.current_time, self.min_time + 60.0)
 
     # ---- public API ----
     def set_current_time(self, time_seconds: float):
-        self.current_time = time_seconds
+        self.current_time = float(time_seconds)
+        if self.playback_mode and not self.timeline_bar.is_dragging:
+            self.timeline_bar._calculate_visible_range()
         self._update_event_displays()
         self.timeline_bar.update()
 
     def set_total_duration(self, duration_seconds: float):
-        self.total_duration = duration_seconds
+        self.total_duration = max(0.0, float(duration_seconds))
+        if self.playback_mode:
+            self.timeline_bar._calculate_visible_range()
         self.timeline_bar.update()
 
     def add_event(self, time_seconds: float, label: str):
@@ -230,7 +238,7 @@ class TimelineBar(QWidget):
                 painter.drawText(x - 20, height - 18, label)
                 painter.setPen(QColor("#555555"))
 
-        # T+0 marker
+        # Keep the T+0 marker visible in playback too so the script axis stays familiar.
         if visible_start <= 0 <= visible_start + visible_duration:
             x = int((0 - visible_start) / visible_duration * width)
             painter.setPen(QPen(QColor("#FFFFFF"), 2))
