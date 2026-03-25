@@ -28,6 +28,7 @@ class BusInitResult:
     skipped_ids: list[str]
     registered_count: int
     skipped_count: int
+    already_running: bool = False
 
 
 class BusManager:
@@ -125,7 +126,27 @@ class BusManager:
     def initialize_live_hardware(self, registry: DeviceRegistry) -> BusInitResult:
         with self._lock:
             if self.is_running:
-                raise RuntimeError("BusManager is already running")
+                if self._last_init_result is not None:
+                    cached = self._last_init_result
+                    return BusInitResult(
+                        sender=cached.sender,
+                        bitrate=cached.bitrate,
+                        registered_ids=list(cached.registered_ids),
+                        skipped_ids=list(cached.skipped_ids),
+                        registered_count=cached.registered_count,
+                        skipped_count=cached.skipped_count,
+                        already_running=True,
+                    )
+                # Running but no cached result (should not happen in practice).
+                return BusInitResult(
+                    sender=self.sender,
+                    bitrate=self.bitrate,
+                    registered_ids=[],
+                    skipped_ids=[],
+                    registered_count=0,
+                    skipped_count=0,
+                    already_running=True,
+                )
 
             self._registry = registry
             self._manual_shutdown = False

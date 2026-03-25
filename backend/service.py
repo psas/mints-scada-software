@@ -307,16 +307,25 @@ class BackendService:
                 load_errors=self.device_registry.get_load_errors(),
             )
 
-            self.health.record_system_event(
-                "live_hardware_initialized",
-                severity="info",
-                sender=result.sender,
-                bitrate=result.bitrate,
-                registered_ids=list(result.registered_ids),
-                skipped_ids=list(result.skipped_ids),
-                registered_count=result.registered_count,
-                skipped_count=result.skipped_count,
-            )
+            if result.already_running:
+                self.health.record_system_event(
+                    "live_hardware_already_initialized",
+                    severity="info",
+                    message="Live hardware was already running; returning current state",
+                    sender=result.sender,
+                    bitrate=result.bitrate,
+                )
+            else:
+                self.health.record_system_event(
+                    "live_hardware_initialized",
+                    severity="info",
+                    sender=result.sender,
+                    bitrate=result.bitrate,
+                    registered_ids=list(result.registered_ids),
+                    skipped_ids=list(result.skipped_ids),
+                    registered_count=result.registered_count,
+                    skipped_count=result.skipped_count,
+                )
             self.health_monitor.sample_once()
             self._apply_live_startup_state()
 
