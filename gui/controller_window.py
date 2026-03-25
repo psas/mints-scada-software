@@ -2191,6 +2191,7 @@ class ControllerWindow(QMainWindow):
         self._backend_mission_clock = None
         self._backend_recording_clock = None
         self._backend_playback_clock = None
+        self._recording_started_dt: datetime | None = None
 
         self.setWindowTitle("minTS Controller - Left Screen")
 
@@ -2837,6 +2838,8 @@ class ControllerWindow(QMainWindow):
         self._backend_recording_clock = dict(recording_clock) if isinstance(recording_clock, dict) else self._backend_recording_clock
         self._backend_playback_clock = dict(playback_clock) if isinstance(playback_clock, dict) else self._backend_playback_clock
 
+        self._recording_started_dt = self._parse_recording_start_time(recording_clock)
+
         if isinstance(playback_clock, dict):
             total_duration_seconds = playback_clock.get("total_duration_seconds")
             if isinstance(total_duration_seconds, (int, float)):
@@ -2895,20 +2898,27 @@ class ControllerWindow(QMainWindow):
             return
 
         recording_clock = self._backend_recording_clock if isinstance(self._backend_recording_clock, dict) else {}
-        display_text = recording_clock.get("display_text")
         active = bool(recording_clock.get("active"))
+
+        # When recording is active and we have an authoritative start time,
+        # compute elapsed locally so the 100ms display timer advances smoothly
+        # between backend snapshot polls (~3s).
+        if active and self._recording_started_dt is not None:
+            elapsed = (datetime.now(self._recording_started_dt.tzinfo) - self._recording_started_dt).total_seconds()
+            elapsed = max(0.0, elapsed)
+            self._set_aux_clock_display(
+                f"Recording: {self._format_short_duration(elapsed)}",
+                accent="recording",
+            )
+            return
+
+        # Fallback: use backend-provided display_text for non-active states
+        # (stopped/completed/idle).
+        display_text = recording_clock.get("display_text")
         if isinstance(display_text, str) and display_text.strip():
             self._set_aux_clock_display(
                 display_text.strip(),
                 accent="recording" if active else "neutral",
-            )
-            return
-
-        elapsed_seconds = recording_clock.get("elapsed_seconds")
-        if active and isinstance(elapsed_seconds, (int, float)):
-            self._set_aux_clock_display(
-                f"Recording: {self._format_short_duration(float(elapsed_seconds))}",
-                accent="recording",
             )
             return
 
@@ -3038,6 +3048,30 @@ class ControllerWindow(QMainWindow):
             self.btn_finish_run.setVisible(True)
         else:
             self.btn_finish_run.setVisible(False)
+
+    @staticmethod
+    def _parse_recording_start_time(recording_clock) -> datetime | None:
+        """Extract and parse the authoritative recording start time from a
+        backend recording_clock snapshot section.
+
+        Returns a timezone-aware datetime if ``recording_clock.active`` is
+        truthy and ``started_wall_time`` is a valid ISO-8601 timestamp, or
+        ``None`` otherwise.
+        """
+        if not isinstance(recording_clock, dict):
+            return None
+        if not recording_clock.get("active"):
+            return None
+        raw = recording_clock.get("started_wall_time")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            text = raw.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return datetime.fromisoformat(text)
+        except (ValueError, TypeError):
+            return None
 
     def _on_device_requested(self, device_id: str, target_card=None):
         meta = self.device_meta.get(device_id)
