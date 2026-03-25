@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize
 import qdarkstyle
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from logging import log
@@ -2187,6 +2188,9 @@ class ControllerWindow(QMainWindow):
         self.mission_running = False
         self.playback_time = 0.0
         self.playback_duration_seconds = None
+        self._playback_running = False
+        self._playback_anchor = 0.0       # playback_time when play started/resumed
+        self._playback_mono_start = 0.0   # time.monotonic() when play started/resumed
 
         self._backend_mission_clock = None
         self._backend_recording_clock = None
@@ -2288,6 +2292,19 @@ class ControllerWindow(QMainWindow):
         self.display_timer = QTimer(self)
         self.display_timer.timeout.connect(self._update_time_displays)
         self.display_timer.start(100)
+
+        # Playback advance timer (only used in playback mode)
+        self._playback_advance_timer = QTimer(self)
+        self._playback_advance_timer.setInterval(100)
+        self._playback_advance_timer.timeout.connect(self._on_playback_advance)
+
+        # P key play/pause shortcut (playback mode only)
+        if self.playback_mode:
+            from PyQt5.QtGui import QKeySequence
+            sc = QShortcut(QKeySequence("P"), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.activated.connect(self._on_playback_shortcut)
+            self._playback_shortcut = sc  # prevent GC
 
         # Initial state
         self.set_status("idle" if not self.playback_mode else "hold")
@@ -2985,7 +3002,81 @@ class ControllerWindow(QMainWindow):
             f"T{sign}{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
         )
 
+    def _on_playback_shortcut(self):
+        print("SHORTCUT FIRED", type(QApplication.focusWidget()), "readOnly?", getattr(QApplication.focusWidget(), 'isReadOnly', lambda: 'N/A')(), QApplication.activeWindow() is self)
+        if not self.playback_mode:
+            print("BLOCKED: not playback_mode")
+            return
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QSpinBox, QDoubleSpinBox)):
+            print("BLOCKED BY SPINBOX GUARD")
+            return
+        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)) and not focus.isReadOnly():
+            print("BLOCKED BY EDITABLE TEXT GUARD")
+            return
+        print("GUARD PASSED, calling _toggle_playback")
+        self._toggle_playback()
+
+    def _toggle_playback(self):
+        print("TOGGLE PLAYBACK", self._playback_running, self.playback_time, self.playback_duration_seconds)
+        if not self.playback_mode:
+            return
+        if self._playback_running:
+            # Pause: compute exact position right now, update UI, then stop
+            exact_time = self._playback_anchor + (time.monotonic() - self._playback_mono_start)
+            duration = self.playback_duration_seconds
+            if isinstance(duration, (int, float)) and duration > 0:
+                exact_time = min(exact_time, duration)
+            self.playback_time = exact_time
+            self.timeline.set_current_time(exact_time)
+            self._update_mission_time_label(exact_time)
+            self.console.set_playback_time(exact_time)
+            self._refresh_aux_clock_display()
+            self._playback_running = False
+            self._playback_advance_timer.stop()
+        else:
+            # Don't resume if already at end
+            duration = self.playback_duration_seconds
+            if isinstance(duration, (int, float)) and duration > 0 and self.playback_time >= duration:
+                return
+            # Record anchor so each tick computes: anchor + (now - mono_start)
+            self._playback_anchor = self.playback_time
+            self._playback_mono_start = time.monotonic()
+            self._playback_running = True
+            self._playback_advance_timer.start()
+
+    def _on_playback_advance(self):
+        print("ADVANCE TICK", self._playback_running)
+        if not self._playback_running:
+            self._playback_advance_timer.stop()
+            return
+
+        elapsed = time.monotonic() - self._playback_mono_start
+        new_time = self._playback_anchor + elapsed
+        duration = self.playback_duration_seconds
+
+        # Clamp to end and stop
+        if isinstance(duration, (int, float)) and duration > 0 and new_time >= duration:
+            new_time = duration
+            self._playback_running = False
+            self._playback_advance_timer.stop()
+
+        self.playback_time = new_time
+        self.timeline.set_current_time(new_time)
+        self._update_mission_time_label(new_time)
+        self.console.set_playback_time(new_time)
+        self._refresh_aux_clock_display()
+
+        handler = getattr(self.manager, "playback_seek_handler", None)
+        if callable(handler):
+            handler(new_time)
+
     def _on_timeline_seek(self, seek_time: float):
+        # Manual scrub pauses playback so the timer doesn't fight the user
+        if self._playback_running:
+            self._playback_running = False
+            self._playback_advance_timer.stop()
+
         self.playback_time = seek_time
         self.timeline.set_current_time(seek_time)
         self._update_mission_time_label(seek_time)
