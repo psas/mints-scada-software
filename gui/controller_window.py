@@ -2620,6 +2620,26 @@ class ControllerWindow(QMainWindow):
         self.btn_manual_auto.clicked.connect(self._on_manual_auto_clicked)
         blay.addWidget(self.btn_manual_auto)
 
+        self.btn_finish_run = QPushButton("Finish Run")
+        self.btn_finish_run.setMinimumHeight(76)
+        self.btn_finish_run.setStyleSheet(
+            """
+            QPushButton{
+                background:#c62828;
+                color:white;
+                border:none;
+                border-radius:10px;
+                font-size:16px;
+                font-weight:800;
+            }
+            QPushButton:hover{ background:#b71c1c; }
+            """
+        )
+        self.btn_finish_run.setToolTip("Stop the active recording and finish the run")
+        self.btn_finish_run.clicked.connect(self._on_finish_run_clicked)
+        self.btn_finish_run.setVisible(False)
+        blay.addWidget(self.btn_finish_run)
+
         if self.playback_mode:
             for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
                 _btn.setEnabled(False)
@@ -2828,6 +2848,7 @@ class ControllerWindow(QMainWindow):
                 self.playback_time = max(0.0, float(position_seconds))
 
         self._update_time_displays()
+        self._sync_finish_run_button(snapshot)
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
@@ -2999,6 +3020,24 @@ class ControllerWindow(QMainWindow):
             return
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
+
+    def _on_finish_run_clicked(self):
+        if self.playback_mode:
+            return
+        finish = getattr(self, "finish_backend_run", None)
+        if callable(finish):
+            self.log.info("Operator requested finish run via controller button")
+            finish(reason="operator_stop")
+        else:
+            self.log.warning("finish_backend_run not available — backend bridge may not be attached")
+
+    def _sync_finish_run_button(self, snapshot: dict) -> None:
+        """Show or hide the Finish Run button based on backend run state."""
+        run = snapshot.get("run")
+        if isinstance(run, dict) and run.get("is_running"):
+            self.btn_finish_run.setVisible(True)
+        else:
+            self.btn_finish_run.setVisible(False)
 
     def _on_device_requested(self, device_id: str, target_card=None):
         meta = self.device_meta.get(device_id)
