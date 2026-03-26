@@ -178,17 +178,22 @@ class GatewayService:
             log.info("Gateway service IPC server exited")
 
     def stop(self) -> None:
+        if not self._started:
+            return
+
+        log.info("Gateway service stopping")
+
         if self.raw_history_manager.is_running:
             try:
                 self.raw_history_manager.finish_run(reason="gateway_shutdown")
             except Exception:
                 log.exception("Gateway failed to finish raw/rawbak run during shutdown")
 
+        try:
+            self.backend_client.close()
+        except Exception:
+            log.exception("Gateway failed to close backend IPC client cleanly")
 
-        if not self._started:
-            return
-
-        log.info("Gateway service stopping")
         try:
             self.bus_manager.shutdown_live_hardware()
         except Exception:

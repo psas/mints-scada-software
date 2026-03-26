@@ -183,6 +183,11 @@ class BackendService:
 
         self.script_runner.shutdown()
 
+        try:
+            self.gateway_client.close()
+        except Exception:
+            log.exception("Backend failed to close gateway IPC client cleanly")
+
         self.bus_manager.shutdown_live_hardware()
         self.device_registry.clear_live_registration_flags()
         self._detach_all_gateway_bus_proxies()
