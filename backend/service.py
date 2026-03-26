@@ -189,10 +189,14 @@ class BackendService:
         except Exception:
             log.exception("Backend failed to close gateway IPC client cleanly")
 
-        self.bus_manager.shutdown_live_hardware()
-        self.device_registry.clear_live_registration_flags()
+        if not self.use_gateway_for_live_ingest:
+            self.bus_manager.shutdown_live_hardware()
+
         self._detach_all_gateway_bus_proxies()
         self._clear_orphaned_gateway_raw_run()
+
+        self.device_registry.clear_live_registration_flags()
+
         self.state_store.set_bus_connection_state(
             connected=False,
             reconnecting=False,
@@ -312,19 +316,10 @@ class BackendService:
 
         if message.type == "initialize_live_hardware":
             try:
-                gateway_payload = self._initialize_live_hardware_via_gateway()
-                if gateway_payload is not None:
-                    yield hardware_status_message(
-                        connected=bool(gateway_payload.get("connected", False)),
-                        sender=gateway_payload.get("sender"),
-                        bitrate=gateway_payload.get("bitrate"),
-                        registered_ids=list(gateway_payload.get("registered_ids") or []),
-                        skipped_ids=list(gateway_payload.get("skipped_ids") or []),
-                    )
-                    yield state_snapshot_message(self.state_store.get_snapshot())
-                    return
-
-                result = self.bus_manager.initialize_live_hardware(self.device_registry)
+                if self.use_gateway_for_live_ingest:
+                    hardware_payload = self._initialize_live_hardware_via_gateway()
+                else:
+                    hardware_payload = self._initialize_live_hardware_locally()
             except Exception as exc:
                 self.health.record_system_event(
                     "live_hardware_init_failed",
@@ -334,93 +329,32 @@ class BackendService:
                 yield error_message("initialize_live_hardware_failed", str(exc))
                 return
 
-            self.state_store.set_bus_connection_state(
-                connected=True,
-                reconnecting=False,
-                wall_time=isoformat_z(),
-                sender=result.sender,
-                bitrate=result.bitrate,
-                registered_ids=result.registered_ids,
-                skipped_ids=result.skipped_ids,
-            )
-
-            self.state_store.set_device_inventory(
-                devices=self.device_registry.get_gui_device_presentations(),
-                load_errors=self.device_registry.get_load_errors(),
-            )
-
-            if result.already_running:
-                self.health.record_system_event(
-                    "live_hardware_already_initialized",
-                    severity="info",
-                    message="Live hardware was already running; returning current state",
-                    sender=result.sender,
-                    bitrate=result.bitrate,
-                )
-            else:
-                self.health.record_system_event(
-                    "live_hardware_initialized",
-                    severity="info",
-                    sender=result.sender,
-                    bitrate=result.bitrate,
-                    registered_ids=list(result.registered_ids),
-                    skipped_ids=list(result.skipped_ids),
-                    registered_count=result.registered_count,
-                    skipped_count=result.skipped_count,
-                )
-
-            self.health_monitor.sample_once()
-            self._apply_live_startup_state()
-
             yield hardware_status_message(
-                connected=True,
-                sender=result.sender,
-                bitrate=result.bitrate,
-                registered_ids=result.registered_ids,
-                skipped_ids=result.skipped_ids,
+                connected=bool(hardware_payload.get("connected", False)),
+                sender=hardware_payload.get("sender"),
+                bitrate=hardware_payload.get("bitrate"),
+                registered_ids=list(hardware_payload.get("registered_ids") or []),
+                skipped_ids=list(hardware_payload.get("skipped_ids") or []),
             )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
         if message.type == "shutdown_live_hardware":
-            gateway_payload = self._shutdown_live_hardware_via_gateway()
-            if gateway_payload is not None:
-                yield hardware_status_message(
-                    connected=bool(gateway_payload.get("connected", False)),
-                    sender=gateway_payload.get("sender"),
-                    bitrate=gateway_payload.get("bitrate"),
-                    registered_ids=list(gateway_payload.get("registered_ids") or []),
-                    skipped_ids=list(gateway_payload.get("skipped_ids") or []),
-                )
-                yield state_snapshot_message(self.state_store.get_snapshot())
+            try:
+                if self.use_gateway_for_live_ingest:
+                    hardware_payload = self._shutdown_live_hardware_via_gateway()
+                else:
+                    hardware_payload = self._shutdown_live_hardware_locally()
+            except Exception as exc:
+                yield error_message("shutdown_live_hardware_failed", str(exc))
                 return
 
-            self.bus_manager.shutdown_live_hardware()
-            self.device_registry.clear_live_registration_flags()
-            self.state_store.set_bus_connection_state(
-                connected=False,
-                reconnecting=False,
-                wall_time=isoformat_z(),
-                registered_ids=[],
-                skipped_ids=[],
-            )
-            self.state_store.set_device_inventory(
-                devices=self.device_registry.get_gui_device_presentations(),
-                load_errors=self.device_registry.get_load_errors(),
-            )
-            self.health.record_system_event(
-                "live_hardware_shutdown",
-                severity="info",
-                sender=self.bus_manager.sender,
-                bitrate=self.bus_manager.bitrate,
-            )
-            self.health_monitor.sample_once()
             yield hardware_status_message(
-                connected=False,
-                sender=self.bus_manager.sender,
-                bitrate=self.bus_manager.bitrate,
-                registered_ids=[],
-                skipped_ids=[],
+                connected=bool(hardware_payload.get("connected", False)),
+                sender=hardware_payload.get("sender"),
+                bitrate=hardware_payload.get("bitrate"),
+                registered_ids=list(hardware_payload.get("registered_ids") or []),
+                skipped_ids=list(hardware_payload.get("skipped_ids") or []),
             )
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -1047,37 +981,137 @@ class BackendService:
             "skipped_ids": list(skipped_ids),
         }
 
-    def _initialize_live_hardware_via_gateway(self) -> dict[str, Any] | None:
-        if not self.use_gateway_for_live_ingest:
-            return None
-
+    def _initialize_live_hardware_via_gateway(self) -> dict[str, Any]:
         responses = self.gateway_client.initialize_live_hardware()
         if not responses:
-            return None
+            raise RuntimeError(
+                "Gateway did not acknowledge initialize_live_hardware"
+            )
 
         first = responses[0]
-        if first.type != "hardware_status":
-            return None
+        if first.type == "error":
+            message = str(
+                first.payload.get("message") or
+                "Gateway initialize_live_hardware failed"
+            )
+            raise RuntimeError(message)
 
-        payload = self._apply_gateway_hardware_status(first.payload, record_health=True)
+        if first.type != "hardware_status":
+            raise RuntimeError(
+                f"Unexpected gateway response to initialize_live_hardware: {first.type}"
+            )
+
+        payload = self._apply_gateway_hardware_status(
+            first.payload,
+            record_health=True,
+        )
         self._apply_live_startup_state()
         return payload
 
-    def _shutdown_live_hardware_via_gateway(self) -> dict[str, Any] | None:
-        if not self.use_gateway_for_live_ingest:
-            return None
-
+    def _shutdown_live_hardware_via_gateway(self) -> dict[str, Any]:
         responses = self.gateway_client.shutdown_live_hardware()
         if not responses:
-            return None
+            raise RuntimeError(
+                "Gateway did not acknowledge shutdown_live_hardware"
+            )
 
         first = responses[0]
-        if first.type != "hardware_status":
-            return None
+        if first.type == "error":
+            message = str(
+                first.payload.get("message") or
+                "Gateway shutdown_live_hardware failed"
+            )
+            raise RuntimeError(message)
 
-        payload = self._apply_gateway_hardware_status(first.payload, record_health=True)
+        if first.type != "hardware_status":
+            raise RuntimeError(
+                f"Unexpected gateway response to shutdown_live_hardware: {first.type}"
+            )
+
+        payload = self._apply_gateway_hardware_status(
+            first.payload,
+            record_health=True,
+        )
         return payload
 
+    def _initialize_live_hardware_locally(self) -> dict[str, Any]:
+        result = self.bus_manager.initialize_live_hardware(self.device_registry)
+
+        self.state_store.set_bus_connection_state(
+            connected=True,
+            reconnecting=False,
+            wall_time=isoformat_z(),
+            sender=result.sender,
+            bitrate=result.bitrate,
+            registered_ids=result.registered_ids,
+            skipped_ids=result.skipped_ids,
+        )
+
+        self.state_store.set_device_inventory(
+            devices=self.device_registry.get_gui_device_presentations(),
+            load_errors=self.device_registry.get_load_errors(),
+        )
+
+        if result.already_running:
+            self.health.record_system_event(
+                "live_hardware_already_initialized",
+                severity="info",
+                message="Live hardware was already running; returning current state",
+                sender=result.sender,
+                bitrate=result.bitrate,
+            )
+        else:
+            self.health.record_system_event(
+                "live_hardware_initialized",
+                severity="info",
+                sender=result.sender,
+                bitrate=result.bitrate,
+                registered_ids=list(result.registered_ids),
+                skipped_ids=list(result.skipped_ids),
+                registered_count=result.registered_count,
+                skipped_count=result.skipped_count,
+            )
+
+        self.health_monitor.sample_once()
+        self._apply_live_startup_state()
+
+        return {
+            "connected": True,
+            "sender": result.sender,
+            "bitrate": result.bitrate,
+            "registered_ids": list(result.registered_ids),
+            "skipped_ids": list(result.skipped_ids),
+        }
+
+    def _shutdown_live_hardware_locally(self) -> dict[str, Any]:
+        self.bus_manager.shutdown_live_hardware()
+        self.device_registry.clear_live_registration_flags()
+        self.state_store.set_bus_connection_state(
+            connected=False,
+            reconnecting=False,
+            wall_time=isoformat_z(),
+            registered_ids=[],
+            skipped_ids=[],
+        )
+        self.state_store.set_device_inventory(
+            devices=self.device_registry.get_gui_device_presentations(),
+            load_errors=self.device_registry.get_load_errors(),
+        )
+        self.health.record_system_event(
+            "live_hardware_shutdown",
+            severity="info",
+            sender=self.bus_manager.sender,
+            bitrate=self.bus_manager.bitrate,
+        )
+        self.health_monitor.sample_once()
+
+        return {
+            "connected": False,
+            "sender": self.bus_manager.sender,
+            "bitrate": self.bus_manager.bitrate,
+            "registered_ids": [],
+            "skipped_ids": [],
+        }
 
     def _start_gateway_raw_run(
         self,
