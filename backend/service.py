@@ -112,6 +112,7 @@ class BackendService:
         self._gateway_last_skipped_ids: list[str] = []
         self._gateway_bus_proxies_by_id: dict[str, GatewayBusProxy] = {}
         self.health.set_raw_mirror_callback(self._mirror_raw_event_to_gateway)
+        self._orphaned_gateway_raw_run: dict[str, Any] | None = None
 
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
@@ -185,6 +186,7 @@ class BackendService:
         self.bus_manager.shutdown_live_hardware()
         self.device_registry.clear_live_registration_flags()
         self._detach_all_gateway_bus_proxies()
+        self._clear_orphaned_gateway_raw_run()
         self.state_store.set_bus_connection_state(
             connected=False,
             reconnecting=False,
@@ -435,6 +437,17 @@ class BackendService:
                 test_name = self._require_non_empty_string(payload, "test_name")
                 mode = self._get_optional_string(payload, "mode") or "live"
 
+                orphaned = self._orphaned_gateway_raw_run
+                if orphaned is not None:
+                    orphan_run_id = str(orphaned.get("raw_run_id") or "")
+                    orphan_test_name = str(orphaned.get("raw_test_name") or "")
+                    raise RuntimeError(
+                        "Cannot start a new run while an orphaned gateway raw run "
+                        f"is still active (run_id={orphan_run_id}, "
+                        f"test_name={orphan_test_name}). "
+                        "Finish that run first."
+                    )
+
                 run_result = self.run_controller.start_run(
                     test_name=test_name,
                     mode=mode,
@@ -442,13 +455,25 @@ class BackendService:
                     operator=self._get_optional_string(payload, "operator"),
                     profile_name=self._get_optional_string(payload, "profile_name"),
                     notes=self._get_optional_string(payload, "notes"),
-                    software_git_commit=self._get_optional_string(payload, "software_git_commit"),
-                    software_branch=self._get_optional_string(payload, "software_branch"),
-                    device_map_version=self._get_optional_string(payload, "device_map_version"),
+                    software_git_commit=self._get_optional_string(
+                        payload,
+                        "software_git_commit",
+                    ),
+                    software_branch=self._get_optional_string(
+                        payload,
+                        "software_branch",
+                    ),
+                    device_map_version=self._get_optional_string(
+                        payload,
+                        "device_map_version",
+                    ),
                     svg_version=self._get_optional_string(payload, "svg_version"),
                     bus_config=self._get_optional_mapping(payload, "bus_config"),
                     clock_info=self._get_optional_mapping(payload, "clock_info"),
-                    extra_metadata=self._get_optional_mapping(payload, "extra_metadata"),
+                    extra_metadata=self._get_optional_mapping(
+                        payload,
+                        "extra_metadata",
+                    ),
                 )
 
                 self._start_gateway_raw_run(
@@ -461,7 +486,10 @@ class BackendService:
                     try:
                         self.run_controller.finish_run(reason="gateway_start_failed")
                     except Exception:
-                        log.exception("Backend failed to roll back structured run after gateway start failure")
+                        log.exception(
+                            "Backend failed to roll back structured run after gateway "
+                            "start failure"
+                        )
                 yield error_message("start_run_failed", str(exc))
                 return
 
@@ -498,6 +526,21 @@ class BackendService:
 
                 current_run = self.history_manager.current_run
                 current_run_id = current_run.run_id if current_run is not None else None
+
+                if current_run is None and self._orphaned_gateway_raw_run is not None:
+                    finish_result = self._finish_orphaned_gateway_raw_run(reason=reason)
+
+                    yield run_status_message(
+                        run_id=finish_result["run_id"],
+                        mode=finish_result.get("mode"),
+                        status=finish_result["status"],
+                        test_name=finish_result.get("test_name"),
+                        reason=finish_result.get("reason"),
+                        finished_wall_time=finish_result.get("finished_wall_time"),
+                    )
+                    yield self._build_backend_status_message()
+                    yield state_snapshot_message(self.state_store.get_snapshot())
+                    return
 
                 if current_run_id is not None:
                     self.health.record_system_event(
@@ -1093,6 +1136,8 @@ class BackendService:
                 f"Unexpected gateway response to start_run: {first.type}"
             )
 
+        self._clear_orphaned_gateway_raw_run()
+
     def _finish_gateway_raw_run(
         self,
         *,
@@ -1126,7 +1171,77 @@ class BackendService:
                 first.type,
             )
 
+    
+    def _set_orphaned_gateway_raw_run(
+        self,
+        payload: Mapping[str, Any],
+    ) -> None:
+        self._orphaned_gateway_raw_run = {
+            "raw_run_id": self._get_optional_string(payload, "raw_run_id"),
+            "raw_mode": self._get_optional_string(payload, "raw_mode"),
+            "raw_test_name": self._get_optional_string(payload, "raw_test_name"),
+            "raw_started_wall_time": self._get_optional_string(
+                payload,
+                "raw_started_wall_time",
+            ),
+            "backend_link_ok": payload.get("backend_link_ok"),
+        }
 
+    def _clear_orphaned_gateway_raw_run(self) -> None:
+        self._orphaned_gateway_raw_run = None
+
+    def _finish_orphaned_gateway_raw_run(
+        self,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        orphaned = self._orphaned_gateway_raw_run
+        if orphaned is None:
+            raise RuntimeError("No orphaned gateway raw run is tracked")
+
+        run_id = str(orphaned.get("raw_run_id") or "").strip()
+        if not run_id:
+            raise RuntimeError("Tracked orphaned gateway raw run is missing run_id")
+
+        responses = self.gateway_client.finish_run(
+            run_id=run_id,
+            reason=reason,
+        )
+        if not responses:
+            raise RuntimeError(
+                f"Gateway did not acknowledge finish_run for orphaned raw run {run_id}"
+            )
+
+        first = responses[0]
+        if first.type == "error":
+            message = str(first.payload.get("message") or "Gateway finish_run failed")
+            raise RuntimeError(message)
+
+        if first.type != "run_finished":
+            raise RuntimeError(
+                f"Unexpected gateway response to finish_run: {first.type}"
+            )
+
+        self.health.record_system_event(
+            "gateway_orphaned_raw_run_finished",
+            severity="warning",
+            run_id=run_id,
+            mode=orphaned.get("raw_mode"),
+            test_name=orphaned.get("raw_test_name"),
+            reason=reason,
+            raw_started_wall_time=orphaned.get("raw_started_wall_time"),
+        )
+        self._clear_orphaned_gateway_raw_run()
+        self.health_monitor.sample_once()
+
+        return {
+            "run_id": run_id,
+            "mode": orphaned.get("raw_mode") or "live",
+            "status": "completed",
+            "test_name": orphaned.get("raw_test_name"),
+            "reason": reason,
+            "finished_wall_time": isoformat_z(),
+        }
 
     def adopt_gateway_runtime_status(self) -> dict[str, Any] | None:
         if not self.use_gateway_for_live_ingest:
@@ -1157,7 +1272,9 @@ class BackendService:
             {
                 "connected": bool(payload.get("bus_connected", False)),
                 "reconnecting": False,
-                "status": "connected" if bool(payload.get("bus_connected", False)) else "disconnected",
+                "status": "connected"
+                if bool(payload.get("bus_connected", False))
+                else "disconnected",
                 "sender": self._get_optional_string(payload, "sender"),
                 "bitrate": self._get_optional_int(payload, "bitrate"),
                 "registered_ids": list(payload.get("registered_ids") or []),
@@ -1168,6 +1285,11 @@ class BackendService:
         )
 
         raw_run_active = bool(payload.get("raw_run_active", False))
+        if raw_run_active and not self.history_manager.is_running:
+            self._set_orphaned_gateway_raw_run(payload)
+        else:
+            self._clear_orphaned_gateway_raw_run()
+
         self.health.record_system_event(
             "gateway_runtime_adopted",
             severity="warning" if raw_run_active else "info",
@@ -1176,7 +1298,10 @@ class BackendService:
             raw_run_id=self._get_optional_string(payload, "raw_run_id"),
             raw_mode=self._get_optional_string(payload, "raw_mode"),
             raw_test_name=self._get_optional_string(payload, "raw_test_name"),
-            raw_started_wall_time=self._get_optional_string(payload, "raw_started_wall_time"),
+            raw_started_wall_time=self._get_optional_string(
+                payload,
+                "raw_started_wall_time",
+            ),
             backend_link_ok=payload.get("backend_link_ok"),
         )
         self.health_monitor.sample_once()
