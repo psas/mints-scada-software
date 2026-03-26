@@ -19,10 +19,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Project root used by the gateway service",
     )
     parser.add_argument(
+        "--socket-path",
+        type=Path,
+        default=None,
+        help="Unix domain socket path for backend/gateway IPC",
+    )
+    parser.add_argument(
         "--idle-sleep",
         type=float,
         default=0.25,
-        help="Idle loop sleep interval in seconds",
+        help="Reserved placeholder runtime value for future gateway use",
     )
     return parser
 
@@ -53,12 +59,16 @@ def main() -> int:
 
     service = GatewayService(
         project_root=args.project_root,
+        socket_path=args.socket_path,
         idle_sleep_s=args.idle_sleep,
     )
     install_signal_handlers(service)
 
     try:
-        logging.getLogger(__name__).info("Starting gateway service")
+        logging.getLogger(__name__).info(
+            "Starting gateway service at socket %s",
+            service.socket_path,
+        )
         service.serve_forever()
     except KeyboardInterrupt:
         logging.getLogger(__name__).info(

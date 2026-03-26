@@ -9,4 +9,5 @@ class GatewayRuntimeConfig:
     """Runtime configuration for the gateway process."""
 
     project_root: Path
+    socket_path: Path
     idle_sleep_s: float = 0.25
