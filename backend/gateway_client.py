@@ -178,3 +178,18 @@ class GatewayClient:
             },
             expected_responses=1,
         )
+    
+    def record_raw_event(
+        self,
+        *,
+        stream_name: str,
+        event: dict,
+    ) -> list[GatewayIPCMessage]:
+        return self.request(
+            "record_raw_event",
+            payload={
+                "stream_name": stream_name,
+                "event": dict(event),
+            },
+            expected_responses=1,
+        )

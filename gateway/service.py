@@ -22,6 +22,7 @@ from .ipc_models import (
     pong_message,
     run_finished_message,
     run_started_message,
+    raw_event_recorded_message,
 )
 from .ipc_server import GatewayIPCServer
 from .models import GatewayRuntimeConfig
@@ -81,6 +82,7 @@ class GatewayService:
             "status_request",
             "start_run",
             "finish_run",
+            "record_raw_event",
             "initialize_live_hardware",
             "shutdown_live_hardware",
             "send_packet",
@@ -307,6 +309,20 @@ class GatewayService:
         }
         self.raw_history_manager.record_raw_event("command_out", event)
 
+    def _record_external_raw_event_if_running(
+        self,
+        *,
+        stream_name: str,
+        event: Mapping[str, Any],
+    ) -> str | None:
+        if not self.raw_history_manager.is_running:
+            return None
+
+        event_payload = dict(event)
+        self.raw_history_manager.record_raw_event(stream_name, event_payload)
+
+        current_run = self.raw_history_manager.current_run
+        return current_run.run_id if current_run is not None else None
 
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         del runtime
@@ -385,6 +401,37 @@ class GatewayService:
             yield self._build_status_message()
             return
 
+
+        if message.type == "record_raw_event":
+            try:
+                payload = dict(message.payload)
+                stream_name = str(payload["stream_name"])
+                event_payload = payload.get("event")
+                if not isinstance(event_payload, Mapping):
+                    raise ValueError("record_raw_event requires 'event' to be a mapping")
+
+                run_id = self._record_external_raw_event_if_running(
+                    stream_name=stream_name,
+                    event=event_payload,
+                )
+                if run_id is None:
+                    yield error_message(
+                        code="gateway_raw_run_not_active",
+                        message="Gateway raw/rawbak run is not active",
+                    )
+                    return
+
+                yield raw_event_recorded_message(
+                    stream_name=stream_name,
+                    run_id=run_id,
+                    accepted=True,
+                )
+            except Exception as exc:
+                yield error_message(
+                    code="record_raw_event_failed",
+                    message=str(exc),
+                )
+            return
         if message.type == "start_run":
             try:
                 payload = dict(message.payload)

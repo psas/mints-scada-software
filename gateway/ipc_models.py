@@ -183,6 +183,21 @@ def run_finished_message(
     return GatewayIPCMessage(type="run_finished", payload=payload)
 
 
+def raw_event_recorded_message(
+    *,
+    stream_name: str,
+    run_id: str | None,
+    accepted: bool = True,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "stream_name": stream_name,
+        "accepted": bool(accepted),
+    }
+    if run_id is not None:
+        payload["run_id"] = run_id
+    return GatewayIPCMessage(type="raw_event_recorded", payload=payload)
+
+
 def gateway_status_message(
     *,
     service_name: str,

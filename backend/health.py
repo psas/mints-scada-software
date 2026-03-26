@@ -1,19 +1,34 @@
 from __future__ import annotations
 
+import logging
 import threading
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
 
 from .state_store import StateStore
 
+log = logging.getLogger(__name__)
+
 
 class HealthPublisher:
     """Record backend lifecycle and summarized health events into history."""
 
-    def __init__(self, *, history_manager: HistoryManager) -> None:
+    def __init__(
+        self,
+        *,
+        history_manager: HistoryManager,
+        raw_mirror_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+    ) -> None:
         self.history_manager = history_manager
+        self._raw_mirror_callback = raw_mirror_callback
+
+    def set_raw_mirror_callback(
+        self,
+        callback: Callable[[str, Mapping[str, Any]], None] | None,
+    ) -> None:
+        self._raw_mirror_callback = callback
 
     def record_system_event(
         self,
@@ -30,8 +45,20 @@ class HealthPublisher:
             "wall_time": isoformat_z(),
             **extra,
         }
+
         if self.history_manager.is_running:
-            self.history_manager.record_raw_event("system_event", event)
+            raw_mirror = self._raw_mirror_callback
+            if raw_mirror is not None:
+                try:
+                    raw_mirror("system_event", dict(event))
+                except Exception:
+                    log.exception(
+                        "Failed to mirror raw system_event to gateway: %s",
+                        event_type,
+                    )
+            else:
+                self.history_manager.record_raw_event("system_event", event)
+
             self.history_manager.record_structured_event(
                 "system_event",
                 {
@@ -39,8 +66,8 @@ class HealthPublisher:
                     "structured_at": isoformat_z(),
                 },
             )
-        return event
 
+        return event
 
 class BackendHealthMonitor:
     """Poll backend runtime health and publish summarized watchdog state."""

@@ -111,6 +111,7 @@ class BackendService:
         self._gateway_last_registered_ids: list[str] = []
         self._gateway_last_skipped_ids: list[str] = []
         self._gateway_bus_proxies_by_id: dict[str, GatewayBusProxy] = {}
+        self.health.set_raw_mirror_callback(self._mirror_raw_event_to_gateway)
 
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
@@ -585,6 +586,7 @@ class BackendService:
                 payload = self._normalize_mapping_payload(message.payload)
                 action_event = self._build_operator_action_event(payload)
                 self._record_operator_action_if_running(action_event)
+                self._mirror_operator_action_to_gateway_if_running(action_event)
             except Exception as exc:
                 yield error_message("operator_action_failed", str(exc))
                 return
@@ -1118,6 +1120,40 @@ class BackendService:
                 first.type,
             )
 
+    def _mirror_raw_event_to_gateway(
+        self,
+        stream_name: str,
+        event: Mapping[str, Any],
+    ) -> None:
+        if not self.use_gateway_for_live_ingest:
+            return
+        if not self.history_manager.is_running:
+            return
+
+        responses = self.gateway_client.record_raw_event(
+            stream_name=stream_name,
+            event=dict(event),
+        )
+        if not responses:
+            log.warning(
+                "Gateway did not acknowledge raw %s event mirror",
+                stream_name,
+            )
+            return
+
+        first = responses[0]
+        if first.type == "error":
+            log.warning(
+                "Gateway rejected raw %s event mirror: %s",
+                stream_name,
+                first.payload.get("message"),
+            )
+
+    def _mirror_operator_action_to_gateway_if_running(
+        self,
+        action_event: Mapping[str, Any],
+    ) -> None:
+        self._mirror_raw_event_to_gateway("operator_action", action_event)
 
     def _all_device_ids(self) -> list[str]:
         device_ids: list[str] = []
@@ -1181,6 +1217,7 @@ class BackendService:
         if action_payload is not None:
             action_event = self._build_operator_action_event(action_payload)
             self._record_operator_action_if_running(action_event)
+            self._mirror_operator_action_to_gateway_if_running(action_event)
 
         request_id = self._get_optional_string(normalized, "request_id")
         request_source = self._get_optional_string(normalized, "request_source") or default_request_source
