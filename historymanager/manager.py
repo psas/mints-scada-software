@@ -119,9 +119,11 @@ class HistoryManager:
         writer_shutdown_timeout_s: float = 3.0,
         fsync_raw_writes: bool = True,
         fsync_structured_writes: bool = False,
+        enable_raw_writer: bool = True,
+        enable_rawbak_writer: bool = True,
+        enable_structured_writer: bool = True,
     ) -> None:
         self.base_dirs = ensure_base_dirs(project_root)
-
         self.raw_queue_maxsize = raw_queue_maxsize
         self.raw_enqueue_timeout_s = raw_enqueue_timeout_s
         self.structured_queue_maxsize = structured_queue_maxsize
@@ -132,12 +134,14 @@ class HistoryManager:
         self.fsync_raw_writes = fsync_raw_writes
         self.fsync_structured_writes = fsync_structured_writes
 
+        self.enable_raw_writer = bool(enable_raw_writer)
+        self.enable_rawbak_writer = bool(enable_rawbak_writer)
+        self.enable_structured_writer = bool(enable_structured_writer)
+
         self._mp_context = mp.get_context("spawn")
         self._lock = threading.RLock()
-
         self.current_run: ActiveRun | None = None
         self.is_running = False
-
         self._raw_writer: WriterRuntime | None = None
         self._rawbak_writer: WriterRuntime | None = None
         self._structured_writer: WriterRuntime | None = None
@@ -289,25 +293,43 @@ class HistoryManager:
                 event.clear()
                 event.update(payload)
 
-            raw_ok = self._enqueue_raw_event(
-                runtime=self._raw_writer,
-                stats=run.raw_stats,
-                stream_name=stream_name,
-                payload=payload,
-            )
-            rawbak_ok = self._enqueue_raw_event(
-                runtime=self._rawbak_writer,
-                stats=run.rawbak_stats,
-                stream_name=stream_name,
-                payload=payload,
-            )
+            if not self.enable_raw_writer and not self.enable_rawbak_writer:
+                return
+
+            raw_ok = True
+            rawbak_ok = True
+
+            if self.enable_raw_writer:
+                raw_ok = self._enqueue_raw_event(
+                    runtime=self._raw_writer,
+                    stats=run.raw_stats,
+                    stream_name=stream_name,
+                    payload=payload,
+                )
+
+            if self.enable_rawbak_writer:
+                rawbak_ok = self._enqueue_raw_event(
+                    runtime=self._rawbak_writer,
+                    stats=run.rawbak_stats,
+                    stream_name=stream_name,
+                    payload=payload,
+                )
 
             if not raw_ok or not rawbak_ok:
                 self._write_writer_stats_triplet(run)
 
-            if not raw_ok and not rawbak_ok:
+            if self.enable_raw_writer and self.enable_rawbak_writer:
+                if not raw_ok and not rawbak_ok:
+                    raise RuntimeError(
+                        "record_raw_event() failed to enqueue event to both raw and rawbak writers"
+                    )
+            elif self.enable_raw_writer and not raw_ok:
                 raise RuntimeError(
-                    "record_raw_event() failed to enqueue event to both raw and rawbak writers"
+                    "record_raw_event() failed to enqueue event to raw writer"
+                )
+            elif self.enable_rawbak_writer and not rawbak_ok:
+                raise RuntimeError(
+                    "record_raw_event() failed to enqueue event to rawbak writer"
                 )
 
     def record_structured_event(
@@ -330,6 +352,9 @@ class HistoryManager:
                 event.clear()
                 event.update(payload)
 
+            if not self.enable_structured_writer:
+                return
+
             ok = self._enqueue_structured_event(
                 runtime=self._structured_writer,
                 stats=run.history_stats,
@@ -349,6 +374,11 @@ class HistoryManager:
             run = self._require_active_run()
             self._drain_writer_status_queues(run)
 
+            if not self.enable_structured_writer:
+                raise RuntimeError(
+                    "write_snapshot() called on a HistoryManager with structured writer disabled"
+                )
+
             path = run.paths.snapshots_dir / f"{snapshot_index:06d}.json"
             payload = dict(snapshot)
             payload.setdefault("run_id", run.run_id)
@@ -361,6 +391,7 @@ class HistoryManager:
                 snapshot_index=snapshot_index,
                 payload=payload,
             )
+
             if not ok:
                 self._write_writer_stats_triplet(run)
                 raise RuntimeError("write_snapshot() failed to enqueue snapshot")
@@ -465,10 +496,15 @@ class HistoryManager:
             raise ValueError(f"Unknown structured stream: {stream_name!r}")
 
     def _create_run_directories(self, run_paths) -> None:
-        run_paths.raw_dir.mkdir(parents=True, exist_ok=False)
-        run_paths.rawbak_dir.mkdir(parents=True, exist_ok=False)
-        run_paths.history_dir.mkdir(parents=True, exist_ok=False)
-        run_paths.snapshots_dir.mkdir(parents=True, exist_ok=False)
+        if self.enable_raw_writer:
+            run_paths.raw_dir.mkdir(parents=True, exist_ok=False)
+
+        if self.enable_rawbak_writer:
+            run_paths.rawbak_dir.mkdir(parents=True, exist_ok=False)
+
+        if self.enable_structured_writer:
+            run_paths.history_dir.mkdir(parents=True, exist_ok=False)
+            run_paths.snapshots_dir.mkdir(parents=True, exist_ok=False)
 
     def _build_initial_metadata(
         self,
@@ -525,113 +561,134 @@ class HistoryManager:
     ) -> None:
         self._write_metadata_triplet(run_paths, metadata)
 
-        atomic_write_json(run_paths.raw_writer_stats_path, raw_stats.to_dict())
-        atomic_write_json(run_paths.rawbak_writer_stats_path, rawbak_stats.to_dict())
-        atomic_write_json(run_paths.history_writer_stats_path, history_stats.to_dict())
+        if self.enable_raw_writer:
+            atomic_write_json(run_paths.raw_writer_stats_path, raw_stats.to_dict())
+            for path in run_paths.raw_stream_paths.values():
+                _touch_file(path)
 
-        for path in run_paths.raw_stream_paths.values():
-            _touch_file(path)
+        if self.enable_rawbak_writer:
+            atomic_write_json(run_paths.rawbak_writer_stats_path, rawbak_stats.to_dict())
+            for path in run_paths.rawbak_stream_paths.values():
+                _touch_file(path)
 
-        for path in run_paths.rawbak_stream_paths.values():
-            _touch_file(path)
-
-        for path in run_paths.structured_stream_paths.values():
-            _touch_file(path)
-
-        _touch_file(run_paths.merged_path)
+        if self.enable_structured_writer:
+            atomic_write_json(run_paths.history_writer_stats_path, history_stats.to_dict())
+            for path in run_paths.structured_stream_paths.values():
+                _touch_file(path)
+            _touch_file(run_paths.merged_path)
 
     def _write_metadata_triplet(self, run_paths, metadata: Mapping[str, Any]) -> None:
-        atomic_write_json(run_paths.raw_metadata_path, metadata)
-        atomic_write_json(run_paths.rawbak_metadata_path, metadata)
-        atomic_write_json(run_paths.history_metadata_path, metadata)
+        if self.enable_raw_writer:
+            atomic_write_json(run_paths.raw_metadata_path, metadata)
+
+        if self.enable_rawbak_writer:
+            atomic_write_json(run_paths.rawbak_metadata_path, metadata)
+
+        if self.enable_structured_writer:
+            atomic_write_json(run_paths.history_metadata_path, metadata)
 
     def _write_complete_triplet(self, run_paths, payload: Mapping[str, Any]) -> None:
-        atomic_write_json(run_paths.raw_complete_path, payload)
-        atomic_write_json(run_paths.rawbak_complete_path, payload)
-        atomic_write_json(run_paths.history_complete_path, payload)
+        if self.enable_raw_writer:
+            atomic_write_json(run_paths.raw_complete_path, payload)
+
+        if self.enable_rawbak_writer:
+            atomic_write_json(run_paths.rawbak_complete_path, payload)
+
+        if self.enable_structured_writer:
+            atomic_write_json(run_paths.history_complete_path, payload)
 
     def _write_writer_stats_triplet(self, run: ActiveRun) -> None:
-        atomic_write_json(run.paths.raw_writer_stats_path, run.raw_stats.to_dict())
-        atomic_write_json(
-            run.paths.rawbak_writer_stats_path, run.rawbak_stats.to_dict()
-        )
-        atomic_write_json(
-            run.paths.history_writer_stats_path, run.history_stats.to_dict()
-        )
+        if self.enable_raw_writer:
+            atomic_write_json(run.paths.raw_writer_stats_path, run.raw_stats.to_dict())
+
+        if self.enable_rawbak_writer:
+            atomic_write_json(
+                run.paths.rawbak_writer_stats_path,
+                run.rawbak_stats.to_dict(),
+            )
+
+        if self.enable_structured_writer:
+            atomic_write_json(
+                run.paths.history_writer_stats_path,
+                run.history_stats.to_dict(),
+            )
 
     def _start_writers(self, run: ActiveRun) -> None:
-        self._raw_writer = create_raw_writer_runtime(
-            mp_context=self._mp_context,
-            side_name="raw",
-            queue_maxsize=self.raw_queue_maxsize,
-            fsync_every_event=self.fsync_raw_writes,
-        )
-        self._raw_writer.process.start()
-        self._raw_writer.command_queue.put(
-            {
-                "type": "start_run",
-                "run_id": run.run_id,
-                "stream_paths": {
-                    name: str(path) for name, path in run.paths.raw_stream_paths.items()
-                },
-            }
-        )
-        self._wait_for_expected_status(
-            runtime=self._raw_writer,
-            stats=run.raw_stats,
-            expected_type="started",
-            timeout_s=self.writer_start_timeout_s,
-        )
+        if self.enable_raw_writer:
+            self._raw_writer = create_raw_writer_runtime(
+                mp_context=self._mp_context,
+                side_name="raw",
+                queue_maxsize=self.raw_queue_maxsize,
+                fsync_every_event=self.fsync_raw_writes,
+            )
+            self._raw_writer.process.start()
+            self._raw_writer.command_queue.put(
+                {
+                    "type": "start_run",
+                    "run_id": run.run_id,
+                    "stream_paths": {
+                        name: str(path) for name, path in run.paths.raw_stream_paths.items()
+                    },
+                }
+            )
+            self._wait_for_expected_status(
+                runtime=self._raw_writer,
+                stats=run.raw_stats,
+                expected_type="started",
+                timeout_s=self.writer_start_timeout_s,
+            )
 
-        self._rawbak_writer = create_raw_writer_runtime(
-            mp_context=self._mp_context,
-            side_name="rawbak",
-            queue_maxsize=self.raw_queue_maxsize,
-            fsync_every_event=self.fsync_raw_writes,
-        )
-        self._rawbak_writer.process.start()
-        self._rawbak_writer.command_queue.put(
-            {
-                "type": "start_run",
-                "run_id": run.run_id,
-                "stream_paths": {
-                    name: str(path)
-                    for name, path in run.paths.rawbak_stream_paths.items()
-                },
-            }
-        )
-        self._wait_for_expected_status(
-            runtime=self._rawbak_writer,
-            stats=run.rawbak_stats,
-            expected_type="started",
-            timeout_s=self.writer_start_timeout_s,
-        )
+        if self.enable_rawbak_writer:
+            self._rawbak_writer = create_raw_writer_runtime(
+                mp_context=self._mp_context,
+                side_name="rawbak",
+                queue_maxsize=self.raw_queue_maxsize,
+                fsync_every_event=self.fsync_raw_writes,
+            )
+            self._rawbak_writer.process.start()
+            self._rawbak_writer.command_queue.put(
+                {
+                    "type": "start_run",
+                    "run_id": run.run_id,
+                    "stream_paths": {
+                        name: str(path)
+                        for name, path in run.paths.rawbak_stream_paths.items()
+                    },
+                }
+            )
+            self._wait_for_expected_status(
+                runtime=self._rawbak_writer,
+                stats=run.rawbak_stats,
+                expected_type="started",
+                timeout_s=self.writer_start_timeout_s,
+            )
 
-        self._structured_writer = create_structured_writer_runtime(
-            mp_context=self._mp_context,
-            side_name="structured",
-            queue_maxsize=self.structured_queue_maxsize,
-            fsync_every_event=self.fsync_structured_writes,
-        )
-        self._structured_writer.process.start()
-        self._structured_writer.command_queue.put(
-            {
-                "type": "start_run",
-                "run_id": run.run_id,
-                "stream_paths": {
-                    name: str(path)
-                    for name, path in run.paths.structured_stream_paths.items()
-                },
-                "merged_path": str(run.paths.merged_path),
-                "snapshots_dir": str(run.paths.snapshots_dir),
-            }
-        )
-        self._wait_for_expected_status(
-            runtime=self._structured_writer,
-            stats=run.history_stats,
-            expected_type="started",
-            timeout_s=self.writer_start_timeout_s,
-        )
+        if self.enable_structured_writer:
+            self._structured_writer = create_structured_writer_runtime(
+                mp_context=self._mp_context,
+                side_name="structured",
+                queue_maxsize=self.structured_queue_maxsize,
+                fsync_every_event=self.fsync_structured_writes,
+            )
+            self._structured_writer.process.start()
+            self._structured_writer.command_queue.put(
+                {
+                    "type": "start_run",
+                    "run_id": run.run_id,
+                    "stream_paths": {
+                        name: str(path)
+                        for name, path in run.paths.structured_stream_paths.items()
+                    },
+                    "merged_path": str(run.paths.merged_path),
+                    "snapshots_dir": str(run.paths.snapshots_dir),
+                }
+            )
+            self._wait_for_expected_status(
+                runtime=self._structured_writer,
+                stats=run.history_stats,
+                expected_type="started",
+                timeout_s=self.writer_start_timeout_s,
+            )
 
     def _enqueue_raw_event(
         self,

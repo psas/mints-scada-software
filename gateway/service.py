@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-
+from historymanager import HistoryManager
 from nexus import DataPacket
 
 from backend.bus_manager import BusManager
@@ -20,6 +20,8 @@ from .ipc_models import (
     hello_ack_message,
     packet_sent_message,
     pong_message,
+    run_finished_message,
+    run_started_message,
 )
 from .ipc_server import GatewayIPCServer
 from .models import GatewayRuntimeConfig
@@ -77,6 +79,8 @@ class GatewayService:
             "hello",
             "ping",
             "status_request",
+            "start_run",
+            "finish_run",
             "initialize_live_hardware",
             "shutdown_live_hardware",
             "send_packet",
@@ -88,6 +92,13 @@ class GatewayService:
         self._last_registered_ids: list[str] = []
         self._last_skipped_ids: list[str] = []
         self._bus_connected = False
+        
+        self.raw_history_manager = HistoryManager(
+            project_root=project_root,
+            enable_raw_writer=True,
+            enable_rawbak_writer=True,
+            enable_structured_writer=False,
+        )
 
         self.backend_client = BackendIPCClient(
             project_root=project_root,
@@ -164,6 +175,13 @@ class GatewayService:
             log.info("Gateway service IPC server exited")
 
     def stop(self) -> None:
+        if self.raw_history_manager.is_running:
+            try:
+                self.raw_history_manager.finish_run(reason="gateway_shutdown")
+            except Exception:
+                log.exception("Gateway failed to finish raw/rawbak run during shutdown")
+
+
         if not self._started:
             return
 
@@ -245,8 +263,59 @@ class GatewayService:
     def _handle_bus_error_event(self, payload: Mapping[str, Any]) -> None:
         log.warning("Gateway bus error event: %s", dict(payload))
 
+
+
+    def _record_raw_telemetry_if_running(self, meta: Mapping[str, Any], packet: Any) -> None:
+        if not self.raw_history_manager.is_running:
+            return
+
+        event = {
+            "device_id": str(meta.get("id") or ""),
+            "packet_id": int(getattr(packet, "id", meta.get("address", 0))),
+            "seq": int(getattr(packet, "seq", 1)),
+            "cmd": int(getattr(packet, "cmd", 1)),
+            "reply": bool(getattr(packet, "reply", True)),
+            "err": bool(getattr(packet, "err", False)),
+            "rsvd": bool(getattr(packet, "rsvd", False)),
+            "data": [int(x) for x in list(getattr(packet, "data", [0, 0, 0, 0, 0, 0]) or [])],
+            "packet_timestamp": getattr(packet, "timestamp", None),
+            "source": "gateway_live_bus",
+        }
+        self.raw_history_manager.record_raw_event("telemetry_in", event)
+
+    def _record_raw_command_out_if_running(
+        self,
+        *,
+        device_id: str | None,
+        packet: DataPacket,
+    ) -> None:
+        if not self.raw_history_manager.is_running:
+            return
+
+        event = {
+            "device_id": device_id,
+            "packet_id": int(getattr(packet, "id")),
+            "seq": int(getattr(packet, "seq", 1)),
+            "cmd": int(getattr(packet, "cmd", 1)),
+            "reply": bool(getattr(packet, "reply", False)),
+            "err": bool(getattr(packet, "err", False)),
+            "rsvd": bool(getattr(packet, "rsvd", False)),
+            "data": [int(x) for x in list(getattr(packet, "data", []) or [])],
+            "sender": self.bus_manager.sender,
+            "bitrate": self.bus_manager.bitrate,
+            "source": "gateway_send_packet",
+        }
+        self.raw_history_manager.record_raw_event("command_out", event)
+
+
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         del runtime
+
+        try:
+            self._record_raw_telemetry_if_running(meta, packet)
+        except Exception:
+            log.exception("Gateway failed to record raw telemetry_in for %s", meta.get("id"))
+
         try:
             self.backend_client.ingest_live_packet(meta=meta, packet=packet)
         except Exception:
@@ -314,6 +383,76 @@ class GatewayService:
 
         if message.type == "status_request":
             yield self._build_status_message()
+            return
+
+        if message.type == "start_run":
+            try:
+                payload = dict(message.payload)
+
+                run_id = self.raw_history_manager.start_run(
+                    test_name=str(payload["test_name"]),
+                    mode=str(payload.get("mode") or "live"),
+                    run_id=str(payload["run_id"]),
+                    operator=payload.get("operator"),
+                    profile_name=payload.get("profile_name"),
+                    notes=payload.get("notes"),
+                    software_git_commit=payload.get("software_git_commit"),
+                    software_branch=payload.get("software_branch"),
+                    device_map_version=payload.get("device_map_version"),
+                    svg_version=payload.get("svg_version"),
+                    bus_config=dict(payload.get("bus_config") or {}),
+                    clock_info=dict(payload.get("clock_info") or {}),
+                    extra_metadata=dict(payload.get("extra_metadata") or {}),
+                )
+
+                current_run = self.raw_history_manager.current_run
+                started_wall_time = (
+                    current_run.started_wall_time if current_run is not None else isoformat_z()
+                )
+
+                yield run_started_message(
+                    run_id=run_id,
+                    mode=str(payload.get("mode") or "live"),
+                    status="running",
+                    test_name=str(payload["test_name"]),
+                    operator=payload.get("operator"),
+                    profile_name=payload.get("profile_name"),
+                    started_wall_time=started_wall_time,
+                )
+            except Exception as exc:
+                yield error_message(
+                    code="gateway_start_run_failed",
+                    message=str(exc),
+                )
+            return
+
+        if message.type == "finish_run":
+            try:
+                payload = dict(message.payload)
+                reason = str(payload.get("reason") or "operator_stop")
+
+                current_run = self.raw_history_manager.current_run
+                current_mode = None
+                current_test_name = None
+                if current_run is not None:
+                    current_mode = current_run.metadata.get("mode")
+                    current_test_name = current_run.metadata.get("test_name")
+
+                finished_run_id = self.raw_history_manager.finish_run(reason=reason)
+
+                yield run_finished_message(
+                    run_id=finished_run_id,
+                    mode=str(current_mode or "live"),
+                    status="completed",
+                    test_name=current_test_name,
+                    reason=reason,
+                    finished_wall_time=isoformat_z(),
+                )
+            except Exception as exc:
+                yield error_message(
+                    code="gateway_finish_run_failed",
+                    message=str(exc),
+                )
             return
 
         if message.type == "initialize_live_hardware":
@@ -393,6 +532,11 @@ class GatewayService:
 
                 packet = self._build_outbound_packet(payload)
                 bus.send(packet)
+
+                self._record_raw_command_out_if_running(
+                    device_id=device_id,
+                    packet=packet,
+                )
 
                 yield packet_sent_message(
                     device_id=device_id,

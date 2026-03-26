@@ -126,3 +126,55 @@ class GatewayClient:
             },
             expected_responses=1,
         )
+
+    def start_run(
+        self,
+        *,
+        run_id: str,
+        test_name: str,
+        mode: str,
+        operator: str | None = None,
+        profile_name: str | None = None,
+        notes: str | None = None,
+        software_git_commit: str | None = None,
+        software_branch: str | None = None,
+        device_map_version: str | None = None,
+        svg_version: str | None = None,
+        bus_config: dict | None = None,
+        clock_info: dict | None = None,
+        extra_metadata: dict | None = None,
+    ) -> list[GatewayIPCMessage]:
+        return self.request(
+            "start_run",
+            payload={
+                "run_id": run_id,
+                "test_name": test_name,
+                "mode": mode,
+                "operator": operator,
+                "profile_name": profile_name,
+                "notes": notes,
+                "software_git_commit": software_git_commit,
+                "software_branch": software_branch,
+                "device_map_version": device_map_version,
+                "svg_version": svg_version,
+                "bus_config": dict(bus_config or {}),
+                "clock_info": dict(clock_info or {}),
+                "extra_metadata": dict(extra_metadata or {}),
+            },
+            expected_responses=1,
+        )
+
+    def finish_run(
+        self,
+        *,
+        run_id: str,
+        reason: str,
+    ) -> list[GatewayIPCMessage]:
+        return self.request(
+            "finish_run",
+            payload={
+                "run_id": run_id,
+                "reason": reason,
+            },
+            expected_responses=1,
+        )

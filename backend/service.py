@@ -57,7 +57,12 @@ class BackendService:
         self.started_at = isoformat_z()
         self.service_name = "teststand-backend"
 
-        self.history_manager = HistoryManager(project_root=project_root)
+        self.history_manager = HistoryManager(
+            project_root=project_root,
+            enable_raw_writer=False,
+            enable_rawbak_writer=False,
+            enable_structured_writer=True,
+        )
         self.health = HealthPublisher(history_manager=self.history_manager)
 
         self.state_store = StateStore(
@@ -423,10 +428,12 @@ class BackendService:
             return
 
         if message.type == "start_run":
+            run_result = None
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 test_name = self._require_non_empty_string(payload, "test_name")
                 mode = self._get_optional_string(payload, "mode") or "live"
+
                 run_result = self.run_controller.start_run(
                     test_name=test_name,
                     mode=mode,
@@ -442,7 +449,18 @@ class BackendService:
                     clock_info=self._get_optional_mapping(payload, "clock_info"),
                     extra_metadata=self._get_optional_mapping(payload, "extra_metadata"),
                 )
+
+                self._start_gateway_raw_run(
+                    run_result=run_result,
+                    original_payload=payload,
+                )
+
             except Exception as exc:
+                if run_result is not None and self.history_manager.is_running:
+                    try:
+                        self.run_controller.finish_run(reason="gateway_start_failed")
+                    except Exception:
+                        log.exception("Backend failed to roll back structured run after gateway start failure")
                 yield error_message("start_run_failed", str(exc))
                 return
 
@@ -455,6 +473,7 @@ class BackendService:
                 operator=run_result.get("operator"),
                 profile_name=run_result.get("profile_name"),
             )
+
             self.health_monitor.sample_once()
 
             yield run_status_message(
@@ -466,6 +485,7 @@ class BackendService:
                 profile_name=run_result.get("profile_name"),
                 started_wall_time=run_result.get("started_wall_time"),
             )
+
             yield self._build_backend_status_message()
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -487,6 +507,13 @@ class BackendService:
                     )
 
                 finish_result = self.run_controller.finish_run(reason=reason)
+
+                if current_run_id is not None:
+                    self._finish_gateway_raw_run(
+                        run_id=current_run_id,
+                        reason=reason,
+                    )
+
             except Exception as exc:
                 yield error_message("finish_run_failed", str(exc))
                 return
@@ -501,6 +528,7 @@ class BackendService:
                 reason=finish_result.get("reason"),
                 finished_wall_time=finish_result.get("finished_wall_time"),
             )
+
             yield self._build_backend_status_message()
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
@@ -1019,6 +1047,78 @@ class BackendService:
         return payload
 
 
+    def _start_gateway_raw_run(
+        self,
+        *,
+        run_result: Mapping[str, Any],
+        original_payload: Mapping[str, Any],
+    ) -> None:
+        if not self.use_gateway_for_live_ingest:
+            return
+
+        responses = self.gateway_client.start_run(
+            run_id=str(run_result["run_id"]),
+            test_name=str(run_result["test_name"]),
+            mode=str(run_result.get("mode") or "live"),
+            operator=run_result.get("operator"),
+            profile_name=run_result.get("profile_name"),
+            notes=original_payload.get("notes"),
+            software_git_commit=original_payload.get("software_git_commit"),
+            software_branch=original_payload.get("software_branch"),
+            device_map_version=original_payload.get("device_map_version"),
+            svg_version=original_payload.get("svg_version"),
+            bus_config=dict(original_payload.get("bus_config") or {}),
+            clock_info=dict(original_payload.get("clock_info") or {}),
+            extra_metadata=dict(original_payload.get("extra_metadata") or {}),
+        )
+
+        if not responses:
+            raise RuntimeError("Gateway did not acknowledge start_run")
+
+        first = responses[0]
+        if first.type == "error":
+            message = str(first.payload.get("message") or "Gateway start_run failed")
+            raise RuntimeError(message)
+
+        if first.type != "run_started":
+            raise RuntimeError(
+                f"Unexpected gateway response to start_run: {first.type}"
+            )
+
+    def _finish_gateway_raw_run(
+        self,
+        *,
+        run_id: str,
+        reason: str,
+    ) -> None:
+        if not self.use_gateway_for_live_ingest:
+            return
+
+        responses = self.gateway_client.finish_run(
+            run_id=run_id,
+            reason=reason,
+        )
+        if not responses:
+            log.warning("Gateway did not acknowledge finish_run for %s", run_id)
+            return
+
+        first = responses[0]
+        if first.type == "error":
+            log.warning(
+                "Gateway finish_run failed for %s: %s",
+                run_id,
+                first.payload.get("message"),
+            )
+            return
+
+        if first.type != "run_finished":
+            log.warning(
+                "Unexpected gateway response to finish_run for %s: %s",
+                run_id,
+                first.type,
+            )
+
+
     def _all_device_ids(self) -> list[str]:
         device_ids: list[str] = []
         for device in self.device_registry.get_gui_device_presentations():
@@ -1062,7 +1162,7 @@ class BackendService:
 
             self._gateway_bus_proxies_by_id[device_id] = proxy
 
-            
+
     def _dispatch_command_request(
         self,
         payload: Mapping[str, Any],

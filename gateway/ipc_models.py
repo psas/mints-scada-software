@@ -134,6 +134,55 @@ def packet_sent_message(
     return GatewayIPCMessage(type="packet_sent", payload=payload)
 
 
+def run_started_message(
+    *,
+    run_id: str,
+    mode: str,
+    status: str,
+    test_name: str | None = None,
+    operator: str | None = None,
+    profile_name: str | None = None,
+    started_wall_time: str | None = None,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "mode": mode,
+        "status": status,
+    }
+    if test_name is not None:
+        payload["test_name"] = test_name
+    if operator is not None:
+        payload["operator"] = operator
+    if profile_name is not None:
+        payload["profile_name"] = profile_name
+    if started_wall_time is not None:
+        payload["started_wall_time"] = started_wall_time
+    return GatewayIPCMessage(type="run_started", payload=payload)
+
+
+def run_finished_message(
+    *,
+    run_id: str,
+    mode: str,
+    status: str,
+    test_name: str | None = None,
+    reason: str | None = None,
+    finished_wall_time: str | None = None,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "mode": mode,
+        "status": status,
+    }
+    if test_name is not None:
+        payload["test_name"] = test_name
+    if reason is not None:
+        payload["reason"] = reason
+    if finished_wall_time is not None:
+        payload["finished_wall_time"] = finished_wall_time
+    return GatewayIPCMessage(type="run_finished", payload=payload)
+
+
 def gateway_status_message(
     *,
     service_name: str,
