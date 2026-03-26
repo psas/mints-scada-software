@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 from pathlib import Path
 
 from .service import GatewayService
@@ -33,6 +34,18 @@ def configure_logging() -> None:
     )
 
 
+def install_signal_handlers(service: GatewayService) -> None:
+    def _handle_signal(signum, _frame) -> None:
+        logging.getLogger(__name__).info(
+            "Stopping gateway due to signal %s",
+            signum,
+        )
+        service.stop()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+
 def main() -> int:
     configure_logging()
     parser = build_arg_parser()
@@ -42,6 +55,7 @@ def main() -> int:
         project_root=args.project_root,
         idle_sleep_s=args.idle_sleep,
     )
+    install_signal_handlers(service)
 
     try:
         logging.getLogger(__name__).info("Starting gateway service")
@@ -50,6 +64,7 @@ def main() -> int:
         logging.getLogger(__name__).info(
             "Stopping gateway due to keyboard interrupt"
         )
+        service.stop()
     finally:
         service.stop()
 

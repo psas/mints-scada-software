@@ -10,11 +10,13 @@ VENV := .venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 REQUIREMENTS := requirements.txt
 
+GATEWAY := main_gateway.py
 BACKEND := main_backend.py
 GUI := main_user_gui.py
 BACKEND_SOCKET := .backend_service.sock
 
 DEV_DIR := .dev
+GATEWAY_PID_FILE := $(DEV_DIR)/gateway.pid
 BACKEND_PID_FILE := $(DEV_DIR)/backend.pid
 APPLICATION_PID_FILE := .applicationpid
 
@@ -34,7 +36,7 @@ PRESERVE_HISTORY_RUN_PATTERNS := \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup wsl-usb usb-status run run-direct run-backend run-gui stop restart status \
+.PHONY: help setup wsl-usb usb-status run run-direct run-gateway run-backend run-gui stop restart status \
 	clear-all-history clean clean-dev \
 	_ensure-dev-dirs _ensure-venv _ensure-history-dirs
 
@@ -47,8 +49,9 @@ help:
 	@echo "  make wsl-usb            - Configure USB device forwarding (WSL only)"
 	@echo ""
 	@echo "Run:"
-	@echo "  make run                - Show USB/serial status, then start backend + GUI"
-	@echo "  make run-direct         - Start backend + GUI immediately, skip USB check"
+	@echo "  make run                - Show USB/serial status, then start gateway + backend + GUI"
+	@echo "  make run-direct         - Start gateway + backend + GUI immediately, skip USB check"
+	@echo "  make run-gateway        - Start gateway only"
 	@echo "  make run-backend        - Start backend only"
 	@echo "  make run-gui            - Start GUI only (backend must already be running)"
 	@echo "  make usb-status         - Show current USB and serial device status"
@@ -56,7 +59,7 @@ help:
 	@echo "Control:"
 	@echo "  make stop               - Stop processes started by this Makefile"
 	@echo "  make restart            - Stop all app processes, then run full startup again"
-	@echo "  make status             - Show backend, watcher, socket, and local history status"
+	@echo "  make status             - Show gateway, backend, watcher, socket, and local history status"
 	@echo ""
 	@echo "Dev cleanup:"
 	@echo "  These are for software dev only and will be removed. Please do not use."
@@ -139,7 +142,26 @@ run-direct:
 	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
 	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
 	@set -eu; \
+	started_gateway=0; \
 	started_backend=0; \
+	if [ -f "$(GATEWAY_PID_FILE)" ]; then \
+		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "[INFO] Gateway already running with pid=$$pid"; \
+		else \
+			echo "[INFO] Removing stale gateway pid file"; \
+			rm -f "$(GATEWAY_PID_FILE)"; \
+		fi; \
+	fi; \
+	if [ ! -f "$(GATEWAY_PID_FILE)" ]; then \
+		echo "[INFO] Starting gateway..."; \
+		nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
+		gateway_pid=$$!; \
+		echo "$$gateway_pid" > "$(GATEWAY_PID_FILE)"; \
+		started_gateway=1; \
+	else \
+		gateway_pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+	fi; \
 	if [ -f "$(BACKEND_PID_FILE)" ]; then \
 		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
 		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
@@ -177,6 +199,11 @@ run-direct:
 			if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
 			rm -f "$(BACKEND_PID_FILE)"; \
 		fi; \
+		if [ "$$started_gateway" -eq 1 ]; then \
+			pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+			if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
+			rm -f "$(GATEWAY_PID_FILE)"; \
+		fi; \
 		exit 1; \
 	fi; \
 	cleanup() { \
@@ -205,12 +232,18 @@ run-direct:
 		if [ "$$started_backend" -eq 1 ]; then \
 			rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"; \
 		fi; \
+		if [ "$$started_gateway" -eq 1 ]; then \
+			rm -f "$(GATEWAY_PID_FILE)"; \
+		fi; \
 		rm -f .shutdown_signal; \
 		echo "[OK] Application shutdown complete"; \
 		exit "$$gui_code"; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	rm -f "$(APPLICATION_PID_FILE)" .shutdown_signal; \
+	if [ "$$started_gateway" -eq 1 ]; then \
+		echo "$$gateway_pid gateway" >> "$(APPLICATION_PID_FILE)"; \
+	fi; \
 	if [ "$$started_backend" -eq 1 ]; then \
 		echo "$$backend_pid backend" >> "$(APPLICATION_PID_FILE)"; \
 	fi; \
@@ -220,6 +253,29 @@ run-direct:
 	echo "$$watcher_pid shutdown_watcher" >> "$(APPLICATION_PID_FILE)"; \
 	echo "[INFO] Starting GUI..."; \
 	. "$(VENV_ACTIVATE)" && $(PYTHON) $(GUI)
+
+
+run-gateway:
+	@if [ ! -d "$(VENV)" ]; then \
+		echo "Error: Virtual environment not found. Run 'make setup' first."; \
+		exit 1; \
+	fi
+	@mkdir -p "$(DEV_DIR)"
+	@set -eu; \
+	if [ -f "$(GATEWAY_PID_FILE)" ]; then \
+		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "[INFO] Gateway already running with pid=$$pid"; \
+			exit 0; \
+		else \
+			echo "[INFO] Removing stale gateway pid file"; \
+			rm -f "$(GATEWAY_PID_FILE)"; \
+		fi; \
+	fi; \
+	echo "[INFO] Starting gateway..."; \
+	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
+	echo $$! > "$(GATEWAY_PID_FILE)"; \
+	echo "[OK] Gateway started with pid=$$(cat "$(GATEWAY_PID_FILE)")"
 
 
 run-backend:
@@ -300,7 +356,19 @@ stop:
 			echo "[INFO] Backend pid file exists but process is not alive"; \
 		fi; \
 	fi; \
-	rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" .shutdown_signal; \
+	if [ -f "$(GATEWAY_PID_FILE)" ]; then \
+		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "[INFO] Stopping gateway pid=$$pid"; \
+			kill "$$pid" 2>/dev/null || true; \
+			sleep 1; \
+			kill -0 "$$pid" 2>/dev/null && kill -9 "$$pid" 2>/dev/null || true; \
+			stopped_any=1; \
+		else \
+			echo "[INFO] Gateway pid file exists but process is not alive"; \
+		fi; \
+	fi; \
+	rm -f "$(GATEWAY_PID_FILE)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" .shutdown_signal; \
 	if [ "$$stopped_any" -eq 1 ]; then \
 		echo "[OK] Application stopped"; \
 	else \
@@ -313,6 +381,16 @@ restart: stop run
 
 status:
 	@echo "=== MINTS SCADA Status ==="
+	@if [ -f "$(GATEWAY_PID_FILE)" ]; then \
+		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "Gateway PID: $$pid [alive]"; \
+		else \
+			echo "Gateway PID file exists but process is dead"; \
+		fi; \
+	else \
+		echo "Gateway PID: [none]"; \
+	fi
 	@echo "Backend socket: $(BACKEND_SOCKET)"
 	@if [ -S "$(BACKEND_SOCKET)" ]; then echo "  [OK] socket exists"; else echo "  [--] socket missing"; fi
 	@if [ -f "$(BACKEND_PID_FILE)" ]; then \
@@ -403,7 +481,7 @@ clean: stop clear-all-history
 
 clean-dev:
 	@echo "[INFO] Cleaning dev artifacts..."
-	@rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
+	@rm -f "$(GATEWAY_PID_FILE)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
 	@rmdir "$(DEV_DIR)" 2>/dev/null || true
 	@echo "[OK] Dev artifacts cleaned"
 
