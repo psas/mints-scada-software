@@ -314,15 +314,16 @@ class GatewayService:
         *,
         stream_name: str,
         event: Mapping[str, Any],
-    ) -> str | None:
+    ) -> tuple[str | None, dict[str, Any] | None]:
         if not self.raw_history_manager.is_running:
-            return None
+            return None, None
 
         event_payload = dict(event)
         self.raw_history_manager.record_raw_event(stream_name, event_payload)
 
         current_run = self.raw_history_manager.current_run
-        return current_run.run_id if current_run is not None else None
+        run_id = current_run.run_id if current_run is not None else None
+        return run_id, event_payload
 
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         del runtime
@@ -410,11 +411,11 @@ class GatewayService:
                 if not isinstance(event_payload, Mapping):
                     raise ValueError("record_raw_event requires 'event' to be a mapping")
 
-                run_id = self._record_external_raw_event_if_running(
+                run_id, materialized_event = self._record_external_raw_event_if_running(
                     stream_name=stream_name,
                     event=event_payload,
                 )
-                if run_id is None:
+                if run_id is None or materialized_event is None:
                     yield error_message(
                         code="gateway_raw_run_not_active",
                         message="Gateway raw/rawbak run is not active",
@@ -425,6 +426,7 @@ class GatewayService:
                     stream_name=stream_name,
                     run_id=run_id,
                     accepted=True,
+                    event=materialized_event,
                 )
             except Exception as exc:
                 yield error_message(
@@ -432,6 +434,7 @@ class GatewayService:
                     message=str(exc),
                 )
             return
+
         if message.type == "start_run":
             try:
                 payload = dict(message.payload)

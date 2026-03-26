@@ -19,14 +19,14 @@ class HealthPublisher:
         self,
         *,
         history_manager: HistoryManager,
-        raw_mirror_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+        raw_mirror_callback: Callable[[str, Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
     ) -> None:
         self.history_manager = history_manager
         self._raw_mirror_callback = raw_mirror_callback
 
     def set_raw_mirror_callback(
         self,
-        callback: Callable[[str, Mapping[str, Any]], None] | None,
+        callback: Callable[[str, Mapping[str, Any]], Mapping[str, Any] | None] | None,
     ) -> None:
         self._raw_mirror_callback = callback
 
@@ -47,27 +47,32 @@ class HealthPublisher:
         }
 
         if self.history_manager.is_running:
+            event_for_structured = dict(event)
+
             raw_mirror = self._raw_mirror_callback
             if raw_mirror is not None:
                 try:
-                    raw_mirror("system_event", dict(event))
+                    mirrored = raw_mirror("system_event", dict(event))
+                    if isinstance(mirrored, Mapping):
+                        event_for_structured = dict(mirrored)
                 except Exception:
                     log.exception(
                         "Failed to mirror raw system_event to gateway: %s",
                         event_type,
                     )
-            else:
-                self.history_manager.record_raw_event("system_event", event)
 
             self.history_manager.record_structured_event(
                 "system_event",
                 {
-                    **event,
+                    **event_for_structured,
                     "structured_at": isoformat_z(),
                 },
             )
+            return event_for_structured
 
         return event
+
+
 
 class BackendHealthMonitor:
     """Poll backend runtime health and publish summarized watchdog state."""

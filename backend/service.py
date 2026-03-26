@@ -585,8 +585,14 @@ class BackendService:
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 action_event = self._build_operator_action_event(payload)
+
+                mirrored_action_event = self._mirror_operator_action_to_gateway_if_running(
+                    action_event
+                )
+                if mirrored_action_event is not None:
+                    action_event = mirrored_action_event
+
                 self._record_operator_action_if_running(action_event)
-                self._mirror_operator_action_to_gateway_if_running(action_event)
             except Exception as exc:
                 yield error_message("operator_action_failed", str(exc))
                 return
@@ -1124,11 +1130,11 @@ class BackendService:
         self,
         stream_name: str,
         event: Mapping[str, Any],
-    ) -> None:
+    ) -> dict[str, Any] | None:
         if not self.use_gateway_for_live_ingest:
-            return
+            return None
         if not self.history_manager.is_running:
-            return
+            return None
 
         responses = self.gateway_client.record_raw_event(
             stream_name=stream_name,
@@ -1139,7 +1145,7 @@ class BackendService:
                 "Gateway did not acknowledge raw %s event mirror",
                 stream_name,
             )
-            return
+            return None
 
         first = responses[0]
         if first.type == "error":
@@ -1148,12 +1154,19 @@ class BackendService:
                 stream_name,
                 first.payload.get("message"),
             )
+            return None
+
+        mirrored_event = first.payload.get("event")
+        if isinstance(mirrored_event, Mapping):
+            return dict(mirrored_event)
+
+        return None
 
     def _mirror_operator_action_to_gateway_if_running(
         self,
         action_event: Mapping[str, Any],
-    ) -> None:
-        self._mirror_raw_event_to_gateway("operator_action", action_event)
+    ) -> dict[str, Any] | None:
+        return self._mirror_raw_event_to_gateway("operator_action", action_event)
 
     def _all_device_ids(self) -> list[str]:
         device_ids: list[str] = []
@@ -1216,8 +1229,14 @@ class BackendService:
         action_payload = self._get_optional_mapping(normalized, "operator_action")
         if action_payload is not None:
             action_event = self._build_operator_action_event(action_payload)
+
+            mirrored_action_event = self._mirror_operator_action_to_gateway_if_running(
+                action_event
+            )
+            if mirrored_action_event is not None:
+                action_event = mirrored_action_event
+
             self._record_operator_action_if_running(action_event)
-            self._mirror_operator_action_to_gateway_if_running(action_event)
 
         request_id = self._get_optional_string(normalized, "request_id")
         request_source = self._get_optional_string(normalized, "request_source") or default_request_source

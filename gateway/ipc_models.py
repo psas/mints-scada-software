@@ -188,6 +188,7 @@ def raw_event_recorded_message(
     stream_name: str,
     run_id: str | None,
     accepted: bool = True,
+    event: Mapping[str, Any] | None = None,
 ) -> GatewayIPCMessage:
     payload: dict[str, Any] = {
         "stream_name": stream_name,
@@ -195,6 +196,8 @@ def raw_event_recorded_message(
     }
     if run_id is not None:
         payload["run_id"] = run_id
+    if event is not None:
+        payload["event"] = dict(event)
     return GatewayIPCMessage(type="raw_event_recorded", payload=payload)
 
 
