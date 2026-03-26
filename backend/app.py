@@ -39,6 +39,16 @@ def main() -> int:
         gateway_socket_path=args.gateway_socket,
     )
 
+    adopted_gateway_status = service.adopt_gateway_runtime_status()
+    if adopted_gateway_status is None:
+        print("[backend] no gateway runtime state adopted at startup")
+    else:
+        print(
+            "[backend] adopted gateway runtime state "
+            f"(bus_connected={adopted_gateway_status.get('bus_connected')}, "
+            f"raw_run_active={adopted_gateway_status.get('raw_run_active')})"
+        )
+
     try:
         print(f"[backend] starting IPC server at {service.socket_path}")
         service.serve_forever()

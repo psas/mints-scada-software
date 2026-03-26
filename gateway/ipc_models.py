@@ -213,22 +213,38 @@ def gateway_status_message(
     bitrate: int | None,
     registered_ids: list[str],
     skipped_ids: list[str],
+    raw_run_active: bool = False,
+    raw_run_id: str | None = None,
+    raw_mode: str | None = None,
+    raw_test_name: str | None = None,
+    raw_started_wall_time: str | None = None,
+    backend_link_ok: bool | None = None,
 ) -> GatewayIPCMessage:
-    return GatewayIPCMessage(
-        type="gateway_status",
-        payload={
-            "service_name": service_name,
-            "gateway_started_at": gateway_started_at,
-            "socket_path": socket_path,
-            "connected_clients": connected_clients,
-            "supported_messages": list(supported_messages),
-            "bus_connected": bool(bus_connected),
-            "sender": sender,
-            "bitrate": bitrate,
-            "registered_ids": list(registered_ids),
-            "skipped_ids": list(skipped_ids),
-        },
-    )
+    payload: dict[str, Any] = {
+        "service_name": service_name,
+        "gateway_started_at": gateway_started_at,
+        "socket_path": socket_path,
+        "connected_clients": connected_clients,
+        "supported_messages": list(supported_messages),
+        "bus_connected": bool(bus_connected),
+        "sender": sender,
+        "bitrate": bitrate,
+        "registered_ids": list(registered_ids),
+        "skipped_ids": list(skipped_ids),
+        "raw_run_active": bool(raw_run_active),
+    }
+    if raw_run_id is not None:
+        payload["raw_run_id"] = raw_run_id
+    if raw_mode is not None:
+        payload["raw_mode"] = raw_mode
+    if raw_test_name is not None:
+        payload["raw_test_name"] = raw_test_name
+    if raw_started_wall_time is not None:
+        payload["raw_started_wall_time"] = raw_started_wall_time
+    if backend_link_ok is not None:
+        payload["backend_link_ok"] = bool(backend_link_ok)
+
+    return GatewayIPCMessage(type="gateway_status", payload=payload)
 
 
 def error_message(

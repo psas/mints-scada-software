@@ -1126,6 +1126,62 @@ class BackendService:
                 first.type,
             )
 
+
+
+    def adopt_gateway_runtime_status(self) -> dict[str, Any] | None:
+        if not self.use_gateway_for_live_ingest:
+            return None
+
+        responses = self.gateway_client.status_request()
+        if not responses:
+            return None
+
+        first = responses[0]
+        if first.type == "error":
+            log.warning(
+                "Gateway status_request returned error: %s",
+                first.payload.get("message"),
+            )
+            return None
+
+        if first.type != "gateway_status":
+            log.warning(
+                "Unexpected gateway response to status_request: %s",
+                first.type,
+            )
+            return None
+
+        payload = self._normalize_mapping_payload(first.payload)
+
+        adopted_bus_state = self._apply_gateway_hardware_status(
+            {
+                "connected": bool(payload.get("bus_connected", False)),
+                "reconnecting": False,
+                "status": "connected" if bool(payload.get("bus_connected", False)) else "disconnected",
+                "sender": self._get_optional_string(payload, "sender"),
+                "bitrate": self._get_optional_int(payload, "bitrate"),
+                "registered_ids": list(payload.get("registered_ids") or []),
+                "skipped_ids": list(payload.get("skipped_ids") or []),
+                "wall_time": isoformat_z(),
+            },
+            record_health=False,
+        )
+
+        raw_run_active = bool(payload.get("raw_run_active", False))
+        self.health.record_system_event(
+            "gateway_runtime_adopted",
+            severity="warning" if raw_run_active else "info",
+            gateway_bus_connected=adopted_bus_state["connected"],
+            raw_run_active=raw_run_active,
+            raw_run_id=self._get_optional_string(payload, "raw_run_id"),
+            raw_mode=self._get_optional_string(payload, "raw_mode"),
+            raw_test_name=self._get_optional_string(payload, "raw_test_name"),
+            raw_started_wall_time=self._get_optional_string(payload, "raw_started_wall_time"),
+            backend_link_ok=payload.get("backend_link_ok"),
+        )
+        self.health_monitor.sample_once()
+        return dict(payload)
+
     def _mirror_raw_event_to_gateway(
         self,
         stream_name: str,

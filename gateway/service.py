@@ -94,6 +94,7 @@ class GatewayService:
         self._last_registered_ids: list[str] = []
         self._last_skipped_ids: list[str] = []
         self._bus_connected = False
+        self._backend_link_ok = True
         
         self.raw_history_manager = HistoryManager(
             project_root=project_root,
@@ -210,7 +211,41 @@ class GatewayService:
             self._connected_clients.discard(client_id)
         log.info("Gateway IPC client disconnected: %s", client_id)
 
+
+
+    def _current_raw_run_summary(self) -> dict[str, Any]:
+        current_run = self.raw_history_manager.current_run
+        if current_run is None:
+            return {
+                "raw_run_active": False,
+                "raw_run_id": None,
+                "raw_mode": None,
+                "raw_test_name": None,
+                "raw_started_wall_time": None,
+            }
+
+        metadata = dict(current_run.metadata)
+        return {
+            "raw_run_active": True,
+            "raw_run_id": current_run.run_id,
+            "raw_mode": metadata.get("mode"),
+            "raw_test_name": metadata.get("test_name"),
+            "raw_started_wall_time": current_run.started_wall_time,
+        }
+
+    def _mark_backend_link_failure(self, reason: str) -> None:
+        if self._backend_link_ok:
+            log.warning("Gateway lost backend link: %s", reason)
+        self._backend_link_ok = False
+
+    def _mark_backend_link_restored(self) -> None:
+        if not self._backend_link_ok:
+            log.info("Gateway backend link restored")
+        self._backend_link_ok = True
+
+
     def _build_status_message(self) -> GatewayIPCMessage:
+        raw_run = self._current_raw_run_summary()
         return gateway_status_message(
             service_name=self.service_name,
             gateway_started_at=self.started_at,
@@ -222,13 +257,23 @@ class GatewayService:
             bitrate=self.bus_manager.bitrate,
             registered_ids=self._last_registered_ids,
             skipped_ids=self._last_skipped_ids,
+            raw_run_active=bool(raw_run["raw_run_active"]),
+            raw_run_id=raw_run["raw_run_id"],
+            raw_mode=raw_run["raw_mode"],
+            raw_test_name=raw_run["raw_test_name"],
+            raw_started_wall_time=raw_run["raw_started_wall_time"],
+            backend_link_ok=self._backend_link_ok,
         )
 
     def _sync_hardware_status_to_backend(self, payload: Mapping[str, Any]) -> None:
         try:
-            self.backend_client.gateway_hardware_status(payload)
-        except Exception:
-            log.exception("Gateway failed to sync hardware status to backend")
+            responses = self.backend_client.gateway_hardware_status(payload)
+            if responses:
+                self._mark_backend_link_restored()
+            else:
+                self._mark_backend_link_failure("hardware status sync returned no response")
+        except Exception as exc:
+            self._mark_backend_link_failure(f"hardware status sync failed: {exc}")
 
     def _handle_bus_status_event(self, payload: Mapping[str, Any]) -> None:
         status = str(payload.get("status") or "").strip().lower()
@@ -334,9 +379,15 @@ class GatewayService:
             log.exception("Gateway failed to record raw telemetry_in for %s", meta.get("id"))
 
         try:
-            self.backend_client.ingest_live_packet(meta=meta, packet=packet)
-        except Exception:
-            log.exception("Gateway failed to forward live packet for %s", meta.get("id"))
+            responses = self.backend_client.ingest_live_packet(meta=meta, packet=packet)
+            if responses:
+                self._mark_backend_link_restored()
+            else:
+                self._mark_backend_link_failure("live packet forward returned no response")
+        except Exception as exc:
+            self._mark_backend_link_failure(
+                f"live packet forward failed for {meta.get('id')}: {exc}"
+            )
 
     def _build_outbound_packet(self, payload: Mapping[str, Any]) -> DataPacket:
         packet_id = int(payload["id"])
