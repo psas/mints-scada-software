@@ -111,6 +111,29 @@ def hardware_status_message(
     return GatewayIPCMessage(type="hardware_status", payload=payload)
 
 
+def packet_sent_message(
+    *,
+    device_id: str | None,
+    packet_id: int,
+    seq: int,
+    cmd: int,
+    sender: str | None = None,
+    bitrate: int | None = None,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "packet_id": int(packet_id),
+        "seq": int(seq),
+        "cmd": int(cmd),
+    }
+    if device_id is not None:
+        payload["device_id"] = device_id
+    if sender is not None:
+        payload["sender"] = sender
+    if bitrate is not None:
+        payload["bitrate"] = int(bitrate)
+    return GatewayIPCMessage(type="packet_sent", payload=payload)
+
+
 def gateway_status_message(
     *,
     service_name: str,

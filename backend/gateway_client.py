@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 from pathlib import Path
+from typing import Any
 
 from gateway.ipc_models import GatewayIPCMessage, decode_message, encode_message
 
@@ -100,3 +101,28 @@ class GatewayClient:
 
     def shutdown_live_hardware(self) -> list[GatewayIPCMessage]:
         return self.request("shutdown_live_hardware", expected_responses=1)
+
+    def send_packet(
+        self,
+        *,
+        device_id: str,
+        packet: Any,
+    ) -> list[GatewayIPCMessage]:
+        packet_id = getattr(packet, "id", None)
+        if packet_id is None:
+            raise ValueError("Outbound packet is missing 'id'")
+
+        return self.request(
+            "send_packet",
+            payload={
+                "device_id": device_id,
+                "id": int(packet_id),
+                "seq": int(getattr(packet, "seq", 1)),
+                "cmd": int(getattr(packet, "cmd", 1)),
+                "reply": bool(getattr(packet, "reply", False)),
+                "err": bool(getattr(packet, "err", False)),
+                "rsvd": bool(getattr(packet, "rsvd", False)),
+                "data": [int(x) for x in list(getattr(packet, "data", []) or [])],
+            },
+            expected_responses=1,
+        )

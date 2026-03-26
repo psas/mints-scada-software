@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from nexus import DataPacket
+
 from backend.bus_manager import BusManager
 from backend.device_registry import DeviceRegistry
 
@@ -16,6 +18,7 @@ from .ipc_models import (
     gateway_status_message,
     hardware_status_message,
     hello_ack_message,
+    packet_sent_message,
     pong_message,
 )
 from .ipc_server import GatewayIPCServer
@@ -35,7 +38,7 @@ class GatewayService:
     gateway, while backend still owns higher-level state, structured history,
     and GUI IPC.
 
-    Outbound command routing still follows in the next commit.
+    Outbound command routing is now also proxied through gateway.
     """
 
     def __init__(
@@ -76,6 +79,7 @@ class GatewayService:
             "status_request",
             "initialize_live_hardware",
             "shutdown_live_hardware",
+            "send_packet",
         ]
 
         self._lock = threading.RLock()
@@ -248,6 +252,47 @@ class GatewayService:
         except Exception:
             log.exception("Gateway failed to forward live packet for %s", meta.get("id"))
 
+    def _build_outbound_packet(self, payload: Mapping[str, Any]) -> DataPacket:
+        packet_id = int(payload["id"])
+        seq = int(payload.get("seq", 1))
+        cmd = int(payload.get("cmd", 1))
+        reply = bool(payload.get("reply", False))
+        err = bool(payload.get("err", False))
+        rsvd = bool(payload.get("rsvd", False))
+
+        data = [int(x) & 0xFF for x in list(payload.get("data") or [])]
+        if len(data) > 6:
+            raise ValueError("Outbound packet payload 'data' cannot exceed 6 bytes")
+        while len(data) < 6:
+            data.append(0)
+
+        return DataPacket(
+            id=packet_id,
+            seq=seq,
+            cmd=cmd,
+            reply=reply,
+            err=err,
+            rsvd=rsvd,
+            data=data,
+        )
+
+    def _resolve_live_bus_for_device(self, device_id: str | None):
+        if device_id and device_id in self.device_registry:
+            runtime = self.device_registry.get_runtime(device_id)
+            bus = getattr(runtime, "_bus", None)
+            if bus is not None:
+                return bus
+
+        for registered_id in self._last_registered_ids:
+            if registered_id not in self.device_registry:
+                continue
+            runtime = self.device_registry.get_runtime(registered_id)
+            bus = getattr(runtime, "_bus", None)
+            if bus is not None:
+                return bus
+
+        return None
+
     def handle_message(
         self,
         client_id: str,
@@ -329,6 +374,39 @@ class GatewayService:
             )
             self._sync_hardware_status_to_backend(payload.payload)
             yield payload
+            return
+
+        if message.type == "send_packet":
+            try:
+                payload = dict(message.payload)
+                device_id_raw = payload.get("device_id")
+                device_id = str(device_id_raw) if device_id_raw is not None else None
+
+                if not self._bus_connected:
+                    raise RuntimeError("gateway live bus is not connected")
+
+                bus = self._resolve_live_bus_for_device(device_id)
+                if bus is None:
+                    raise RuntimeError(
+                        f"gateway has no live bus handle for device {device_id!r}"
+                    )
+
+                packet = self._build_outbound_packet(payload)
+                bus.send(packet)
+
+                yield packet_sent_message(
+                    device_id=device_id,
+                    packet_id=int(getattr(packet, "id")),
+                    seq=int(getattr(packet, "seq", 1)),
+                    cmd=int(getattr(packet, "cmd", 1)),
+                    sender=self.bus_manager.sender,
+                    bitrate=self.bus_manager.bitrate,
+                )
+            except Exception as exc:
+                yield error_message(
+                    code="send_packet_failed",
+                    message=str(exc),
+                )
             return
 
         yield error_message(

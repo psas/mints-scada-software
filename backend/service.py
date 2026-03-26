@@ -11,6 +11,7 @@ import settings
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
 from nexus import DataPacket
+from .gateway_bus_proxy import GatewayBusProxy
 from .gateway_client import GatewayClient
 from .bus_manager import BusManager
 from .command_router import CommandRouter
@@ -104,7 +105,7 @@ class BackendService:
         self.use_gateway_for_live_ingest = True
         self._gateway_last_registered_ids: list[str] = []
         self._gateway_last_skipped_ids: list[str] = []
-
+        self._gateway_bus_proxies_by_id: dict[str, GatewayBusProxy] = {}
 
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
@@ -177,6 +178,7 @@ class BackendService:
 
         self.bus_manager.shutdown_live_hardware()
         self.device_registry.clear_live_registration_flags()
+        self._detach_all_gateway_bus_proxies()
         self.state_store.set_bus_connection_state(
             connected=False,
             reconnecting=False,
@@ -931,6 +933,11 @@ class BackendService:
 
         self._gateway_last_registered_ids = list(registered_ids)
         self._gateway_last_skipped_ids = list(skipped_ids)
+ 
+        if connected and not reconnecting:
+            self._attach_gateway_bus_proxies(registered_ids)
+        else:
+            self._detach_all_gateway_bus_proxies()
 
         self.state_store.set_bus_connection_state(
             connected=connected,
@@ -1010,7 +1017,52 @@ class BackendService:
 
         payload = self._apply_gateway_hardware_status(first.payload, record_health=True)
         return payload
-    
+
+
+    def _all_device_ids(self) -> list[str]:
+        device_ids: list[str] = []
+        for device in self.device_registry.get_gui_device_presentations():
+            device_id = str(device.get("id") or "").strip()
+            if device_id:
+                device_ids.append(device_id)
+        return device_ids
+
+    def _detach_all_gateway_bus_proxies(self) -> None:
+        for device_id in self._all_device_ids():
+            if device_id not in self.device_registry:
+                continue
+            runtime = self.device_registry.get_runtime(device_id)
+            current_bus = getattr(runtime, "_bus", None)
+            proxy = self._gateway_bus_proxies_by_id.get(device_id)
+            if proxy is not None and current_bus is proxy:
+                runtime._bus = None
+            if hasattr(runtime, "live_registered"):
+                runtime.live_registered = False
+
+        self._gateway_bus_proxies_by_id.clear()
+
+    def _attach_gateway_bus_proxies(self, registered_ids: Iterable[str]) -> None:
+        registered = {str(device_id) for device_id in registered_ids}
+
+        self._detach_all_gateway_bus_proxies()
+
+        for device_id in registered:
+            if device_id not in self.device_registry:
+                continue
+
+            runtime = self.device_registry.get_runtime(device_id)
+            proxy = GatewayBusProxy(
+                gateway_client=self.gateway_client,
+                device_id=device_id,
+            )
+
+            runtime._bus = proxy
+            if hasattr(runtime, "live_registered"):
+                runtime.live_registered = True
+
+            self._gateway_bus_proxies_by_id[device_id] = proxy
+
+            
     def _dispatch_command_request(
         self,
         payload: Mapping[str, Any],
