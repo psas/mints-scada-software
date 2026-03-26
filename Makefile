@@ -13,6 +13,7 @@ REQUIREMENTS := requirements.txt
 GATEWAY := main_gateway.py
 BACKEND := main_backend.py
 GUI := main_user_gui.py
+GATEWAY_SOCKET := .gateway_service.sock
 BACKEND_SOCKET := .backend_service.sock
 
 DEV_DIR := .dev
@@ -153,6 +154,10 @@ run-direct:
 			rm -f "$(GATEWAY_PID_FILE)"; \
 		fi; \
 	fi; \
+	if [ -S "$(GATEWAY_SOCKET)" ] && [ ! -f "$(GATEWAY_PID_FILE)" ]; then \
+		echo "[INFO] Removing stale gateway socket $(GATEWAY_SOCKET)"; \
+		rm -f "$(GATEWAY_SOCKET)"; \
+	fi; \
 	if [ ! -f "$(GATEWAY_PID_FILE)" ]; then \
 		echo "[INFO] Starting gateway..."; \
 		nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
@@ -161,6 +166,23 @@ run-direct:
 		started_gateway=1; \
 	else \
 		gateway_pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+	fi; \
+	echo "[INFO] Waiting for gateway socket $(GATEWAY_SOCKET)..."; \
+	for i in $$(seq 1 80); do \
+		if [ -S "$(GATEWAY_SOCKET)" ]; then \
+			echo "[OK] Gateway socket is ready"; \
+			break; \
+		fi; \
+		sleep 0.25; \
+	done; \
+	if [ ! -S "$(GATEWAY_SOCKET)" ]; then \
+		echo "[ERROR] Gateway socket did not appear."; \
+		if [ "$$started_gateway" -eq 1 ]; then \
+			pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+			if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
+			rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
+		fi; \
+		exit 1; \
 	fi; \
 	if [ -f "$(BACKEND_PID_FILE)" ]; then \
 		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
@@ -197,12 +219,12 @@ run-direct:
 		if [ "$$started_backend" -eq 1 ]; then \
 			pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
 			if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
-			rm -f "$(BACKEND_PID_FILE)"; \
+			rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"; \
 		fi; \
 		if [ "$$started_gateway" -eq 1 ]; then \
 			pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
 			if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
-			rm -f "$(GATEWAY_PID_FILE)"; \
+			rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
 		fi; \
 		exit 1; \
 	fi; \
@@ -233,7 +255,7 @@ run-direct:
 			rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)"; \
 		fi; \
 		if [ "$$started_gateway" -eq 1 ]; then \
-			rm -f "$(GATEWAY_PID_FILE)"; \
+			rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
 		fi; \
 		rm -f .shutdown_signal; \
 		echo "[OK] Application shutdown complete"; \
@@ -272,10 +294,26 @@ run-gateway:
 			rm -f "$(GATEWAY_PID_FILE)"; \
 		fi; \
 	fi; \
+	if [ -S "$(GATEWAY_SOCKET)" ]; then \
+		echo "[INFO] Removing stale gateway socket $(GATEWAY_SOCKET)"; \
+		rm -f "$(GATEWAY_SOCKET)"; \
+	fi; \
 	echo "[INFO] Starting gateway..."; \
 	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
 	echo $$! > "$(GATEWAY_PID_FILE)"; \
-	echo "[OK] Gateway started with pid=$$(cat "$(GATEWAY_PID_FILE)")"
+	echo "[INFO] Waiting for gateway socket $(GATEWAY_SOCKET)..."; \
+	for i in $$(seq 1 80); do \
+		if [ -S "$(GATEWAY_SOCKET)" ]; then \
+			echo "[OK] Gateway started with pid=$$(cat "$(GATEWAY_PID_FILE)")"; \
+			exit 0; \
+		fi; \
+		sleep 0.25; \
+	done; \
+	echo "[ERROR] Gateway socket did not appear."; \
+	pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+	if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
+	rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
+	exit 1
 
 
 run-backend:
@@ -368,7 +406,7 @@ stop:
 			echo "[INFO] Gateway pid file exists but process is not alive"; \
 		fi; \
 	fi; \
-	rm -f "$(GATEWAY_PID_FILE)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" .shutdown_signal; \
+	rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" .shutdown_signal; \
 	if [ "$$stopped_any" -eq 1 ]; then \
 		echo "[OK] Application stopped"; \
 	else \
@@ -391,6 +429,8 @@ status:
 	else \
 		echo "Gateway PID: [none]"; \
 	fi
+	@echo "Gateway socket: $(GATEWAY_SOCKET)"
+	@if [ -S "$(GATEWAY_SOCKET)" ]; then echo "  [OK] socket exists"; else echo "  [--] socket missing"; fi
 	@echo "Backend socket: $(BACKEND_SOCKET)"
 	@if [ -S "$(BACKEND_SOCKET)" ]; then echo "  [OK] socket exists"; else echo "  [--] socket missing"; fi
 	@if [ -f "$(BACKEND_PID_FILE)" ]; then \
@@ -481,7 +521,7 @@ clean: stop clear-all-history
 
 clean-dev:
 	@echo "[INFO] Cleaning dev artifacts..."
-	@rm -f "$(GATEWAY_PID_FILE)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
+	@rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
 	@rmdir "$(DEV_DIR)" 2>/dev/null || true
 	@echo "[OK] Dev artifacts cleaned"
 

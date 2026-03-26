@@ -1167,26 +1167,20 @@ class BackendService:
             reason=reason,
         )
         if not responses:
-            log.warning("Gateway did not acknowledge finish_run for %s", run_id)
-            return
+            raise RuntimeError(
+                f"Gateway did not acknowledge finish_run for {run_id}"
+            )
 
         first = responses[0]
         if first.type == "error":
-            log.warning(
-                "Gateway finish_run failed for %s: %s",
-                run_id,
-                first.payload.get("message"),
-            )
-            return
+            message = str(first.payload.get("message") or "Gateway finish_run failed")
+            raise RuntimeError(message)
 
         if first.type != "run_finished":
-            log.warning(
-                "Unexpected gateway response to finish_run for %s: %s",
-                run_id,
-                first.type,
+            raise RuntimeError(
+                f"Unexpected gateway response to finish_run: {first.type}"
             )
 
-    
     def _set_orphaned_gateway_raw_run(
         self,
         payload: Mapping[str, Any],

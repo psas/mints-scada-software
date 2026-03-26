@@ -95,6 +95,7 @@ class GatewayService:
         self._last_skipped_ids: list[str] = []
         self._bus_connected = False
         self._backend_link_ok = True
+        self._last_backend_link_failure_reason: str | None = None
         
         self.raw_history_manager = HistoryManager(
             project_root=project_root,
@@ -239,14 +240,16 @@ class GatewayService:
         }
 
     def _mark_backend_link_failure(self, reason: str) -> None:
-        if self._backend_link_ok:
+        if self._backend_link_ok or self._last_backend_link_failure_reason != reason:
             log.warning("Gateway lost backend link: %s", reason)
         self._backend_link_ok = False
+        self._last_backend_link_failure_reason = reason
 
     def _mark_backend_link_restored(self) -> None:
         if not self._backend_link_ok:
             log.info("Gateway backend link restored")
         self._backend_link_ok = True
+        self._last_backend_link_failure_reason = None
 
 
     def _build_status_message(self) -> GatewayIPCMessage:
