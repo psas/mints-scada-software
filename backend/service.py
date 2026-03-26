@@ -1842,10 +1842,11 @@ class BackendService:
     def _process_telemetry_packet(
         self,
         *,
-        meta: dict[str, Any],
+        meta: Mapping[str, Any],
         runtime: Any,
-        packet: Any,
+        packet: DataPacket,
         source: str,
+        identity_override: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
             meta=meta,
@@ -1858,8 +1859,25 @@ class BackendService:
             telemetry=telemetry,
         )
 
-        if self.history_manager.is_running:
-            self.history_manager.record_raw_event("telemetry_in", raw_event)
+        # If gateway already materialized the authoritative raw telemetry event
+        # identity, apply it BEFORE using raw_event to build structured telemetry.
+        if identity_override:
+            raw_event = self._apply_raw_identity_to_structured_event(
+                raw_event,
+                identity_override,
+            )
+
+        # Backend is structured-only in gateway mode, so only write raw telemetry
+        # locally if this HistoryManager actually has raw-side writers enabled.
+        has_raw_side = bool(
+            getattr(self.history_manager, "enable_raw_writer", False)
+            or getattr(self.history_manager, "enable_rawbak_writer", False)
+        )
+
+        if self.history_manager.is_running and has_raw_side:
+            raw_event_to_record = dict(raw_event)
+            self.history_manager.record_raw_event("telemetry_in", raw_event_to_record)
+            raw_event = raw_event_to_record
 
         reduction = self.reducer.apply_normalized_telemetry(
             telemetry=telemetry,
@@ -1870,6 +1888,13 @@ class BackendService:
             reduction=reduction,
             first_order_event=raw_event,
         )
+
+        # Critical: structured history must see the gateway identity BEFORE write.
+        if identity_override:
+            structured_event = self._apply_raw_identity_to_structured_event(
+                structured_event,
+                identity_override,
+            )
 
         if self.history_manager.is_running:
             self.history_manager.record_structured_event(
@@ -2046,7 +2071,8 @@ class BackendService:
             if key in raw_event:
                 identity[key] = raw_event[key]
         return identity
-    
+
+
     def _apply_raw_identity_to_structured_event(
         self,
         structured_event: Mapping[str, Any],
@@ -2131,16 +2157,12 @@ class BackendService:
 
         packet = self._build_ingest_packet(normalized, meta=meta)
 
-        structured_event = self._process_telemetry_packet(
+        return self._process_telemetry_packet(
             meta=meta,
             runtime=runtime,
             packet=packet,
             source="gateway_live_bus",
-        )
-
-        return self._apply_raw_identity_to_structured_event(
-            structured_event,
-            raw_identity,
+            identity_override=raw_identity,
         )
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
