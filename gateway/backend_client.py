@@ -165,6 +165,7 @@ class BackendIPCClient:
         *,
         meta: Mapping[str, Any],
         packet: Any,
+        raw_event: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         payload = {
             "device_id": meta["id"],
@@ -177,6 +178,9 @@ class BackendIPCClient:
             "packet_timestamp": getattr(packet, "timestamp", None),
             "source": "gateway_live_bus",
         }
+        if raw_event is not None:
+            payload["raw_event"] = dict(raw_event)
+
         return self.request(
             "ingest_live_telemetry",
             payload=payload,

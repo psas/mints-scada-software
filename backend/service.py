@@ -1996,6 +1996,40 @@ class BackendService:
 
         return packet
 
+
+    def _extract_raw_identity_fields(
+        self,
+        raw_event: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(raw_event, Mapping):
+            return {}
+
+        identity: dict[str, Any] = {}
+        for key in (
+            "run_id",
+            "recorded_at",
+            "stream",
+            "stream_seq",
+            "event_uid",
+            "canonical_hash",
+        ):
+            if key in raw_event:
+                identity[key] = raw_event[key]
+        return identity
+    
+    def _apply_raw_identity_to_structured_event(
+        self,
+        structured_event: Mapping[str, Any],
+        raw_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not raw_identity:
+            return dict(structured_event)
+
+        merged = dict(structured_event)
+        for key, value in raw_identity.items():
+            merged[key] = value
+        return merged
+
     def _ingest_mock_telemetry(
         self,
         payload: Mapping[str, Any],
@@ -2037,13 +2071,21 @@ class BackendService:
         meta = self.device_registry.get_meta(device_id)
         runtime = self.device_registry.get_runtime(device_id)
 
+        raw_event = normalized.get("raw_event")
+        raw_identity = self._extract_raw_identity_fields(raw_event)
+
         packet = self._build_ingest_packet(normalized, meta=meta)
 
-        return self._process_telemetry_packet(
+        structured_event = self._process_telemetry_packet(
             meta=meta,
             runtime=runtime,
             packet=packet,
             source="gateway_live_bus",
+        )
+
+        return self._apply_raw_identity_to_structured_event(
+            structured_event,
+            raw_identity,
         )
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:

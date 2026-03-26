@@ -317,9 +317,13 @@ class GatewayService:
 
 
 
-    def _record_raw_telemetry_if_running(self, meta: Mapping[str, Any], packet: Any) -> None:
+    def _record_raw_telemetry_if_running(
+        self,
+        meta: Mapping[str, Any],
+        packet: Any,
+    ) -> dict[str, Any] | None:
         if not self.raw_history_manager.is_running:
-            return
+            return None
 
         event = {
             "device_id": str(meta.get("id") or ""),
@@ -329,11 +333,15 @@ class GatewayService:
             "reply": bool(getattr(packet, "reply", True)),
             "err": bool(getattr(packet, "err", False)),
             "rsvd": bool(getattr(packet, "rsvd", False)),
-            "data": [int(x) for x in list(getattr(packet, "data", [0, 0, 0, 0, 0, 0]) or [])],
+            "data": [
+                int(x)
+                for x in list(getattr(packet, "data", [0, 0, 0, 0, 0, 0]) or [])
+            ],
             "packet_timestamp": getattr(packet, "timestamp", None),
             "source": "gateway_live_bus",
         }
         self.raw_history_manager.record_raw_event("telemetry_in", event)
+        return dict(event)
 
     def _record_raw_command_out_if_running(
         self,
@@ -378,13 +386,19 @@ class GatewayService:
     def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
         del runtime
 
+        materialized_raw_event: dict[str, Any] | None = None
+
         try:
-            self._record_raw_telemetry_if_running(meta, packet)
+            materialized_raw_event = self._record_raw_telemetry_if_running(meta, packet)
         except Exception:
             log.exception("Gateway failed to record raw telemetry_in for %s", meta.get("id"))
 
         try:
-            responses = self.backend_client.ingest_live_packet(meta=meta, packet=packet)
+            responses = self.backend_client.ingest_live_packet(
+                meta=meta,
+                packet=packet,
+                raw_event=materialized_raw_event,
+            )
             if responses:
                 self._mark_backend_link_restored()
             else:
