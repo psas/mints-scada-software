@@ -8,7 +8,7 @@ from typing import Any
 
 RAW_STREAM_FILES: dict[str, str] = {
     "telemetry_in": "telemetry_in.raw.jsonl",
-    "command_out": "command_out.raw.jsonl",
+    "wire_command_out": "wire_command_out.raw.jsonl",
     "operator_action": "operator_action.jsonl",
     "system_event": "system_event.jsonl",
 }
@@ -19,6 +19,13 @@ STRUCTURED_STREAM_FILES: dict[str, str] = {
     "operator_action": "operator_action.jsonl",
     "system_event": "system_event.jsonl",
 }
+
+# Streams present in both raw and structured with the same name, suitable for
+# cross-archive identity/hash comparison.  wire_command_out (raw) and
+# command_out (structured) are intentionally separate.
+SHARED_STREAM_NAMES: frozenset[str] = frozenset(
+    RAW_STREAM_FILES.keys() & STRUCTURED_STREAM_FILES.keys()
+)
 
 INTEGRITY_REPORT_FILENAME = "integrity_report.json"
 _SAMPLE_LIMIT = 25
@@ -55,7 +62,10 @@ def scan_run_integrity(
     }
 
     stream_reports: dict[str, dict[str, Any]] = {}
-    for stream_name in RAW_STREAM_FILES:
+
+    # Shared streams (present in both raw and structured) get full
+    # cross-archive comparison.
+    for stream_name in SHARED_STREAM_NAMES:
         source_scans = {
             "raw": _scan_stream_file(
                 source_name="raw",
@@ -67,6 +77,43 @@ def scan_run_integrity(
                 stream_name=stream_name,
                 path=paths.rawbak_dir / RAW_STREAM_FILES[stream_name],
             ),
+            "history": _scan_stream_file(
+                source_name="history",
+                stream_name=stream_name,
+                path=paths.history_dir / STRUCTURED_STREAM_FILES[stream_name],
+            ),
+        }
+        stream_reports[stream_name] = _build_stream_report(
+            stream_name=stream_name,
+            source_scans=source_scans,
+        )
+
+    # Raw-only streams (e.g. wire_command_out) - compare raw vs rawbak only.
+    for stream_name in RAW_STREAM_FILES:
+        if stream_name in SHARED_STREAM_NAMES:
+            continue
+        source_scans = {
+            "raw": _scan_stream_file(
+                source_name="raw",
+                stream_name=stream_name,
+                path=paths.raw_dir / RAW_STREAM_FILES[stream_name],
+            ),
+            "rawbak": _scan_stream_file(
+                source_name="rawbak",
+                stream_name=stream_name,
+                path=paths.rawbak_dir / RAW_STREAM_FILES[stream_name],
+            ),
+        }
+        stream_reports[stream_name] = _build_stream_report(
+            stream_name=stream_name,
+            source_scans=source_scans,
+        )
+
+    # Structured-only streams (e.g. command_out) - history-side only.
+    for stream_name in STRUCTURED_STREAM_FILES:
+        if stream_name in SHARED_STREAM_NAMES:
+            continue
+        source_scans = {
             "history": _scan_stream_file(
                 source_name="history",
                 stream_name=stream_name,

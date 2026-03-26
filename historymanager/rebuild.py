@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .integrity import RAW_STREAM_FILES, STRUCTURED_STREAM_FILES
+from .integrity import RAW_STREAM_FILES, SHARED_STREAM_NAMES, STRUCTURED_STREAM_FILES
 
 REBUILD_WORKSPACE_DIRNAME = ".rebuild_workspace"
 REBUILD_PREVIEW_FILENAME = "rebuild_preview.json"
 REBUILD_REPORT_FILENAME = "rebuild_report.json"
 
-_PASS_THROUGH_STREAMS = {"command_out", "operator_action", "system_event"}
+_PASS_THROUGH_STREAMS = {"operator_action", "system_event"}
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,10 @@ def rebuild_run_archive(
 
     fatal_reasons: list[str] = []
 
-    for stream_name in RAW_STREAM_FILES:
+    # Only rebuild streams that appear in both raw and structured archives.
+    # Raw-only streams (wire_command_out) and structured-only streams
+    # (command_out) are not cross-comparable and handled separately below.
+    for stream_name in SHARED_STREAM_NAMES:
         raw_scan = _load_event_file(paths.raw_dir / RAW_STREAM_FILES[stream_name])
         rawbak_scan = _load_event_file(paths.rawbak_dir / RAW_STREAM_FILES[stream_name])
         history_scan = _load_event_file(paths.history_dir / STRUCTURED_STREAM_FILES[stream_name])

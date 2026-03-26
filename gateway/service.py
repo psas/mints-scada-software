@@ -351,9 +351,9 @@ class GatewayService:
         *,
         device_id: str | None,
         packet: DataPacket,
-    ) -> dict[str, Any] | None:
+    ) -> None:
         if not self.raw_history_manager.is_running:
-            return None
+            return
 
         event = {
             "device_id": device_id,
@@ -367,9 +367,9 @@ class GatewayService:
             "sender": self.bus_manager.sender,
             "bitrate": self.bus_manager.bitrate,
             "source": "gateway_send_packet",
+            "event_kind": "wire_command_out",
         }
-        self.raw_history_manager.record_raw_event("command_out", event)
-        return dict(event)
+        self.raw_history_manager.record_raw_event("wire_command_out", event)
 
     def _record_external_raw_event_if_running(
         self,
@@ -657,7 +657,7 @@ class GatewayService:
                 packet = self._build_outbound_packet(payload)
                 bus.send(packet)
 
-                materialized_raw_event = self._record_raw_command_out_if_running(
+                self._record_raw_command_out_if_running(
                     device_id=device_id,
                     packet=packet,
                 )
@@ -669,7 +669,6 @@ class GatewayService:
                     cmd=int(getattr(packet, "cmd", 1)),
                     sender=self.bus_manager.sender,
                     bitrate=self.bus_manager.bitrate,
-                    event=materialized_raw_event,
                 )
             except Exception as exc:
                 yield error_message(

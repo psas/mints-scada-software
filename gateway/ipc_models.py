@@ -119,7 +119,6 @@ def packet_sent_message(
     cmd: int,
     sender: str | None = None,
     bitrate: int | None = None,
-    event: Mapping[str, Any] | None = None,
 ) -> GatewayIPCMessage:
     payload: dict[str, Any] = {
         "packet_id": int(packet_id),
@@ -132,8 +131,6 @@ def packet_sent_message(
         payload["sender"] = sender
     if bitrate is not None:
         payload["bitrate"] = int(bitrate)
-    if event is not None:
-        payload["event"] = dict(event)
     return GatewayIPCMessage(type="packet_sent", payload=payload)
 
 

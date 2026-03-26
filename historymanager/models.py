@@ -6,7 +6,7 @@ from typing import Any
 
 RAW_STREAM_FILENAMES: dict[str, str] = {
     "telemetry_in": "telemetry_in.raw.jsonl",
-    "command_out": "command_out.raw.jsonl",
+    "wire_command_out": "wire_command_out.raw.jsonl",
     "operator_action": "operator_action.jsonl",
     "system_event": "system_event.jsonl",
 }
@@ -18,7 +18,19 @@ STRUCTURED_STREAM_FILENAMES: dict[str, str] = {
     "system_event": "system_event.jsonl",
 }
 
-FIRST_ORDER_EVENT_STREAMS: tuple[str, ...] = tuple(RAW_STREAM_FILENAMES.keys())
+# Streams that appear in both raw and structured archives (used for identity
+# alignment and cross-archive integrity).  wire_command_out (raw) and
+# command_out (structured) are intentionally separate - they record different
+# data and are not cross-comparable.
+SHARED_STREAM_NAMES: tuple[str, ...] = (
+    "telemetry_in",
+    "operator_action",
+    "system_event",
+)
+
+FIRST_ORDER_EVENT_STREAMS: tuple[str, ...] = tuple(
+    sorted(set(RAW_STREAM_FILENAMES.keys()) | set(STRUCTURED_STREAM_FILENAMES.keys()))
+)
 
 MERGED_FILENAME = "merged.jsonl"
 SNAPSHOTS_DIRNAME = "snapshots"

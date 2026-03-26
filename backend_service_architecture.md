@@ -87,9 +87,12 @@ Raw does **not** mean only wire-level serial packets.
 Raw includes all first-order events that should be preserved as directly as possible:
 
 * `telemetry_in`
-* `command_out`
+* `wire_command_out` - wire-level outbound packet facts (gateway-owned)
 * `operator_action`
 * `system_event`
+
+Note: structured history uses `command_out` for semantic command dispatch events
+(command name, device, interlocks).  These are intentionally separate streams.
 
 ### 6. Raw and rawbak must be failure-isolated
 
@@ -212,7 +215,7 @@ For run id example `2026-03-12_ignition_test_01`:
   2026-03-12_ignition_test_01/
     metadata.json
     telemetry_in.raw.jsonl
-    command_out.raw.jsonl
+    wire_command_out.raw.jsonl
     operator_action.jsonl
     system_event.jsonl
     writer_stats.json
@@ -222,7 +225,7 @@ For run id example `2026-03-12_ignition_test_01`:
   2026-03-12_ignition_test_01/
     metadata.json
     telemetry_in.raw.jsonl
-    command_out.raw.jsonl
+    wire_command_out.raw.jsonl
     operator_action.jsonl
     system_event.jsonl
     writer_stats.json
@@ -282,9 +285,11 @@ Examples:
 * fault code
 * sequence state
 
-### 2. command_out
+### 2. wire_command_out (raw) / command_out (structured)
 
-Actual control commands sent outward.
+Outbound commands.  Raw/rawbak records wire-level packet facts as
+`wire_command_out`.  Structured history records semantic command dispatch
+events as `command_out`.
 
 Examples:
 
@@ -355,8 +360,9 @@ Operator clicks button in GUI
   -> GUI sends operator_action to backend
   -> Backend records raw operator_action
   -> Backend validates command request
-  -> Backend records raw command_out
-  -> Backend dispatches command to bus
+  -> Backend dispatches command through gateway bus proxy
+  -> Gateway records wire_command_out to raw/rawbak
+  -> Backend records semantic command_out to structured history
   -> Reducer/state update follows when telemetry confirms change
 ```
 

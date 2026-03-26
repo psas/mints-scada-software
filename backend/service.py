@@ -1926,9 +1926,8 @@ class BackendService:
         if not self.history_manager.is_running:
             return
 
-        structured_command_event = self._apply_gateway_command_identity(command_event)
         structured_command_event = {
-            **structured_command_event,
+            **dict(command_event),
             "event_kind": "command_out",
             "structured_at": isoformat_z(),
             "result_summary": result_summary,
@@ -2085,31 +2084,6 @@ class BackendService:
         for key, value in raw_identity.items():
             merged[key] = value
         return merged
-
-    def _consume_gateway_command_raw_event(
-        self,
-        device_id: str | None,
-    ) -> dict[str, Any] | None:
-        if not device_id:
-            return None
-
-        proxy = self._gateway_bus_proxies_by_id.get(str(device_id))
-        if proxy is None:
-            return None
-
-        return proxy.consume_last_sent_raw_event()
-
-    def _apply_gateway_command_identity(
-        self,
-        command_event: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        device_id = str(command_event.get("device_id") or "").strip()
-        raw_event = self._consume_gateway_command_raw_event(device_id)
-        raw_identity = self._extract_raw_identity_fields(raw_event)
-        return self._apply_raw_identity_to_structured_event(
-            command_event,
-            raw_identity,
-        )
 
     def _ingest_mock_telemetry(
         self,
