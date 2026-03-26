@@ -156,6 +156,7 @@ class BackendService:
             "start_run",
             "finish_run",
             "ingest_mock_telemetry",
+            "ingest_live_telemetry",
             "operator_action",
             "command_request",
             "start_script",
@@ -584,45 +585,20 @@ class BackendService:
 
         if message.type == "ingest_mock_telemetry":
             try:
-                payload = self._normalize_mapping_payload(message.payload)
-                device_id = self._require_non_empty_string(payload, "device_id")
-
-                if device_id not in self.device_registry:
-                    raise ValueError(f"Unknown device_id: {device_id}")
-
-                meta = self.device_registry.get_meta(device_id)
-                runtime = self.device_registry.get_runtime(device_id)
-                runtime_shadow = self._build_mock_runtime_shadow(runtime=runtime, payload=payload)
-
-                seq = self._get_optional_int(payload, "seq") or 1
-                cmd = self._get_optional_int(payload, "cmd") or 1
-                reply = self._get_optional_bool(payload, "reply", default=True)
-                err = self._get_optional_bool(payload, "err", default=False)
-                rsvd = self._get_optional_bool(payload, "rsvd", default=False)
-                data = self._get_optional_int_list(payload, "data") or [0, 0, 0, 0, 0, 0]
-
-                packet = DataPacket(
-                    id=meta["address"],
-                    seq=seq,
-                    cmd=cmd,
-                    data=data,
-                    reply=reply,
-                    err=err,
-                    rsvd=rsvd,
-                )
-
-                packet_timestamp = payload.get("packet_timestamp")
-                if isinstance(packet_timestamp, (int, float)):
-                    packet.timestamp = float(packet_timestamp)
-
-                structured_event = self._process_telemetry_packet(
-                    meta=meta,
-                    runtime=runtime_shadow,
-                    packet=packet,
-                    source="mock_ipc",
-                )
+                structured_event = self._ingest_mock_telemetry(message.payload)
             except Exception as exc:
                 yield error_message("ingest_mock_telemetry_failed", str(exc))
+                return
+
+            yield structured_event_message(structured_event)
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "ingest_live_telemetry":
+            try:
+                structured_event = self._ingest_live_telemetry(message.payload)
+            except Exception as exc:
+                yield error_message("ingest_live_telemetry_failed", str(exc))
                 return
 
             yield structured_event_message(structured_event)
@@ -1987,6 +1963,87 @@ class BackendService:
             wall_time=isoformat_z(),
             message_type=message_type,
             is_ping=is_ping,
+        )
+
+
+    def _build_ingest_packet(
+        self,
+        normalized: Mapping[str, Any],
+        *,
+        meta: Mapping[str, Any],
+    ) -> DataPacket:
+        """Build a DataPacket from an IPC telemetry ingest payload."""
+        seq = self._get_optional_int(normalized, "seq") or 1
+        cmd = self._get_optional_int(normalized, "cmd") or 1
+        reply = self._get_optional_bool(normalized, "reply", default=True)
+        err = self._get_optional_bool(normalized, "err", default=False)
+        rsvd = self._get_optional_bool(normalized, "rsvd", default=False)
+        data = self._get_optional_int_list(normalized, "data") or [0, 0, 0, 0, 0, 0]
+
+        packet = DataPacket(
+            id=meta["address"],
+            seq=seq,
+            cmd=cmd,
+            data=data,
+            reply=reply,
+            err=err,
+            rsvd=rsvd,
+        )
+
+        packet_timestamp = normalized.get("packet_timestamp")
+        if isinstance(packet_timestamp, (int, float)):
+            packet.timestamp = float(packet_timestamp)
+
+        return packet
+
+    def _ingest_mock_telemetry(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Ingest a mock/test telemetry packet through the real processing pipeline."""
+        normalized = self._normalize_mapping_payload(payload)
+        device_id = self._require_non_empty_string(normalized, "device_id")
+
+        if device_id not in self.device_registry:
+            raise ValueError(f"Unknown device_id: {device_id}")
+
+        meta = self.device_registry.get_meta(device_id)
+        runtime = self.device_registry.get_runtime(device_id)
+        runtime_shadow = self._build_mock_runtime_shadow(
+            runtime=runtime,
+            payload=normalized,
+        )
+
+        packet = self._build_ingest_packet(normalized, meta=meta)
+
+        return self._process_telemetry_packet(
+            meta=meta,
+            runtime=runtime_shadow,
+            packet=packet,
+            source="mock_ipc",
+        )
+
+    def _ingest_live_telemetry(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Ingest a live telemetry packet forwarded from the gateway."""
+        normalized = self._normalize_mapping_payload(payload)
+        device_id = self._require_non_empty_string(normalized, "device_id")
+
+        if device_id not in self.device_registry:
+            raise ValueError(f"Unknown device_id: {device_id}")
+
+        meta = self.device_registry.get_meta(device_id)
+        runtime = self.device_registry.get_runtime(device_id)
+
+        packet = self._build_ingest_packet(normalized, meta=meta)
+
+        return self._process_telemetry_packet(
+            meta=meta,
+            runtime=runtime,
+            packet=packet,
+            source="gateway_live_bus",
         )
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:

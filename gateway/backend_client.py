@@ -160,7 +160,12 @@ class BackendIPCClient:
 
         return []
 
-    def ingest_live_packet(self, *, meta: Mapping[str, Any], packet: Any) -> list[dict[str, Any]]:
+    def ingest_live_packet(
+        self,
+        *,
+        meta: Mapping[str, Any],
+        packet: Any,
+    ) -> list[dict[str, Any]]:
         payload = {
             "device_id": meta["id"],
             "seq": int(getattr(packet, "seq", 1)),
@@ -173,7 +178,7 @@ class BackendIPCClient:
             "source": "gateway_live_bus",
         }
         return self.request(
-            "ingest_mock_telemetry",
+            "ingest_live_telemetry",
             payload=payload,
             expected_responses=2,
         )
