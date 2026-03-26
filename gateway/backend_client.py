@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import json
 import socket
 from pathlib import Path
+from typing import Any, Mapping
 
-from gateway.ipc_models import GatewayIPCMessage, decode_message, encode_message
 
-
-class GatewayClient:
-    """Minimal one-shot client for backend/gateway IPC."""
+class BackendIPCClient:
+    """Minimal one-shot client for gateway -> backend IPC."""
 
     def __init__(
         self,
@@ -22,7 +22,7 @@ class GatewayClient:
             project_root = Path(project_root).expanduser().resolve()
 
         if socket_path is None:
-            socket_path = project_root / ".gateway_service.sock"
+            socket_path = project_root / ".backend_service.sock"
         else:
             socket_path = Path(socket_path).expanduser().resolve()
 
@@ -44,27 +44,37 @@ class GatewayClient:
         self,
         message_type: str,
         *,
-        payload: dict | None = None,
+        payload: Mapping[str, Any] | None = None,
         expected_responses: int = 1,
-    ) -> list[GatewayIPCMessage]:
+    ) -> list[dict[str, Any]]:
         if not self.socket_path.exists():
             return []
 
-        request = GatewayIPCMessage(type=message_type, payload=payload or {})
-        responses: list[GatewayIPCMessage] = []
+        request_bytes = json.dumps(
+            {
+                "type": message_type,
+                "payload": dict(payload or {}),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8") + b"\n"
 
+        responses: list[dict[str, Any]] = []
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         conn.settimeout(self.timeout_s)
+
         try:
             conn.connect(str(self.socket_path))
-            conn.sendall(encode_message(request) + b"\n")
+            conn.sendall(request_bytes)
 
             for _ in range(expected_responses):
                 line = self._read_one_line(conn)
                 if not line:
                     break
-                responses.append(decode_message(line))
-        except (OSError, TimeoutError):
+                data = json.loads(line.decode("utf-8"))
+                if isinstance(data, dict):
+                    responses.append(data)
+        except (OSError, TimeoutError, json.JSONDecodeError):
             return []
         finally:
             try:
@@ -74,29 +84,27 @@ class GatewayClient:
 
         return responses
 
-    def hello(
-        self,
-        *,
-        service_name: str,
-        backend_socket_path: str,
-    ) -> list[GatewayIPCMessage]:
+    def ingest_live_packet(self, *, meta: Mapping[str, Any], packet: Any) -> list[dict[str, Any]]:
+        payload = {
+            "device_id": meta["id"],
+            "seq": int(getattr(packet, "seq", 1)),
+            "cmd": int(getattr(packet, "cmd", 1)),
+            "reply": bool(getattr(packet, "reply", True)),
+            "err": bool(getattr(packet, "err", False)),
+            "rsvd": bool(getattr(packet, "rsvd", False)),
+            "data": list(getattr(packet, "data", [0, 0, 0, 0, 0, 0])),
+            "packet_timestamp": getattr(packet, "timestamp", None),
+            "source": "gateway_live_bus",
+        }
         return self.request(
-            "hello",
-            payload={
-                "service_name": service_name,
-                "backend_socket_path": backend_socket_path,
-            },
+            "ingest_mock_telemetry",
+            payload=payload,
             expected_responses=2,
         )
 
-    def ping(self) -> list[GatewayIPCMessage]:
-        return self.request("ping", expected_responses=1)
-
-    def status_request(self) -> list[GatewayIPCMessage]:
-        return self.request("status_request", expected_responses=1)
-
-    def initialize_live_hardware(self) -> list[GatewayIPCMessage]:
-        return self.request("initialize_live_hardware", expected_responses=1)
-
-    def shutdown_live_hardware(self) -> list[GatewayIPCMessage]:
-        return self.request("shutdown_live_hardware", expected_responses=1)
+    def gateway_hardware_status(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return self.request(
+            "gateway_hardware_status",
+            payload=payload,
+            expected_responses=1,
+        )

@@ -11,7 +11,7 @@ import settings
 from historymanager import HistoryManager
 from historymanager.manager import isoformat_z
 from nexus import DataPacket
-
+from .gateway_client import GatewayClient
 from .bus_manager import BusManager
 from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
@@ -50,6 +50,7 @@ class BackendService:
         *,
         project_root: str | Path | None = None,
         socket_path: str | Path | None = None,
+        gateway_socket_path: str | Path | None = None,
     ) -> None:
         self.project_root = Path(project_root).expanduser().resolve() if project_root else None
         self.started_at = isoformat_z()
@@ -94,6 +95,17 @@ class BackendService:
             error_callback=self._handle_bus_error_event,
 
         )
+
+
+        self.gateway_client = GatewayClient(
+            project_root=self.project_root,
+            socket_path=gateway_socket_path,
+        )
+        self.use_gateway_for_live_ingest = True
+        self._gateway_last_registered_ids: list[str] = []
+        self._gateway_last_skipped_ids: list[str] = []
+
+
         self.command_router = CommandRouter(
             device_registry=self.device_registry,
             bus_manager=self.bus_manager,
@@ -132,6 +144,7 @@ class BackendService:
             "list_devices",
             "initialize_live_hardware",
             "shutdown_live_hardware",
+            "gateway_hardware_status",
             "start_run",
             "finish_run",
             "ingest_mock_telemetry",
@@ -283,6 +296,18 @@ class BackendService:
 
         if message.type == "initialize_live_hardware":
             try:
+                gateway_payload = self._initialize_live_hardware_via_gateway()
+                if gateway_payload is not None:
+                    yield hardware_status_message(
+                        connected=bool(gateway_payload.get("connected", False)),
+                        sender=gateway_payload.get("sender"),
+                        bitrate=gateway_payload.get("bitrate"),
+                        registered_ids=list(gateway_payload.get("registered_ids") or []),
+                        skipped_ids=list(gateway_payload.get("skipped_ids") or []),
+                    )
+                    yield state_snapshot_message(self.state_store.get_snapshot())
+                    return
+
                 result = self.bus_manager.initialize_live_hardware(self.device_registry)
             except Exception as exc:
                 self.health.record_system_event(
@@ -302,6 +327,7 @@ class BackendService:
                 registered_ids=result.registered_ids,
                 skipped_ids=result.skipped_ids,
             )
+
             self.state_store.set_device_inventory(
                 devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
@@ -326,6 +352,7 @@ class BackendService:
                     registered_count=result.registered_count,
                     skipped_count=result.skipped_count,
                 )
+
             self.health_monitor.sample_once()
             self._apply_live_startup_state()
 
@@ -340,6 +367,18 @@ class BackendService:
             return
 
         if message.type == "shutdown_live_hardware":
+            gateway_payload = self._shutdown_live_hardware_via_gateway()
+            if gateway_payload is not None:
+                yield hardware_status_message(
+                    connected=bool(gateway_payload.get("connected", False)),
+                    sender=gateway_payload.get("sender"),
+                    bitrate=gateway_payload.get("bitrate"),
+                    registered_ids=list(gateway_payload.get("registered_ids") or []),
+                    skipped_ids=list(gateway_payload.get("skipped_ids") or []),
+                )
+                yield state_snapshot_message(self.state_store.get_snapshot())
+                return
+
             self.bus_manager.shutdown_live_hardware()
             self.device_registry.clear_live_registration_flags()
             self.state_store.set_bus_connection_state(
@@ -353,7 +392,6 @@ class BackendService:
                 devices=self.device_registry.get_gui_device_presentations(),
                 load_errors=self.device_registry.get_load_errors(),
             )
-
             self.health.record_system_event(
                 "live_hardware_shutdown",
                 severity="info",
@@ -361,7 +399,6 @@ class BackendService:
                 bitrate=self.bus_manager.bitrate,
             )
             self.health_monitor.sample_once()
-
             yield hardware_status_message(
                 connected=False,
                 sender=self.bus_manager.sender,
@@ -369,6 +406,17 @@ class BackendService:
                 registered_ids=[],
                 skipped_ids=[],
             )
+            yield state_snapshot_message(self.state_store.get_snapshot())
+            return
+
+        if message.type == "gateway_hardware_status":
+            try:
+                payload = self._normalize_mapping_payload(message.payload)
+                self._apply_gateway_hardware_status(payload, record_health=False)
+            except Exception as exc:
+                yield error_message("gateway_hardware_status_failed", str(exc))
+                return
+
             yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
@@ -852,6 +900,117 @@ class BackendService:
         )
         return sessions
 
+    def _build_device_inventory_with_live_registration(
+        self,
+        registered_ids: Iterable[str],
+    ) -> list[dict[str, Any]]:
+        registered = {str(device_id) for device_id in registered_ids}
+        devices = self.device_registry.get_gui_device_presentations()
+        for device in devices:
+            device["live_registered"] = str(device.get("id") or "") in registered
+        return devices
+
+    def _apply_gateway_hardware_status(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        record_health: bool,
+    ) -> dict[str, Any]:
+        normalized = self._normalize_mapping_payload(payload)
+
+        connected = bool(normalized.get("connected", False))
+        reconnecting = bool(normalized.get("reconnecting", False))
+        status = self._get_optional_string(normalized, "status") or (
+            "connected" if connected else "disconnected"
+        )
+        sender = self._get_optional_string(normalized, "sender") or self.bus_manager.sender
+        bitrate = self._get_optional_int(normalized, "bitrate") or self.bus_manager.bitrate
+        registered_ids = [str(x) for x in (normalized.get("registered_ids") or [])]
+        skipped_ids = [str(x) for x in (normalized.get("skipped_ids") or [])]
+        wall_time = self._get_optional_string(normalized, "wall_time") or isoformat_z()
+
+        self._gateway_last_registered_ids = list(registered_ids)
+        self._gateway_last_skipped_ids = list(skipped_ids)
+
+        self.state_store.set_bus_connection_state(
+            connected=connected,
+            reconnecting=reconnecting,
+            wall_time=wall_time,
+            sender=sender,
+            bitrate=bitrate,
+            registered_ids=registered_ids,
+            skipped_ids=skipped_ids,
+        )
+        self.state_store.set_device_inventory(
+            devices=self._build_device_inventory_with_live_registration(registered_ids),
+            load_errors=self.device_registry.get_load_errors(),
+        )
+
+        if record_health:
+            if reconnecting:
+                event_name = "gateway_bus_reconnecting"
+                severity = "warning"
+            elif connected:
+                event_name = "live_hardware_initialized_via_gateway"
+                severity = "info"
+            else:
+                event_name = "live_hardware_shutdown_via_gateway"
+                severity = "info"
+
+            self.health.record_system_event(
+                event_name,
+                severity=severity,
+                status=status,
+                sender=sender,
+                bitrate=bitrate,
+                registered_ids=list(registered_ids),
+                skipped_ids=list(skipped_ids),
+                registered_count=len(registered_ids),
+                skipped_count=len(skipped_ids),
+            )
+
+        self.health_monitor.sample_once()
+        return {
+            "connected": connected,
+            "reconnecting": reconnecting,
+            "status": status,
+            "sender": sender,
+            "bitrate": bitrate,
+            "registered_ids": list(registered_ids),
+            "skipped_ids": list(skipped_ids),
+        }
+
+    def _initialize_live_hardware_via_gateway(self) -> dict[str, Any] | None:
+        if not self.use_gateway_for_live_ingest:
+            return None
+
+        responses = self.gateway_client.initialize_live_hardware()
+        if not responses:
+            return None
+
+        first = responses[0]
+        if first.type != "hardware_status":
+            return None
+
+        payload = self._apply_gateway_hardware_status(first.payload, record_health=True)
+        self._apply_live_startup_state()
+        return payload
+
+    def _shutdown_live_hardware_via_gateway(self) -> dict[str, Any] | None:
+        if not self.use_gateway_for_live_ingest:
+            return None
+
+        responses = self.gateway_client.shutdown_live_hardware()
+        if not responses:
+            return None
+
+        first = responses[0]
+        if first.type != "hardware_status":
+            return None
+
+        payload = self._apply_gateway_hardware_status(first.payload, record_health=True)
+        return payload
+    
     def _dispatch_command_request(
         self,
         payload: Mapping[str, Any],

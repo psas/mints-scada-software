@@ -10,4 +10,5 @@ class GatewayRuntimeConfig:
 
     project_root: Path
     socket_path: Path
+    backend_socket_path: Path
     idle_sleep_s: float = 0.25

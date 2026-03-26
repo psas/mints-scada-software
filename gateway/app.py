@@ -25,6 +25,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Unix domain socket path for backend/gateway IPC",
     )
     parser.add_argument(
+        "--backend-socket",
+        type=Path,
+        default=None,
+        help="Unix domain socket path for gateway -> backend IPC",
+    )
+    parser.add_argument(
         "--idle-sleep",
         type=float,
         default=0.25,
@@ -60,6 +66,7 @@ def main() -> int:
     service = GatewayService(
         project_root=args.project_root,
         socket_path=args.socket_path,
+        backend_socket_path=args.backend_socket,
         idle_sleep_s=args.idle_sleep,
     )
     install_signal_handlers(service)

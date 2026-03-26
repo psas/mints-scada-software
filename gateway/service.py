@@ -4,12 +4,17 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
+from backend.bus_manager import BusManager
+from backend.device_registry import DeviceRegistry
+
+from .backend_client import BackendIPCClient
 from .ipc_models import (
     GatewayIPCMessage,
     error_message,
     gateway_status_message,
+    hardware_status_message,
     hello_ack_message,
     pong_message,
 )
@@ -20,22 +25,17 @@ log = logging.getLogger(__name__)
 
 
 def isoformat_z() -> str:
-    """Return an ISO-8601 UTC timestamp with a trailing Z."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class GatewayService:
-    """Gateway process scaffold with placeholder backend IPC.
+    """Gateway-owned live ingest service.
 
-    This commit adds:
-    - a Unix socket IPC server for backend/gateway communication
-    - hello/ping/status_request handling
-    - connected-client tracking
+    This commit moves inbound live bus initialization and packet ingest into
+    gateway, while backend still owns higher-level state, structured history,
+    and GUI IPC.
 
-    It still does NOT yet:
-    - own the live bus
-    - write raw/rawbak
-    - proxy outbound commands
+    Outbound command routing still follows in the next commit.
     """
 
     def __init__(
@@ -43,6 +43,7 @@ class GatewayService:
         *,
         project_root: Path | None = None,
         socket_path: Path | None = None,
+        backend_socket_path: Path | None = None,
         idle_sleep_s: float = 0.25,
     ) -> None:
         if project_root is None:
@@ -55,9 +56,15 @@ class GatewayService:
         else:
             socket_path = Path(socket_path).expanduser().resolve()
 
+        if backend_socket_path is None:
+            backend_socket_path = project_root / ".backend_service.sock"
+        else:
+            backend_socket_path = Path(backend_socket_path).expanduser().resolve()
+
         self.config = GatewayRuntimeConfig(
             project_root=project_root,
             socket_path=socket_path,
+            backend_socket_path=backend_socket_path,
             idle_sleep_s=idle_sleep_s,
         )
 
@@ -67,11 +74,40 @@ class GatewayService:
             "hello",
             "ping",
             "status_request",
+            "initialize_live_hardware",
+            "shutdown_live_hardware",
         ]
 
         self._lock = threading.RLock()
         self._connected_clients: set[str] = set()
         self._started = False
+        self._last_registered_ids: list[str] = []
+        self._last_skipped_ids: list[str] = []
+        self._bus_connected = False
+
+        self.backend_client = BackendIPCClient(
+            project_root=project_root,
+            socket_path=backend_socket_path,
+        )
+
+        self.device_registry = DeviceRegistry()
+        self.device_registry.set_packet_listener(self._handle_device_packet)
+        self.device_registry.load_from_settings()
+
+        self.bus_manager = BusManager(
+            auto_reconnect=True,
+            reconnect_initial_delay=0.50,
+            reconnect_max_delay=5.00,
+            reconnect_backoff=2.00,
+            receive_poll_interval=0.05,
+            monitor_interval=0.50,
+            max_receive_failures_before_reconnect=3,
+        )
+        self.bus_manager.set_event_callbacks(
+            status_callback=self._handle_bus_status_event,
+            packet_callback=None,
+            error_callback=self._handle_bus_error_event,
+        )
 
         self.server = GatewayIPCServer(
             socket_path=self.socket_path,
@@ -89,6 +125,10 @@ class GatewayService:
         return self.config.socket_path
 
     @property
+    def backend_socket_path(self) -> Path:
+        return self.config.backend_socket_path
+
+    @property
     def connected_client_count(self) -> int:
         with self._lock:
             return len(self._connected_clients)
@@ -98,19 +138,18 @@ class GatewayService:
         return self._started
 
     def start(self) -> None:
-        """Mark the gateway service as started."""
         if self._started:
             log.debug("GatewayService.start() called while already started")
             return
         self._started = True
         log.info(
-            "Gateway service started (project_root=%s, socket_path=%s)",
+            "Gateway service started (project_root=%s, socket_path=%s, backend_socket=%s)",
             self.project_root,
             self.socket_path,
+            self.backend_socket_path,
         )
 
     def serve_forever(self) -> None:
-        """Run the gateway IPC server until stopped."""
         if not self._started:
             self.start()
 
@@ -121,42 +160,99 @@ class GatewayService:
             log.info("Gateway service IPC server exited")
 
     def stop(self) -> None:
-        """Request gateway shutdown and perform best-effort cleanup."""
         if not self._started:
             return
 
         log.info("Gateway service stopping")
+        try:
+            self.bus_manager.shutdown_live_hardware()
+        except Exception:
+            log.exception("Gateway failed to shut down live hardware cleanly")
+
+        self.device_registry.clear_live_registration_flags()
+        self._bus_connected = False
+        self._last_registered_ids = []
+        self._last_skipped_ids = []
         self.server.stop()
         self._started = False
 
     def on_client_connected(self, client_id: str) -> None:
-        """Track a connected IPC client."""
         with self._lock:
             self._connected_clients.add(client_id)
         log.info("Gateway IPC client connected: %s", client_id)
 
     def on_client_disconnected(self, client_id: str) -> None:
-        """Track a disconnected IPC client."""
         with self._lock:
             self._connected_clients.discard(client_id)
         log.info("Gateway IPC client disconnected: %s", client_id)
 
     def _build_status_message(self) -> GatewayIPCMessage:
-        """Build the current gateway status payload."""
         return gateway_status_message(
             service_name=self.service_name,
             gateway_started_at=self.started_at,
             socket_path=str(self.socket_path),
             connected_clients=self.connected_client_count,
             supported_messages=self.supported_messages,
+            bus_connected=self._bus_connected,
+            sender=self.bus_manager.sender,
+            bitrate=self.bus_manager.bitrate,
+            registered_ids=self._last_registered_ids,
+            skipped_ids=self._last_skipped_ids,
         )
+
+    def _sync_hardware_status_to_backend(self, payload: Mapping[str, Any]) -> None:
+        try:
+            self.backend_client.gateway_hardware_status(payload)
+        except Exception:
+            log.exception("Gateway failed to sync hardware status to backend")
+
+    def _handle_bus_status_event(self, payload: Mapping[str, Any]) -> None:
+        status = str(payload.get("status") or "").strip().lower()
+        connected = status in {"connected", "receive_loop_started"} or bool(payload.get("connected", False))
+        reconnecting = status == "reconnecting" or bool(payload.get("reconnecting", False))
+
+        registered_ids = list(payload.get("registered_ids") or self._last_registered_ids)
+        skipped_ids = list(payload.get("skipped_ids") or self._last_skipped_ids)
+
+        if connected:
+            self._bus_connected = True
+        elif status in {"disconnected", "receive_loop_stopped"}:
+            self._bus_connected = False
+
+        self._last_registered_ids = [str(x) for x in registered_ids]
+        self._last_skipped_ids = [str(x) for x in skipped_ids]
+
+        backend_payload = {
+            "status": status,
+            "reason": payload.get("reason"),
+            "connected": self._bus_connected,
+            "reconnecting": reconnecting,
+            "sender": payload.get("sender", self.bus_manager.sender),
+            "bitrate": payload.get("bitrate", self.bus_manager.bitrate),
+            "registered_ids": list(self._last_registered_ids),
+            "skipped_ids": list(self._last_skipped_ids),
+            "registered_count": int(payload.get("registered_count", len(self._last_registered_ids))),
+            "skipped_count": int(payload.get("skipped_count", len(self._last_skipped_ids))),
+            "packet_listener_attached": payload.get("packet_listener_attached"),
+            "wall_time": isoformat_z(),
+        }
+        self._sync_hardware_status_to_backend(backend_payload)
+
+    def _handle_bus_error_event(self, payload: Mapping[str, Any]) -> None:
+        log.warning("Gateway bus error event: %s", dict(payload))
+
+    def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
+        del runtime
+        try:
+            self.backend_client.ingest_live_packet(meta=meta, packet=packet)
+        except Exception:
+            log.exception("Gateway failed to forward live packet for %s", meta.get("id"))
 
     def handle_message(
         self,
         client_id: str,
         message: GatewayIPCMessage,
     ) -> Iterable[GatewayIPCMessage]:
-        """Handle a single gateway IPC request."""
         if message.type == "hello":
             yield hello_ack_message(
                 service_name=self.service_name,
@@ -173,6 +269,66 @@ class GatewayService:
 
         if message.type == "status_request":
             yield self._build_status_message()
+            return
+
+        if message.type == "initialize_live_hardware":
+            try:
+                result = self.bus_manager.initialize_live_hardware(self.device_registry)
+            except Exception as exc:
+                yield error_message(
+                    code="initialize_live_hardware_failed",
+                    message=str(exc),
+                )
+                return
+
+            self._bus_connected = True
+            self._last_registered_ids = list(result.registered_ids)
+            self._last_skipped_ids = list(result.skipped_ids)
+
+            payload = hardware_status_message(
+                connected=True,
+                reconnecting=False,
+                status="connected",
+                reason="gateway_initialize_live_hardware",
+                sender=result.sender,
+                bitrate=result.bitrate,
+                registered_ids=result.registered_ids,
+                skipped_ids=result.skipped_ids,
+                registered_count=result.registered_count,
+                skipped_count=result.skipped_count,
+                already_running=result.already_running,
+                packet_listener_attached=True,
+                wall_time=isoformat_z(),
+            )
+            self._sync_hardware_status_to_backend(payload.payload)
+            yield payload
+            return
+
+        if message.type == "shutdown_live_hardware":
+            try:
+                self.bus_manager.shutdown_live_hardware()
+            finally:
+                self.device_registry.clear_live_registration_flags()
+
+            self._bus_connected = False
+            self._last_registered_ids = []
+            self._last_skipped_ids = []
+
+            payload = hardware_status_message(
+                connected=False,
+                reconnecting=False,
+                status="disconnected",
+                reason="gateway_shutdown_live_hardware",
+                sender=self.bus_manager.sender,
+                bitrate=self.bus_manager.bitrate,
+                registered_ids=[],
+                skipped_ids=[],
+                registered_count=0,
+                skipped_count=0,
+                wall_time=isoformat_z(),
+            )
+            self._sync_hardware_status_to_backend(payload.payload)
+            yield payload
             return
 
         yield error_message(
