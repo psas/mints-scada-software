@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from nexus import DataPacket
 
 from .gateway_client import GatewayClient
@@ -16,6 +18,12 @@ class GatewayBusProxy:
     ) -> None:
         self.gateway_client = gateway_client
         self.device_id = device_id
+        self._last_sent_raw_event: dict[str, Any] | None = None
+
+    def consume_last_sent_raw_event(self) -> dict[str, Any] | None:
+        event = self._last_sent_raw_event
+        self._last_sent_raw_event = None
+        return event
 
     def send(self, message: DataPacket) -> None:
         responses = self.gateway_client.send_packet(
@@ -43,4 +51,11 @@ class GatewayBusProxy:
                 f"Unexpected gateway response type for outbound packet: {first.type}"
             )
 
+        raw_event = None
+        if isinstance(first.payload, Mapping):
+            candidate = first.payload.get("event")
+            if isinstance(candidate, Mapping):
+                raw_event = dict(candidate)
+
+        self._last_sent_raw_event = raw_event
         return None
