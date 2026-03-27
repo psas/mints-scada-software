@@ -99,6 +99,16 @@ class ScadaWindow(QMainWindow):
 html, body {{ margin: 0; padding: 0; background: #111; overflow: hidden; }}
 svg {{ width: 100%; height: 100%; display: block; background: #111; }}
 </style>
+<script src=\"qrc:///qtwebchannel/qwebchannel.js\"></script>
+<script>
+// Initialize the Qt WebChannel bridge so SVG JS can call into Python.
+// qt.webChannelTransport is provided by QWebEngineView when a QWebChannel
+// is attached to the page.  The callback fires once the channel is ready
+// and exposes the registered "bridge" object as window.bridge.
+new QWebChannel(qt.webChannelTransport, function(channel) {{
+    window.bridge = channel.objects.bridge;
+}});
+</script>
 </head>
 <body>
 {svg_text}
@@ -264,12 +274,16 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         presentation = getattr(self, "backend_device_presentation", None)
         if isinstance(presentation, dict):
             for entry in presentation.get("devices", []):
-                if isinstance(entry, dict) and entry.get("device_id") == device_id:
+                if not isinstance(entry, dict):
+                    continue
+                entry_id = str(entry.get("id") or entry.get("device_id") or "")
+                if entry_id == device_id:
                     return bool(entry.get("live_registered", False))
 
         return False
 
     def _request_xv_command(self, valve_id: str, state: str, *, source: str) -> None:
+        logger.info("[SCADA] Enter _request_xv_command valve=%s target=%s source=%s", valve_id, state, source)
         if self.playback_mode:
             return
 
@@ -341,11 +355,12 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         self.web_view.page().runJavaScript(js)
 
     def _on_manual_button(self, valve_id: str, state: str) -> None:
+        logger.info("[SCADA] Manual button pressed: %s -> %s", valve_id, state)
         if self.playback_mode:
             logger.info("[SCADA] Ignoring manual button click in playback mode: %s -> %s", valve_id, state)
             return
         self._request_xv_command(valve_id, state, source="scada_manual_button")
-        self.set_xv_state(valve_id, state)
+        # DEBUG: optimistic color update removed - UI driven only by backend state refresh
 
     def on_valve_clicked(self, valve_id: str) -> None:
         logger.info("[SCADA] Valve clicked in window: %s", valve_id)
@@ -357,7 +372,7 @@ svg {{ width: 100%; height: 100%; display: block; background: #111; }}
         new_state = "open" if current in ("default", "closed") else "closed"
         logger.info("[SCADA] %s state change: %s -> %s", valve_id, current, new_state)
         self._request_xv_command(valve_id, new_state, source="scada_svg_click")
-        self.set_xv_state(valve_id, new_state)
+        # DEBUG: optimistic color update removed - UI driven only by backend state refresh
 
     def set_xv_state(self, valve_id: str, state: str) -> None:
         if valve_id not in self.xv_states:

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from nexus import DataPacket
 
 from .gateway_client import GatewayClient
+
+log = logging.getLogger(__name__)
 
 
 class GatewayBusProxy:
@@ -18,16 +22,27 @@ class GatewayBusProxy:
         self.device_id = device_id
 
     def send(self, message: DataPacket) -> None:
+        packet_id = getattr(message, "id", None)
+        packet_cmd = getattr(message, "cmd", None)
+        log.info(
+            "[GatewayBusProxy] send device_id=%s packet.id=%s(0x%02x) cmd=%s",
+            self.device_id,
+            packet_id,
+            packet_id if isinstance(packet_id, int) else 0,
+            f"0x{packet_cmd:02x}" if isinstance(packet_cmd, int) else packet_cmd,
+        )
         responses = self.gateway_client.send_packet(
             device_id=self.device_id,
             packet=message,
         )
         if not responses:
+            log.error("[GatewayBusProxy] no response from gateway for %s", self.device_id)
             raise RuntimeError(
                 f"Gateway did not acknowledge outbound packet for {self.device_id}"
             )
 
         first = responses[0]
+        log.info("[GatewayBusProxy] gateway response type=%s for %s", first.type, self.device_id)
         if first.type == "error":
             code = None
             message_text = "gateway rejected outbound packet"

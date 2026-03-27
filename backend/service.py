@@ -927,7 +927,18 @@ class BackendService:
 
         self._gateway_last_registered_ids = list(registered_ids)
         self._gateway_last_skipped_ids = list(skipped_ids)
- 
+
+        registered_set = set(registered_ids)
+
+        # Keep runtime.live_registered in sync with gateway registration state.
+        # CommandRouter checks the runtime flag, not just the GUI/state-store inventory.
+        for device in self.device_registry.get_gui_device_presentations():
+            device_id = str(device.get("id") or "")
+            if not device_id:
+                continue
+            runtime = self.device_registry.get_runtime(device_id)
+            runtime.live_registered = connected and (not reconnecting) and (device_id in registered_set)
+
         if connected and not reconnecting:
             self._attach_gateway_bus_proxies(registered_ids)
         else:
@@ -1382,6 +1393,7 @@ class BackendService:
 
     def _attach_gateway_bus_proxies(self, registered_ids: Iterable[str]) -> None:
         registered = {str(device_id) for device_id in registered_ids}
+        log.info("[backend] _attach_gateway_bus_proxies registered_ids=%s", sorted(registered))
 
         self._detach_all_gateway_bus_proxies()
 
