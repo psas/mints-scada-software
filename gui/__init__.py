@@ -16,6 +16,13 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ScriptView": (".view_script", "ScriptView"),
     "ChecklistWindow": (".checklist_window", "ChecklistWindow"),
     "TimelineView": (".timelineview", "TimelineView"),
+    "GraphSample": (".graph_data", "GraphSample"),
+    "GraphChannelDescriptor": (".graph_data", "GraphChannelDescriptor"),
+    "GraphWindow": (".graph_data", "GraphWindow"),
+    "build_channel_key": (".graph_data", "build_channel_key"),
+    "split_channel_key": (".graph_data", "split_channel_key"),
+    "BaseGraphDataProvider": (".graph_provider", "BaseGraphDataProvider"),
+    "InMemoryGraphDataProvider": (".graph_provider", "InMemoryGraphDataProvider"),
 }
 
 __all__ = list(_EXPORTS.keys())
@@ -35,5 +42,3 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted(set(globals().keys()) | set(__all__))
-
-
