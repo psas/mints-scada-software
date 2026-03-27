@@ -310,7 +310,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'lc-2',
@@ -322,7 +322,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'lc-3',
@@ -334,7 +334,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'lc-4',
@@ -346,7 +346,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
 
     # Pressure transmitters
@@ -360,7 +360,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'pt-42',
@@ -372,7 +372,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'pt-43',
@@ -384,7 +384,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'pt-44',
@@ -396,7 +396,7 @@ devices = (
         'hasElectricalIO': True,
         'isControllable': False,
         'widgetType': 'sensor',
-        'isActive': True,
+        'isActive': False,
     },
 
     # Temperature transmitters (placeholder; not in SVG yet)
@@ -432,7 +432,7 @@ devices = (
         'deviceType': 'Solenoid',
         'deviceGroup': 'XV',
         'deviceSystems': ['IG'],
-        'address': 0x000,
+        'address': 0x70,
         'hasElectricalIO': True,
         'isControllable': True,
         'widgetType': 'solenoid',
@@ -444,7 +444,7 @@ devices = (
         'deviceType': 'Solenoid',
         'deviceGroup': 'XV',
         'deviceSystems': ['IG'],
-        'address': 0x000,
+        'address': 0x71,
         'hasElectricalIO': True,
         'isControllable': True,
         'widgetType': 'solenoid',
@@ -456,7 +456,7 @@ devices = (
         'deviceType': 'Solenoid',
         'deviceGroup': 'XV',
         'deviceSystems': ['IPA'],
-        'address': 0x000,
+        'address': 0x72,
         'hasElectricalIO': True,
         'isControllable': True,
         'widgetType': 'solenoid',
@@ -468,7 +468,7 @@ devices = (
         'deviceType': 'Solenoid',
         'deviceGroup': 'XV',
         'deviceSystems': ['IPA'],
-        'address': 0x000,
+        'address': 0x73,
         'hasElectricalIO': True,
         'isControllable': True,
         'widgetType': 'solenoid',
@@ -480,7 +480,7 @@ devices = (
         'deviceType': 'Solenoid',
         'deviceGroup': 'XV',
         'deviceSystems': ['LOX'],
-        'address': 0x000,
+        'address': 0x80,
         'hasElectricalIO': True,
         'isControllable': True,
         'widgetType': 'solenoid',
@@ -502,7 +502,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'ig-pc-22',
@@ -514,7 +514,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
 
     # Check valves
@@ -528,7 +528,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'cv-012',
@@ -540,7 +540,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'cv-013',
@@ -552,7 +552,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'cv-014',
@@ -564,7 +564,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
 
     # Globe valves
@@ -578,7 +578,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'hv-039',
@@ -590,7 +590,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'hv-040',
@@ -602,7 +602,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'hv-051',
@@ -614,7 +614,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
 
     # Pressure safety valves
@@ -628,7 +628,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'ig-psv-32',
@@ -640,7 +640,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
     {
         'id': 'ig-psv-42',
@@ -652,7 +652,7 @@ devices = (
         'hasElectricalIO': False,
         'isControllable': False,
         'widgetType': 'mechanical',
-        'isActive': True,
+        'isActive': False,
     },
 )
 
