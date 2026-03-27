@@ -627,6 +627,23 @@ class GuiBackendBridge:
             handler(dict(payload))
 
     def on_state_snapshot(self, snapshot: dict[str, Any]) -> None:
+        # Seed device library from snapshot before applying runtime state.
+        # Ensures devices appear in live mode without waiting for a separate
+        # device_inventory event or hardware response.
+        device_registry = snapshot.get("device_registry")
+        if isinstance(device_registry, dict):
+            devices = device_registry.get("devices", [])
+            if isinstance(devices, list) and devices:
+                new_proxies = self.device_catalog.sync_inventory(devices)
+                for proxy in new_proxies:
+                    try:
+                        self.window.addDevice(proxy, proxy.meta)
+                    except Exception as exc:
+                        log.exception(
+                            "Failed to add device proxy %s from snapshot: %s",
+                            proxy.device_id, exc,
+                        )
+
         self.device_catalog.apply_state_snapshot(snapshot)
         setattr(self.window, "backend_state_snapshot", dict(snapshot))
         setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
