@@ -19,6 +19,7 @@ from gui import (
     MintsScriptAPI,
     AutoPollerRow,
     LiveGraphDataProvider,
+    PlaybackGraphDataProvider,
 )
 from gui.timelineview import TimelineView
 from nexus import BusRider
@@ -2186,7 +2187,7 @@ class ControllerWindow(QMainWindow):
         self.autopoller = autopoller
         self.playback_mode = playback_mode
         self.test_name = test_name
-        self.live_graph_provider = None if self.playback_mode else LiveGraphDataProvider()
+        self.graph_provider = PlaybackGraphDataProvider() if self.playback_mode else LiveGraphDataProvider()
 
         self.devices: dict[str, object] = {}
         self.device_meta: dict[str, dict] = {}
@@ -2222,14 +2223,14 @@ class ControllerWindow(QMainWindow):
 
         self.graph = GraphView()
         attach_provider = getattr(self.graph, "attach_graph_provider", None)
-        if callable(attach_provider) and self.live_graph_provider is not None:
-            attach_provider(self.live_graph_provider)
-            self.live_graph_provider.start()
+        if callable(attach_provider) and self.graph_provider is not None:
+            attach_provider(self.graph_provider)
+            self.graph_provider.start()
         self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
         self.exporter = ExportView()
 
         self.device_library = DeviceLibraryPanel()
-        self.workspace = GraphWorkspace(self.graph, graph_provider=self.live_graph_provider)
+        self.workspace = GraphWorkspace(self.graph, graph_provider=self.graph_provider)
         self.workspace.deviceDropped.connect(self._on_device_requested)
         self.device_library.deviceActivated.connect(self._on_device_requested)
 
@@ -2827,12 +2828,19 @@ class ControllerWindow(QMainWindow):
                 self.setWindowTitle(f"minTS Controller - Playback - {test_name}")
 
         if self.playback_mode:
+            provider = getattr(self, "graph_provider", None)
+            if provider is not None:
+                try:
+                    provider.load_from_payload(payload)
+                except Exception:
+                    self.log.exception("Failed to load playback graph provider")
             self.console.load_playback_run(run_id=run_id, metadata=metadata if isinstance(metadata, dict) else None)
             self.console.set_playback_time(self.playback_time)
             self._refresh_aux_clock_display()
             if isinstance(self.playback_duration_seconds, (int, float)):
                 self.timeline.set_total_duration(self.playback_duration_seconds)
             self.timeline.set_current_time(max(0.0, float(self.playback_time)))
+            self._sync_playback_graph_provider_window()
 
         self._refresh_aux_clock_display()
 
@@ -2858,7 +2866,7 @@ class ControllerWindow(QMainWindow):
         if not isinstance(snapshot, dict):
             return
 
-        provider = getattr(self, "live_graph_provider", None)
+        provider = getattr(self, "graph_provider", None)
         if provider is not None and not self.playback_mode:
             try:
                 provider.ingest_state_snapshot(snapshot)
@@ -2886,16 +2894,42 @@ class ControllerWindow(QMainWindow):
                 self.playback_time = max(0.0, float(position_seconds))
 
         self._update_time_displays()
+        if self.playback_mode:
+            self._sync_playback_graph_provider_window()
         self._sync_finish_run_button(snapshot)
 
     def handle_structured_event(self, payload: dict):
-        provider = getattr(self, "live_graph_provider", None)
-        if provider is None or self.playback_mode or not isinstance(payload, dict):
+        provider = getattr(self, "graph_provider", None)
+        if provider is None or not isinstance(payload, dict):
+            return
+        if self.playback_mode:
             return
         try:
             provider.ingest_structured_event(payload)
         except Exception:
             self.log.exception("Failed to ingest live graph structured event")
+
+    def handle_playback_seek_bootstrap(self, payload: dict):
+        if not self.playback_mode:
+            return
+        self._sync_playback_graph_provider_window()
+
+    def _playback_graph_window_bounds(self) -> tuple[float, float]:
+        end_ts = max(0.0, float(self.playback_time))
+        start_ts = max(0.0, end_ts - float(self.graph.duration))
+        return start_ts, end_ts
+
+    def _sync_playback_graph_provider_window(self) -> None:
+        if not self.playback_mode:
+            return
+        provider = getattr(self, "graph_provider", None)
+        if provider is None:
+            return
+        setter = getattr(provider, "set_time_window", None)
+        if not callable(setter):
+            return
+        start_ts, end_ts = self._playback_graph_window_bounds()
+        setter(start_ts=start_ts, end_ts=end_ts)
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
@@ -2996,6 +3030,7 @@ class ControllerWindow(QMainWindow):
             self._update_mission_time_label(playback_seconds)
             self.timeline.set_current_time(playback_seconds)
             self.console.set_playback_time(playback_seconds)
+            self._sync_playback_graph_provider_window()
         elif mission_seconds is not None:
             self._update_mission_time_label(mission_seconds)
             self.timeline.set_current_time(max(0.0, mission_seconds))
@@ -3120,6 +3155,7 @@ class ControllerWindow(QMainWindow):
         self._update_mission_time_label(self.playback_time)
         self.console.set_playback_time(self.playback_time)
         self._refresh_aux_clock_display()
+        self._sync_playback_graph_provider_window()
 
     # =========================================================
     # Buttons (placeholder behavior)

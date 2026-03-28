@@ -98,8 +98,17 @@ class GraphView(QWidget):
             return None
 
         try:
-            end_ts = time.time()
-            start_ts = end_ts - float(self.duration)
+            provider_window = getattr(self._graph_provider, "window", None)
+            if provider_window is not None and provider_window.end_ts is not None:
+                end_ts = float(provider_window.end_ts)
+                start_ts = (
+                    float(provider_window.start_ts)
+                    if provider_window.start_ts is not None
+                    else end_ts - float(self.duration)
+                )
+            else:
+                end_ts = time.time()
+                start_ts = end_ts - float(self.duration)
             samples = self._graph_provider.get_samples(
                 channel_keys=[runtime_id],
                 start_ts=start_ts,
@@ -136,8 +145,17 @@ class GraphView(QWidget):
         ymax = 0.0
         visible_count = 0
 
-        start = time.time()
-        thresh = start - self.duration
+        provider_window = getattr(self._graph_provider, "window", None)
+        if provider_window is not None and provider_window.end_ts is not None:
+            start = float(provider_window.end_ts)
+            thresh = (
+                float(provider_window.start_ts)
+                if provider_window.start_ts is not None
+                else start - self.duration
+            )
+        else:
+            start = time.time()
+            thresh = start - self.duration
 
         for idx, sensor in enumerate(self.sensors):
             try:
