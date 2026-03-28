@@ -20,6 +20,7 @@ from gui import (
     AutoPollerRow,
     LiveGraphDataProvider,
     PlaybackGraphDataProvider,
+    LiveTelemetryPoller,
 )
 from gui.timelineview import TimelineView
 from nexus import BusRider
@@ -2188,6 +2189,7 @@ class ControllerWindow(QMainWindow):
         self.playback_mode = playback_mode
         self.test_name = test_name
         self.graph_provider = PlaybackGraphDataProvider() if self.playback_mode else LiveGraphDataProvider()
+        self.live_telemetry_poller = None if self.playback_mode else LiveTelemetryPoller(self.autopoller)
 
         self.devices: dict[str, object] = {}
         self.device_meta: dict[str, dict] = {}
@@ -2226,6 +2228,11 @@ class ControllerWindow(QMainWindow):
         if callable(attach_provider) and self.graph_provider is not None:
             attach_provider(self.graph_provider)
             self.graph_provider.start()
+        if self.live_telemetry_poller is not None:
+            try:
+                self.live_telemetry_poller.start()
+            except Exception:
+                self.log.exception("Failed to start live telemetry poller")
         self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
         self.exporter = ExportView()
 
@@ -2326,6 +2333,17 @@ class ControllerWindow(QMainWindow):
         self.set_stages("Prev", "Current", "Next")
 
     def closeEvent(self, event):
+        poller = getattr(self, "live_telemetry_poller", None)
+        if poller is not None:
+            poller.close()
+
+        provider = getattr(self, "graph_provider", None)
+        if provider is not None:
+            try:
+                provider.stop()
+            except Exception:
+                self.log.exception("Failed to stop graph provider during close")
+
         if self.manager:
             self.manager.close_all()
         event.accept()

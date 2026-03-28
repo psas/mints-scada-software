@@ -25,6 +25,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "InMemoryGraphDataProvider": (".graph_provider", "InMemoryGraphDataProvider"),
     "LiveGraphDataProvider": (".live_graph_provider", "LiveGraphDataProvider"),
     "PlaybackGraphDataProvider": (".playback_graph_provider", "PlaybackGraphDataProvider"),
+    "LiveTelemetryPoller": (".live_telemetry_poller", "LiveTelemetryPoller"),
 }
 
 __all__ = list(_EXPORTS.keys())
