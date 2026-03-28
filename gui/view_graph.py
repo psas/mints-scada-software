@@ -8,6 +8,10 @@ import time
 import numpy as np
 from nexus import GenericSensor
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .graph_provider import BaseGraphDataProvider
 
 log = logging.getLogger("Graph")
 
@@ -31,6 +35,7 @@ class GraphView(QWidget):
         self.sensors: list[object] = []
         self.lines: list[matplotlib.lines.Line2D] = []
         self._enabled_channels: dict[str, bool] = {}
+        self._graph_provider = None
 
         logging.getLogger("matplotlib").setLevel(logging.INFO)
 
@@ -62,6 +67,14 @@ class GraphView(QWidget):
         self.timer.timeout.connect(self._update)
         self.timer.start()
 
+    def attach_graph_provider(self, provider: "BaseGraphDataProvider | None") -> None:
+        self._graph_provider = provider
+        self._update()
+
+    def detach_graph_provider(self) -> None:
+        self._graph_provider = None
+        self._update()
+
     def _display_label(self, sensor: object) -> str:
         return getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
 
@@ -70,19 +83,44 @@ class GraphView(QWidget):
 
     def _extract_history(self, sensor: object):
         hist = getattr(sensor, "history", None)
-        if hist is None:
+        if hist is not None:
+            try:
+                hist = np.asarray(hist)
+            except Exception:
+                log.exception("Failed to convert history for sensor %s", self._runtime_id(sensor))
+                hist = None
+            else:
+                if hist.ndim == 2 and hist.shape[0] >= 2:
+                    return hist
+
+        runtime_id = self._runtime_id(sensor)
+        if not runtime_id or self._graph_provider is None:
             return None
 
         try:
-            hist = np.asarray(hist)
+            end_ts = time.time()
+            start_ts = end_ts - float(self.duration)
+            samples = self._graph_provider.get_samples(
+                channel_keys=[runtime_id],
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
         except Exception:
-            log.exception("Failed to convert history for sensor %s", self._runtime_id(sensor))
+            log.exception("Failed to query provider history for sensor %s", runtime_id)
             return None
 
-        if hist.ndim != 2 or hist.shape[0] < 2:
+        if not samples:
             return None
 
-        return hist
+        try:
+            xs = np.asarray([sample.timestamp for sample in samples], dtype=float)
+            ys = np.asarray([sample.value for sample in samples], dtype=float)
+            if xs.size == 0 or ys.size == 0:
+                return None
+            return np.vstack((xs, ys))
+        except Exception:
+            log.exception("Failed to build provider history for sensor %s", runtime_id)
+            return None
 
     def _is_enabled(self, sensor: object) -> bool:
         runtime_id = self._runtime_id(sensor)

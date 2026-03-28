@@ -23,6 +23,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "split_channel_key": (".graph_data", "split_channel_key"),
     "BaseGraphDataProvider": (".graph_provider", "BaseGraphDataProvider"),
     "InMemoryGraphDataProvider": (".graph_provider", "InMemoryGraphDataProvider"),
+    "LiveGraphDataProvider": (".live_graph_provider", "LiveGraphDataProvider"),
 }
 
 __all__ = list(_EXPORTS.keys())

@@ -18,6 +18,7 @@ from gui import (
     ScriptView,
     MintsScriptAPI,
     AutoPollerRow,
+    LiveGraphDataProvider,
 )
 from gui.timelineview import TimelineView
 from nexus import BusRider
@@ -1381,11 +1382,12 @@ class GraphWidgetCard(QFrame):
 class GraphWorkspace(QWidget):
     deviceDropped = pyqtSignal(str, object)
 
-    def __init__(self, graph_widget: QWidget, parent=None):
+    def __init__(self, graph_widget: QWidget, graph_provider=None, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
 
         self._primary_graph_widget = graph_widget
+        self._graph_provider = graph_provider
         self._primary_graph_claimed = False
         self._device_names: dict[str, str] = {}
         self._cards: list[GraphWidgetCard] = []
@@ -1502,7 +1504,11 @@ class GraphWorkspace(QWidget):
         if not self._primary_graph_claimed:
             self._primary_graph_claimed = True
             return self._primary_graph_widget
-        return GraphView()
+        widget = GraphView()
+        attach_provider = getattr(widget, "attach_graph_provider", None)
+        if callable(attach_provider) and self._graph_provider is not None:
+            attach_provider(self._graph_provider)
+        return widget
 
     def _create_card(self) -> GraphWidgetCard:
         graph_widget = self._new_graph_widget()
@@ -2180,6 +2186,7 @@ class ControllerWindow(QMainWindow):
         self.autopoller = autopoller
         self.playback_mode = playback_mode
         self.test_name = test_name
+        self.live_graph_provider = None if self.playback_mode else LiveGraphDataProvider()
 
         self.devices: dict[str, object] = {}
         self.device_meta: dict[str, dict] = {}
@@ -2214,11 +2221,15 @@ class ControllerWindow(QMainWindow):
             self.timeline.seek_requested.connect(self._on_timeline_seek)
 
         self.graph = GraphView()
+        attach_provider = getattr(self.graph, "attach_graph_provider", None)
+        if callable(attach_provider) and self.live_graph_provider is not None:
+            attach_provider(self.live_graph_provider)
+            self.live_graph_provider.start()
         self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
         self.exporter = ExportView()
 
         self.device_library = DeviceLibraryPanel()
-        self.workspace = GraphWorkspace(self.graph)
+        self.workspace = GraphWorkspace(self.graph, graph_provider=self.live_graph_provider)
         self.workspace.deviceDropped.connect(self._on_device_requested)
         self.device_library.deviceActivated.connect(self._on_device_requested)
 
@@ -2847,6 +2858,13 @@ class ControllerWindow(QMainWindow):
         if not isinstance(snapshot, dict):
             return
 
+        provider = getattr(self, "live_graph_provider", None)
+        if provider is not None and not self.playback_mode:
+            try:
+                provider.ingest_state_snapshot(snapshot)
+            except Exception:
+                self.log.exception("Failed to ingest live graph snapshot")
+
         mission_clock = snapshot.get("mission_clock")
         recording_clock = snapshot.get("recording_clock")
         playback_clock = snapshot.get("playback_clock")
@@ -2869,6 +2887,15 @@ class ControllerWindow(QMainWindow):
 
         self._update_time_displays()
         self._sync_finish_run_button(snapshot)
+
+    def handle_structured_event(self, payload: dict):
+        provider = getattr(self, "live_graph_provider", None)
+        if provider is None or self.playback_mode or not isinstance(payload, dict):
+            return
+        try:
+            provider.ingest_structured_event(payload)
+        except Exception:
+            self.log.exception("Failed to ingest live graph structured event")
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
