@@ -20,7 +20,7 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
 import qdarkstyle
 
-from settings import get_controllable_valve_ids
+from settings import get_controllable_valve_ids, LIVE_STARTUP_STATE
 from gui.scada_bridge import ScadaBridge
 from gui.scada_webpage import ScadaWebPage
 from historymanager.paths import HISTORY_ROOT_DIRNAME
@@ -51,6 +51,9 @@ class ScadaWindow(QMainWindow):
 
         self.xv_device_ids: tuple[str, ...] = get_controllable_valve_ids()
         self.xv_states = {device_id: "default" for device_id in self.xv_device_ids}
+        if not self.playback_mode:
+            for valve_id in self.xv_device_ids:
+                self.xv_states[valve_id] = self._initial_valve_state(valve_id)
         self.pending_xv_commands: dict[str, str] = {}
 
         title_suffix = " - Playback" if self.playback_mode else " - Right Screen"
@@ -185,6 +188,13 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         if self.playback_mode:
             self._apply_playback_lock_to_svg()
         self._sync_all_states_to_svg()
+        if not self.playback_mode:
+            request = getattr(self, "request_full_backend_state", None)
+            if callable(request):
+                try:
+                    request()
+                except Exception:
+                    logger.debug("[SCADA] Could not request backend state on SVG load")
 
     def _apply_playback_lock_to_svg(self) -> None:
         if self.web_view is None:
@@ -239,6 +249,17 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             return "open"
         if value in {"closed", "close", "shut", "off", "false", "0", "commanded_closed"}:
             return "closed"
+        return "default"
+
+    def _initial_valve_state(self, valve_id: str) -> str:
+        """Compute initial display state: backend snapshot -> LIVE_STARTUP_STATE -> 'default'."""
+        if self.backend_state_snapshot:
+            states = self._extract_device_states(self.backend_state_snapshot)
+            if valve_id in states:
+                self._normalize_state(states[valve_id])
+        startup = LIVE_STARTUP_STATE.get(valve_id)
+        if startup is not None:
+            return self._normalize_state(startup)
         return "default"
 
     def _resolve_backend_device_id(self, valve_id: str) -> str | None:
