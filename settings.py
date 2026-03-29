@@ -161,8 +161,8 @@ LIVE_STARTUP_STATE: dict[str, str] = {
     "ipa-xv-23": "closed",
     "ig-xv-24": "closed",
     "ipa-xv-25": "closed",
-    "lox-xv-26": "open",
-    "ig-xv-27": "closed",
+    "lox-xv-26": "closed",
+    "ig-xv-27": "open",
 }
 
 
