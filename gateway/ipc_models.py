@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 @dataclass(slots=True)
@@ -72,44 +72,47 @@ def pong_message() -> GatewayIPCMessage:
 def hardware_status_message(
     *,
     connected: bool,
+    sender: str | None = None,
+    bitrate: int | None = None,
+    registered_ids: Iterable[str] | None = None,
+    skipped_ids: Iterable[str] | None = None,
     reconnecting: bool = False,
     status: str | None = None,
     reason: str | None = None,
-    sender: str | None = None,
-    bitrate: int | None = None,
-    registered_ids: list[str] | None = None,
-    skipped_ids: list[str] | None = None,
     registered_count: int | None = None,
     skipped_count: int | None = None,
-    already_running: bool = False,
+    already_running: bool | None = None,
     packet_listener_attached: bool | None = None,
     wall_time: str | None = None,
 ) -> GatewayIPCMessage:
-    payload: dict[str, Any] = {
-        "connected": bool(connected),
-        "reconnecting": bool(reconnecting),
-        "already_running": bool(already_running),
-        "registered_ids": list(registered_ids or []),
-        "skipped_ids": list(skipped_ids or []),
-    }
-    if status is not None:
-        payload["status"] = status
-    if reason is not None:
-        payload["reason"] = reason
-    if sender is not None:
-        payload["sender"] = sender
-    if bitrate is not None:
-        payload["bitrate"] = int(bitrate)
-    if registered_count is not None:
-        payload["registered_count"] = int(registered_count)
-    if skipped_count is not None:
-        payload["skipped_count"] = int(skipped_count)
-    if packet_listener_attached is not None:
-        payload["packet_listener_attached"] = bool(packet_listener_attached)
-    if wall_time is not None:
-        payload["wall_time"] = wall_time
-    return GatewayIPCMessage(type="hardware_status", payload=payload)
+    registered_list = [str(x) for x in (registered_ids or [])]
+    skipped_list = [str(x) for x in (skipped_ids or [])]
 
+    if registered_count is None:
+        registered_count = len(registered_list)
+    if skipped_count is None:
+        skipped_count = len(skipped_list)
+    if status is None:
+        status = "connected" if connected else "disconnected"
+
+    return GatewayIPCMessage(
+        type="hardware_status",
+        payload={
+            "connected": bool(connected),
+            "reconnecting": bool(reconnecting),
+            "status": str(status),
+            "reason": reason,
+            "sender": sender,
+            "bitrate": bitrate,
+            "registered_ids": registered_list,
+            "skipped_ids": skipped_list,
+            "registered_count": int(registered_count),
+            "skipped_count": int(skipped_count),
+            "already_running": already_running,
+            "packet_listener_attached": packet_listener_attached,
+            "wall_time": wall_time,
+        },
+    )
 
 def packet_sent_message(
     *,
