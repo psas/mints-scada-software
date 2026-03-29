@@ -590,6 +590,7 @@ class BackendService:
                     adapter_name="service_guard",
                     request_id=request_id if isinstance(request_id, str) else None,
                 )
+                #yield state_snapshot_message(self.state_store.get_snapshot())
                 return
 
             yield command_result_message(
@@ -611,6 +612,7 @@ class BackendService:
                 run_mode=dispatch_info.get("run_mode") if isinstance(dispatch_info.get("run_mode"), str) else None,
                 requested_at=dispatch_info.get("requested_at") if isinstance(dispatch_info.get("requested_at"), str) else None,
             )
+            #yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
         if message.type == "start_script":

@@ -360,7 +360,7 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             logger.info("[SCADA] Ignoring manual button click in playback mode: %s -> %s", valve_id, state)
             return
         self._request_xv_command(valve_id, state, source="scada_manual_button")
-        # DEBUG: optimistic color update removed - UI driven only by backend state refresh
+        # self.set_xv_state(valve_id, state)
 
     def on_valve_clicked(self, valve_id: str) -> None:
         logger.info("[SCADA] Valve clicked in window: %s", valve_id)
@@ -372,7 +372,9 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         new_state = "open" if current in ("default", "closed") else "closed"
         logger.info("[SCADA] %s state change: %s -> %s", valve_id, current, new_state)
         self._request_xv_command(valve_id, new_state, source="scada_svg_click")
-        # DEBUG: optimistic color update removed - UI driven only by backend state refresh
+        
+        # change the state immediately for better responsiveness, it will be corrected if the backend rejects the command
+        # self.set_xv_state(valve_id, new_state)
 
     def set_xv_state(self, valve_id: str, state: str) -> None:
         if valve_id not in self.xv_states:
@@ -439,6 +441,8 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
 
     def _apply_device_states(self, states: dict[str, str]) -> None:
         for valve_id, state in states.items():
+            # if valve_id in self.pending_xv_commands:
+            #     continue
             self.set_xv_state(valve_id, state)
 
     def handle_playback_loaded(self, payload: dict[str, Any]) -> None:

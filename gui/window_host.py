@@ -404,7 +404,7 @@ class GuiBackendBridge:
         self._health_poll_timer.setInterval(1000)
         self._health_poll_timer.timeout.connect(self._poll_backend_health)
         self._state_sync_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
-        self._state_sync_timer.setInterval(3000 if self.mode == "live" else 5000)
+        self._state_sync_timer.setInterval(100 if self.mode == "live" else 5000)
         self._state_sync_timer.timeout.connect(self._sync_backend_runtime_state)
         self.gui_action_api = GuiBackendActionAPI(
             backend_client=self.backend_client,
@@ -473,7 +473,7 @@ class GuiBackendBridge:
         if not self.backend_client.is_connected:
             return
         try:
-            self.gui_action_api.refresh_runtime_views()
+            self.gui_action_api.request_full_state()
         except Exception as exc:
             log.debug("Failed to refresh backend runtime state: %s", exc)
 
