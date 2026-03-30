@@ -1,10 +1,23 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, QPlainTextEdit, QCheckBox, QMessageBox
-from PyQt5.QtCore import Qt, pyqtSignal
-import logging
-import threading
-from gui import MintsScriptAPI
-import os
+from __future__ import annotations
+
 import ctypes
+import logging
+import os
+import threading
+
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from gui import MintsScriptAPI
+from scripts.script_runtime.script_contract import DEFAULT_SCRIPT_FILENAME
 
 ################################
 #
@@ -13,13 +26,14 @@ import ctypes
 # This method of running the code assumes that we trust the user's code
 # This is not generally a good idea, however it is much simpler than trying
 #   to properly sandbox it while still giving it access to what it needs.
-# Since the rest of the program already runs as the user, I'm not too worried about it.   
+# Since the rest of the program already runs as the user, I'm not too worried about it.
 #
 ################################
 
+
 class ScriptView(QWidget):
     _THREAD_KILL_DELAY = 0.01
-    ''' The delay between asking the thread to stop and brutally murdering it '''
+    # The delay between asking the thread to stop and brutally murdering it.
 
     START_BUTTON_TEXT = "Run Script"
     STOP_BUTTON_TEXT = "Stop Script"
@@ -27,19 +41,20 @@ class ScriptView(QWidget):
 
     # This has to go here, not in the constructor. Not sure why, but this works.
     doneSignal = pyqtSignal()
-    ''' Signal to trigger when the script is done '''
-    stoppedSignal = pyqtSignal()
-    ''' Signal to trigger when the script is stopped '''
+    # Signal to trigger when the script is done.
 
-    def __init__(self, mintsapi):
+    stoppedSignal = pyqtSignal()
+    # Signal to trigger when the script is stopped.
+
+    def __init__(self, mintsapi: MintsScriptAPI):
         super().__init__()
         self.log = logging.getLogger("script")
 
         self.running = threading.Event()
-        ''' Event to trigger when the script starts/stops '''
+        # Event to trigger when the script starts/stops.
 
-        self.mints: MintsScriptAPI = mintsapi
-        ''' The minTS API scripts can use '''
+        self.mints = mintsapi
+        # The minTS API scripts can use.
 
         # Set up signals
         self.doneSignal.connect(self._done)
@@ -51,12 +66,14 @@ class ScriptView(QWidget):
         self.layout.setAlignment(Qt.AlignTop)
 
         self.controlLayout = QHBoxLayout()
-        ''' Layout at the top for control buttons '''
+        # Layout at the top for control buttons.
+
         self.layout.addLayout(self.controlLayout)
 
         # self.scripteditor = QTextEdit()
         self.scripteditor = QPlainTextEdit()
-        ''' Main editor window for the script '''
+        # Main editor window for the script.
+
         self.layout.addWidget(self.scripteditor)
 
         # Run Controls
@@ -76,25 +93,30 @@ class ScriptView(QWidget):
         self.savebutton.clicked.connect(self._save)
         self.controlLayout.addWidget(self.savebutton)
 
-        # Lock editor checkbox. If it is partially checked, that is unlocked normally but locked now since the script is running
+        # Lock editor checkbox. If it is partially checked, that is unlocked
+        # normally but locked now since the script is running.
         self.lockcheck = QCheckBox("Lock editor")
         self.lockcheck.toggled.connect(self._updateLock)
         self.lockcheck.setChecked(True)
         self.controlLayout.addWidget(self.lockcheck)
 
         # Load the default script
-        self.filename = "script.py"
+        self.filename = DEFAULT_SCRIPT_FILENAME
         self._load(self.filename)
 
-    def _load(self, filename: str = None):
-        ''' Loads a script file, either the currently selected one, or (in future) let the user select the file '''
+    def _load(self, filename: str | None = None):
+        """Load a script file, defaulting to the shared scripts directory."""
         # Prepare the filename
         if filename is None:
             self.log.error("Can't try to select file yet")
+            return
+
         self.filename = filename
+        self.scripteditor.clear()
+
         # Load the file and put it in the editor
         if os.path.isfile(self.filename):
-            with open(self.filename) as f:
+            with open(self.filename, encoding="utf-8") as f:
                 for line in f:
                     self.scripteditor.insertPlainText(line)
             self.log.info(f"Loaded file {self.filename}")
@@ -105,7 +127,8 @@ class ScriptView(QWidget):
 
     def _save(self):
         self.log.info("Saving now")
-        with open(self.filename, "w") as f:
+        os.makedirs(os.path.dirname(self.filename) or ".", exist_ok=True)
+        with open(self.filename, "w", encoding="utf-8") as f:
             f.write(self.scripteditor.toPlainText())
         msg = f"Saved file {self.filename}"
         self.log.info(msg)
@@ -116,39 +139,51 @@ class ScriptView(QWidget):
         if self.lockcheck.isChecked():
             self._lock()
             self.log.info("Script editor locked")
+            return
+
+        ynb = QMessageBox(self.parent())
+        yes = QMessageBox.StandardButton.Yes
+        if (
+            ynb.question(
+                self.parent(),
+                "Unlock Verification",
+                "Do you want to unlock the editor?",
+                yes | QMessageBox.StandardButton.No,
+            )
+            == yes
+        ):
+            self.log.info("Script editor unlocked")
+            if not self.running.isSet():
+                self._unlock()
         else:
-            ynb = QMessageBox(self.parent())
-            yes = QMessageBox.StandardButton.Yes
-            if ynb.question(self.parent(), "Unlock Verification", "Do you want to unlock the editor?", yes |  QMessageBox.StandardButton.No) == yes:
-                self.log.info("Script editor unlocked")
-                if not self.running.isSet():
-                    self._unlock()
-            else:
-                self.lockcheck.setChecked(True)
-                self._lock()
+            self.lockcheck.setChecked(True)
+            self._lock()
 
     def _lock(self):
         # Disable file buttons
         self.openbutton.setEnabled(False)
         self.savebutton.setEnabled(False)
+
         # Lock the editor
         self.scripteditor.setReadOnly(True)
 
     def _unlock(self, force: bool = False):
-        ''' Unlocks the editor but only if the lock checkbox is unchecked '''
+        """Unlock the editor if the lock checkbox allows it."""
         if not self.lockcheck.checkState() == Qt.CheckState.Checked or force:
             # Enable file buttons
             self.openbutton.setEnabled(True)
             self.savebutton.setEnabled(True)
+
             # Unlock the editor
             self.scripteditor.setReadOnly(False)
-            self.lockcheck.blockSignals(True)       # Don't call the _updateLock method this time
+            self.lockcheck.blockSignals(True)  # Don't call the _updateLock method this time
             self.lockcheck.setChecked(False)
             self.lockcheck.blockSignals(False)
-        # Uncheck the checkbox
-        self.lockcheck.setEnabled(True)
-        self.lockcheck.setTristate(False)
-    
+
+            # Uncheck the checkbox
+            self.lockcheck.setEnabled(True)
+            self.lockcheck.setTristate(False)
+
     def _setStoppingText(self):
         self.runbutton.setText(self.STOPPING_BUTTON_TEXT)
 
@@ -161,79 +196,106 @@ class ScriptView(QWidget):
     def _run(self):
         if self.running.isSet():
             self.stop()
-        else:
-            self.log.info("Starting script now")
-            self.running.set()
-            self._waiter = threading.Event()
-            script = self.scripteditor.toPlainText()
-            def runthread(script, doneSignal):
-                try:
-                    # Internal variables for the script
-                    log = logging.getLogger("script.exe")
-                    def wait(time: float):
-                        self._waiter.wait(time)
-                    # Actually run the script
-                    exec(script, {
+            return
+
+        self.log.info("Starting script now")
+        self.running.set()
+        self._waiter = threading.Event()
+        script = self.scripteditor.toPlainText()
+
+        def runthread(script_text: str, doneSignal):
+            try:
+                # Internal variables for the script
+                log = logging.getLogger("script.exe")
+
+                def wait(time: float):
+                    self._waiter.wait(time)
+
+                # Actually run the script
+                exec(
+                    script_text,
+                    {
                         "print": log.info,
                         "mints": self.mints,
                         "abort": self.mints.abort,
                         "exit": None,
-                        "wait": wait
-                    })
-                except Exception as e:
-                    # If something goes wrong, trigger an abort
-                    self.log.fatal("An exception occurred in the script. Aborting now.")
-                    self.log.fatal(repr(e))
-                    self.mints.abort()
-                except PleaseStopNowException:
-                    # If we're asked nicely to stop, do so
-                    self.log.info("Script received stop request")
+                        "wait": wait,
+                    },
+                )
+            except Exception as e:
+                # If something goes wrong, trigger an abort
+                self.log.fatal("An exception occurred in the script. Aborting now.")
+                self.log.fatal(repr(e))
+                self.mints.abort()
+            except PleaseStopNowException:
+                # If we're asked nicely to stop, do so
+                self.log.info("Script received stop request")
+            finally:
                 self.running.clear()
                 doneSignal.emit()
 
-            self.runner = threading.Thread(target=runthread, args=(script, self.doneSignal))
-            self.runner.start()
-            self._lock()
-            self.runbutton.setText(self.STOP_BUTTON_TEXT)
-            self.lockcheck.setTristate(True)
-            # Mark things as locked if they were unlocked before
-            self.lockcheck.setEnabled(False)
-            if not self.lockcheck.isChecked():
-                self.lockcheck.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.runner = threading.Thread(target=runthread, args=(script, self.doneSignal))
+        self.runner.start()
+        self._lock()
+        self.runbutton.setText(self.STOP_BUTTON_TEXT)
+        self.lockcheck.setTristate(True)
 
+        # Mark things as locked if they were unlocked before
+        self.lockcheck.setEnabled(False)
+        if not self.lockcheck.isChecked():
+            self.lockcheck.setCheckState(Qt.CheckState.PartiallyChecked)
 
     def scriptPrint(self, message):
         self.log.info(message)
-        
+
     def stop(self):
-        ''' Ask the script to stop execution. This does NOT force the script to stop '''
-        if self.runner is not None:
-            self.log.error("Asking script to stop")
-            thread_id = self.runner.ident
-            exception = PleaseStopNowException
-            # Based on https://stackoverflow.com/questions/36484151/throw-an-exception-into-another-thread
-            ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), ctypes.py_object(exception))
-            # ref: http://docs.python.org/c-api/init.html#PyThreadState_SetAsyncExc
-            if ret == 0:
-                raise ValueError("Invalid thread ID")
-            elif ret > 1:
-                # Huh? Why would we notify more than one threads?
-                # Because we punch a hole into C level interpreter.
-                # So it is better to clean up the mess.
-                ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
-                raise SystemError("PyThreadState_SetAsyncExc failed")
-            else:
-                self.stoppedSignal.emit()
-            # Stop any delays
-            self._waiter.set()
-            # Give the script a few ms to stop before we forcefully kill it.
-            self.runner.join(self._THREAD_KILL_DELAY)
-            if self.running.isSet():
-                # If it's not done yet, ask the user to press Estop
-                self.log.warn("Script didn't die in 10ms, this is bad!")
-                QMessageBox.critical(self.parent(), "Script did not stop", f"The script didn't stop in {self._THREAD_KILL_DELAY*1000:.0f}ms\nPRESS E-STOP NOW!")
-            else:
-                self.log.info("Script stopped in time")
+        """Ask the script to stop execution.
+
+        This does NOT force the script to stop.
+        """
+        if self.runner is None:
+            return
+
+        self.log.error("Asking script to stop")
+        thread_id = self.runner.ident
+        exception = PleaseStopNowException
+
+        # Based on https://stackoverflow.com/questions/36484151/throw-an-exception-into-another-thread
+        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_long(thread_id), ctypes.py_object(exception)
+        )
+
+        # ref: http://docs.python.org/c-api/init.html#PyThreadState_SetAsyncExc
+        if ret == 0:
+            raise ValueError("Invalid thread ID")
+        if ret > 1:
+            # Huh? Why would we notify more than one threads?
+            # Because we punch a hole into C level interpreter.
+            # So it is better to clean up the mess.
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
+            raise SystemError("PyThreadState_SetAsyncExc failed")
+
+        self.stoppedSignal.emit()
+
+        # Stop any delays
+        self._waiter.set()
+
+        # Give the script a few ms to stop before we forcefully kill it.
+        self.runner.join(self._THREAD_KILL_DELAY)
+        if self.running.isSet():
+            # If it's not done yet, ask the user to press Estop
+            self.log.warning("Script didn't die in 10ms, this is bad!")
+            QMessageBox.critical(
+                self.parent(),
+                "Script did not stop",
+                (
+                    "The script didn't stop in "
+                    f"{self._THREAD_KILL_DELAY * 1000:.0f}ms\nPRESS E-STOP NOW!"
+                ),
+            )
+        else:
+            self.log.info("Script stopped in time")
+
 
 class PleaseStopNowException(BaseException):
     def __init__(self):
