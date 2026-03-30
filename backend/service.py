@@ -14,6 +14,12 @@ from nexus import DataPacket
 from .gateway_bus_proxy import GatewayBusProxy
 from .gateway_client import GatewayClient
 from .bus_manager import BusManager
+from .abort_command import (
+    build_abort_dispatch_info,
+    build_abort_structured_event,
+    is_abort_command_payload,
+    record_abort_system_event,
+)
 from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
 from .health import BackendHealthMonitor, HealthPublisher
@@ -559,9 +565,32 @@ class BackendService:
             return
 
         if message.type == "command_request":
+            abort_system_event = None
             try:
                 payload = self._normalize_mapping_payload(message.payload)
-                dispatch_info = self._dispatch_command_request(payload, default_request_source="gui")
+                if is_abort_command_payload(payload):
+                    dispatch_info = build_abort_dispatch_info(
+                        payload,
+                        default_request_source="gui",
+                    )
+                    abort_system_event = build_abort_structured_event(dispatch_info)
+                    record_abort_system_event(
+                        self.health,
+                        dispatch_info,
+                        current_run_id=(
+                            self.history_manager.current_run.run_id
+                            if self.history_manager.current_run is not None
+                            else None
+                        ),
+                    )
+                    legacy_abort_message = dispatch_info.get("legacy_abort_message")
+                    if isinstance(legacy_abort_message, str):
+                        log.warning("%s", legacy_abort_message)
+                else:
+                    dispatch_info = self._dispatch_command_request(
+                        payload,
+                        default_request_source="gui",
+                    )
             except Exception as exc:
                 command_name = None
                 device_id = None
@@ -592,6 +621,9 @@ class BackendService:
                 )
                 #yield state_snapshot_message(self.state_store.get_snapshot())
                 return
+
+            if abort_system_event is not None:
+                yield structured_event_message(abort_system_event)
 
             yield command_result_message(
                 success=bool(dispatch_info.get("success")),

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 DEFAULT_SCRIPT_DIRECTORY = "scripts/script_sources"
 DEFAULT_SCRIPT_FILENAME = f"{DEFAULT_SCRIPT_DIRECTORY}/script.py"
+
 LEGACY_SCRIPT_EXAMPLE_FILES: tuple[str, ...] = (
     f"{DEFAULT_SCRIPT_DIRECTORY}/script.py",
     f"{DEFAULT_SCRIPT_DIRECTORY}/script_blink.py",
@@ -48,7 +49,16 @@ LEGACY_SCRIPT_SUPPORTED_SURFACE: tuple[str, ...] = (
 ABORT_COMMAND_NAME = "abort"
 ABORT_OPERATOR_ACTION = "abort_pressed"
 ABORT_REQUESTED_VIA = "abort_relay"
+ABORT_RELAY_MESSAGE_TYPE = "abort_request"
 ABORT_BEHAVIOR_LOG_ONLY = "log_only_legacy_message"
+ABORT_DISPATCHED_VIA = "backend_abort_acceptance"
+ABORT_ADAPTER_NAME = "abort_command"
+ABORT_STATUS = "handled"
+ABORT_AUTHORITY_LEVEL = "operator"
+ABORT_SYSTEM_EVENT_NAME = "abort_command_accepted"
+ABORT_LEGACY_LOG_MESSAGE = (
+    "Abort requested. Legacy backend behavior remains log-only for now."
+)
 
 
 @dataclass(frozen=True)
@@ -65,7 +75,14 @@ class LegacyScriptContract:
     abort_command_name: str = ABORT_COMMAND_NAME
     abort_operator_action: str = ABORT_OPERATOR_ACTION
     abort_requested_via: str = ABORT_REQUESTED_VIA
+    abort_relay_message_type: str = ABORT_RELAY_MESSAGE_TYPE
     abort_behavior: str = ABORT_BEHAVIOR_LOG_ONLY
+    abort_dispatched_via: str = ABORT_DISPATCHED_VIA
+    abort_adapter_name: str = ABORT_ADAPTER_NAME
+    abort_status: str = ABORT_STATUS
+    abort_authority_level: str = ABORT_AUTHORITY_LEVEL
+    abort_system_event_name: str = ABORT_SYSTEM_EVENT_NAME
+    abort_legacy_log_message: str = ABORT_LEGACY_LOG_MESSAGE
 
 
 LEGACY_SCRIPT_CONTRACT = LegacyScriptContract()
@@ -73,7 +90,6 @@ LEGACY_SCRIPT_CONTRACT = LegacyScriptContract()
 
 def describe_legacy_script_contract() -> dict[str, Any]:
     """Return a plain-JSON-friendly view of the contract."""
-
     contract = LEGACY_SCRIPT_CONTRACT
     return {
         "default_script_directory": contract.default_script_directory,
@@ -87,7 +103,14 @@ def describe_legacy_script_contract() -> dict[str, Any]:
             "command_name": contract.abort_command_name,
             "operator_action": contract.abort_operator_action,
             "requested_via": contract.abort_requested_via,
+            "relay_message_type": contract.abort_relay_message_type,
             "current_behavior": contract.abort_behavior,
+            "dispatched_via": contract.abort_dispatched_via,
+            "adapter_name": contract.abort_adapter_name,
+            "status": contract.abort_status,
+            "authority_level": contract.abort_authority_level,
+            "system_event_name": contract.abort_system_event_name,
+            "legacy_log_message": contract.abort_legacy_log_message,
         },
     }
 
@@ -96,10 +119,17 @@ def is_supported_mints_member(name: str) -> bool:
     return name in SUPPORTED_MINTS_MEMBERS
 
 
-
 def is_deprecated_mints_member(name: str) -> bool:
     return name in DEPRECATED_MINTS_MEMBERS
 
+
+def build_abort_legacy_log_message(message: str | None = None) -> str:
+    """Build the current legacy/log-only backend message for an abort request."""
+    if isinstance(message, str):
+        stripped = message.strip()
+        if stripped:
+            return f"{ABORT_LEGACY_LOG_MESSAGE} Detail: {stripped}"
+    return ABORT_LEGACY_LOG_MESSAGE
 
 
 def build_abort_operator_action_payload(
@@ -113,7 +143,6 @@ def build_abort_operator_action_payload(
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical operator_action payload for an abort request."""
-
     payload: dict[str, Any] = {
         "action": ABORT_OPERATOR_ACTION,
         "requested_via": ABORT_REQUESTED_VIA,
@@ -129,7 +158,6 @@ def build_abort_operator_action_payload(
     return payload
 
 
-
 def build_abort_command_payload(
     *,
     relay_request_id: str,
@@ -140,7 +168,6 @@ def build_abort_command_payload(
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical command_request payload for an abort request."""
-
     payload: dict[str, Any] = {
         "command_name": ABORT_COMMAND_NAME,
         "device_id": None,

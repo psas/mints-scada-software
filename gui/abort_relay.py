@@ -11,8 +11,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from scripts.script_runtime.script_contract import (
+    ABORT_RELAY_MESSAGE_TYPE,
+    build_abort_command_payload,
+    build_abort_operator_action_payload,
+)
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger(__name__)
 
 
@@ -54,7 +59,6 @@ def send_abort_relay_message(
         sock.settimeout(timeout_s)
         sock.connect(str(socket_path))
         sock.sendall(_json_line({"type": message_type, "payload": dict(payload or {})}))
-
         buffer = ""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -96,7 +100,7 @@ def send_abort_request(
         payload["operator_action"] = dict(operator_action)
     return send_abort_relay_message(
         relay_socket=relay_socket,
-        message_type="abort_request",
+        message_type=ABORT_RELAY_MESSAGE_TYPE,
         payload=payload,
         timeout_s=timeout_s,
     )
@@ -114,14 +118,12 @@ class AbortRelayServer:
         self.relay_socket.parent.mkdir(parents=True, exist_ok=True)
         if self.relay_socket.exists():
             self.relay_socket.unlink()
-
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server_socket = server
         server.bind(str(self.relay_socket))
         server.listen(16)
         server.settimeout(0.5)
         log.info("AbortRelay listening on %s (backend=%s)", self.relay_socket, self.backend_socket)
-
         try:
             while not self._stop_event.is_set():
                 try:
@@ -132,7 +134,6 @@ class AbortRelayServer:
                     if self._stop_event.is_set():
                         break
                     raise
-
                 thread = threading.Thread(target=self._handle_client, args=(conn,), daemon=True)
                 thread.start()
         finally:
@@ -205,10 +206,8 @@ class AbortRelayServer:
                     "wall_time": isoformat_z(),
                 },
             }
-
-        if message_type == "abort_request":
+        if message_type == ABORT_RELAY_MESSAGE_TYPE:
             return self._handle_abort_request(payload)
-
         raise ValueError(f"Unsupported AbortRelay message type: {message_type!r}")
 
     def _handle_abort_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -216,34 +215,27 @@ class AbortRelayServer:
         source_window_role = self._get_optional_string(payload, "source_window_role")
         source_window_kind = self._get_optional_string(payload, "source_window_kind")
         source_mode = self._get_optional_string(payload, "source_mode")
+        requested_at = isoformat_z()
         operator_action_extra = self._get_optional_mapping(payload, "operator_action") or {}
         command_payload_override = self._get_optional_mapping(payload, "command_payload") or {}
 
-        operator_action_payload: dict[str, Any] = {
-            "action": "abort_pressed",
-            "requested_via": "abort_relay",
-            "relay_request_id": relay_request_id,
-            "relay_session_id": self.session_id,
-            "source_window_role": source_window_role,
-            "source_window_kind": source_window_kind,
-            "source_mode": source_mode,
-            "requested_at": isoformat_z(),
-        }
-        operator_action_payload.update(operator_action_extra)
-
-        command_payload: dict[str, Any] = {
-            "command_name": "abort",
-            "device_id": None,
-            "command_args": [],
-            "command_kwargs": {},
-            "requested_via": "abort_relay",
-            "relay_request_id": relay_request_id,
-            "relay_session_id": self.session_id,
-            "source_window_role": source_window_role,
-            "source_window_kind": source_window_kind,
-            "source_mode": source_mode,
-        }
-        command_payload.update(command_payload_override)
+        operator_action_payload = build_abort_operator_action_payload(
+            relay_request_id=relay_request_id,
+            relay_session_id=self.session_id,
+            requested_at=requested_at,
+            source_window_role=source_window_role,
+            source_window_kind=source_window_kind,
+            source_mode=source_mode,
+            extra=operator_action_extra,
+        )
+        command_payload = build_abort_command_payload(
+            relay_request_id=relay_request_id,
+            relay_session_id=self.session_id,
+            source_window_role=source_window_role,
+            source_window_kind=source_window_kind,
+            source_mode=source_mode,
+            extra=command_payload_override,
+        )
 
         action_response = self._backend_exchange(
             message_type="operator_action",
@@ -255,7 +247,6 @@ class AbortRelayServer:
             payload=command_payload,
             expected_response_types=("command_result", "error"),
         )
-
         command_payload_body = command_response.get("payload", {}) if isinstance(command_response, dict) else {}
         ok = (
             action_response.get("type") == "operator_action_recorded"
@@ -263,7 +254,6 @@ class AbortRelayServer:
             and isinstance(command_payload_body, Mapping)
             and bool(command_payload_body.get("success"))
         )
-
         result_payload = {
             "ok": ok,
             "relay_request_id": relay_request_id,
@@ -291,13 +281,11 @@ class AbortRelayServer:
             "window_kind": "abort_relay",
             "pid": os.getpid(),
         }
-
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout_s)
             sock.connect(str(self.backend_socket))
             sock.sendall(_json_line({"type": "hello", "payload": hello_payload}))
             sock.sendall(_json_line({"type": message_type, "payload": dict(payload)}))
-
             buffer = ""
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
@@ -316,9 +304,9 @@ class AbortRelayServer:
                     decoded_type = decoded.get("type")
                     if decoded_type in expected_response_types:
                         return decoded
-            raise TimeoutError(
-                f"AbortRelay timed out waiting for backend response types {expected_response_types!r}"
-            )
+        raise TimeoutError(
+            f"AbortRelay timed out waiting for backend response types {expected_response_types!r}"
+        )
 
     def _get_optional_mapping(self, payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
         value = payload.get(key)
@@ -349,7 +337,6 @@ def main() -> int:
     _configure_logging()
     parser = _build_arg_parser()
     args = parser.parse_args()
-
     server = AbortRelayServer(
         relay_socket=args.relay_socket,
         backend_socket=args.backend_socket,
