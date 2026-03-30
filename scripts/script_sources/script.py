@@ -1,0 +1,5 @@
+print("Click click time!")
+mints.devices[f"eng_purge"].open()
+wait(2)
+mints.devices[f"eng_purge"].close()
+print("Done clicking")
