@@ -196,3 +196,39 @@ class BackendIPCClient:
             f"gateway abort forward was not accepted by backend "
             f"(operator_type={operator_type!r}, command_type={command_type!r})"
         )
+
+
+    def forward_clear_abort_latch_to_backend(
+        self,
+        *,
+        operator_action_payload: Mapping[str, Any],
+        command_payload: Mapping[str, Any],
+    ) -> tuple[bool, str | None]:
+        operator_responses = self.request(
+            "operator_action",
+            payload=operator_action_payload,
+            expected_responses=1,
+        )
+        command_responses = self.request(
+            "command_request",
+            payload=command_payload,
+            expected_responses=1,
+        )
+        if not operator_responses or not command_responses:
+            return False, "clear abort latch forward returned no backend response"
+
+        operator_type = operator_responses[0].get("type")
+        command_type = command_responses[0].get("type")
+        command_payload_body = command_responses[0].get("payload", {})
+        if (
+            operator_type == "operator_action_recorded"
+            and command_type == "command_result"
+            and isinstance(command_payload_body, dict)
+            and bool(command_payload_body.get("success"))
+        ):
+            return True, None
+
+        return False, (
+            f"clear abort latch forward was not accepted by backend "
+            f"(operator_type={operator_type!r}, command_type={command_type!r})"
+        )

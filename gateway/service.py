@@ -15,6 +15,7 @@ from .backend_client import BackendIPCClient
 from .ipc_models import (
     GatewayIPCMessage,
     abort_result_message,
+    clear_abort_latch_result_message,
     error_message,
     gateway_status_message,
     hardware_status_message,
@@ -27,11 +28,14 @@ from .ipc_models import (
 )
 from .ipc_server import GatewayIPCServer
 from .models import GatewayRuntimeConfig
+from scripts.script_runtime.abort_flow_contract import CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE
 from scripts.script_runtime.script_contract import ABORT_RELAY_MESSAGE_TYPE
 
 log = logging.getLogger(__name__)
 
 ABORT_LATCHED_PLACEHOLDER_MESSAGE = "ABORT LATCHED !!! PRESS THE E-STOP BUTTON NOW !!!"
+CLEAR_ABORT_LATCH_REINITIALIZED_MESSAGE = "Abort latch cleared. Returning to normal mode with fresh initialized runtime state."
+
 ABORT_LATCHED_PLACEHOLDER_TODOS = (
     "TODO(psas-abort-fastpath): gateway abort is currently a placeholder only.",
     "TODO(psas-abort-fastpath): define the real hardware-side abort behavior here.",
@@ -96,6 +100,7 @@ class GatewayService:
             "shutdown_live_hardware",
             "send_packet",
             ABORT_RELAY_MESSAGE_TYPE,
+            CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE,
         ]
 
         self._lock = threading.RLock()
@@ -110,7 +115,7 @@ class GatewayService:
         self._abort_latched_at: str | None = None
         self._abort_latched_request_id: str | None = None
         self._abort_latched_session_id: str | None = None
-        
+
         self.raw_history_manager = HistoryManager(
             project_root=project_root,
             enable_raw_writer=True,
@@ -367,6 +372,77 @@ class GatewayService:
             wall_time=isoformat_z(),
         )
 
+
+    def _clear_abort_latch(self, payload: Mapping[str, Any]) -> bool:
+        was_latched = bool(self._abort_latched)
+        self._abort_latched = False
+        self._abort_latched_at = None
+        self._abort_latched_request_id = None
+        self._abort_latched_session_id = None
+
+        if was_latched:
+            log.warning(CLEAR_ABORT_LATCH_REINITIALIZED_MESSAGE)
+        return was_latched
+
+    def _record_clear_abort_latch_raw_event(self, payload: Mapping[str, Any], *, was_latched: bool) -> None:
+        if not self.raw_history_manager.is_running:
+            return
+        event = {
+            "event_type": "system_event",
+            "event_name": "gateway_abort_latch_cleared",
+            "severity": "warning",
+            "message": CLEAR_ABORT_LATCH_REINITIALIZED_MESSAGE,
+            "relay_request_id": payload.get("relay_request_id"),
+            "relay_session_id": payload.get("relay_session_id"),
+            "source_window_role": payload.get("source_window_role"),
+            "source_window_kind": payload.get("source_window_kind"),
+            "source_mode": payload.get("source_mode"),
+            "requested_via": payload.get("requested_via"),
+            "was_latched": bool(was_latched),
+            "wall_time": isoformat_z(),
+        }
+        self.raw_history_manager.record_raw_event("system_event", event)
+
+    def _forward_clear_abort_latch_to_backend(self, payload: Mapping[str, Any]) -> tuple[bool, str | None]:
+        operator_action_payload = dict(payload.get("operator_action") or {})
+        command_payload = dict(payload.get("command_payload") or {})
+        if not operator_action_payload or not command_payload:
+            return False, "clear abort latch request requires operator_action and command_payload"
+        try:
+            forwarded, reason = self.backend_client.forward_clear_abort_latch_to_backend(
+                operator_action_payload=operator_action_payload,
+                command_payload=command_payload,
+            )
+        except Exception as exc:
+            self._mark_backend_link_failure(f"clear abort latch forward failed: {exc}")
+            return False, str(exc)
+
+        if forwarded:
+            self._mark_backend_link_restored()
+        else:
+            self._mark_backend_link_failure(reason or "clear abort latch forward was rejected")
+        return forwarded, reason
+
+    def _handle_clear_abort_latch_request_message(self, payload: Mapping[str, Any]) -> GatewayIPCMessage:
+        was_latched = self._clear_abort_latch(payload)
+        try:
+            self._record_clear_abort_latch_raw_event(payload, was_latched=was_latched)
+        except Exception:
+            log.exception("Gateway failed to record clear abort latch raw event")
+
+        forwarded, backend_error = self._forward_clear_abort_latch_to_backend(payload)
+        return clear_abort_latch_result_message(
+            ok=True,
+            abort_latched=self._abort_latched,
+            was_latched=was_latched,
+            relay_request_id=str(payload.get("relay_request_id") or "") or None,
+            relay_session_id=str(payload.get("relay_session_id") or "") or None,
+            backend_forwarded=forwarded,
+            backend_error=backend_error,
+            message=CLEAR_ABORT_LATCH_REINITIALIZED_MESSAGE,
+            wall_time=isoformat_z(),
+        )
+
     def _sync_hardware_status_to_backend(self, payload: Mapping[str, Any]) -> None:
         try:
             responses = self.backend_client.gateway_hardware_status(payload)
@@ -576,6 +652,16 @@ class GatewayService:
             except Exception as exc:
                 yield error_message(
                     code="gateway_abort_request_failed",
+                    message=str(exc),
+                )
+            return
+
+        if message.type == CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE:
+            try:
+                yield self._handle_clear_abort_latch_request_message(dict(message.payload))
+            except Exception as exc:
+                yield error_message(
+                    code="gateway_clear_abort_latch_failed",
                     message=str(exc),
                 )
             return

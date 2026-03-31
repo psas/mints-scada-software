@@ -158,6 +158,11 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         self.btn_abort.clicked.connect(self._on_abort_clicked)
         blay.addWidget(self.btn_abort)
 
+        self.btn_clear_abort = QPushButton("Back to Normal")
+        self.btn_clear_abort.setMinimumHeight(72)
+        self.btn_clear_abort.clicked.connect(self._on_clear_abort_clicked)
+        blay.addWidget(self.btn_clear_abort)
+
         self.debug_button = QPushButton("Print States")
         self.debug_button.setMinimumHeight(72)
         self.debug_button.clicked.connect(self.print_states)
@@ -168,6 +173,7 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             self.close_26_button,
             self.reset_button,
             self.btn_abort,
+            self.btn_clear_abort,
             self.debug_button,
         ):
             button.setStyleSheet(
@@ -572,6 +578,20 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             trigger()
             return
         self.abort()
+
+    def _on_clear_abort_clicked(self) -> None:
+        if self.playback_mode:
+            logger.info("[SCADA] Ignoring clear abort latch in playback mode")
+            return
+        trigger = getattr(self, "trigger_clear_abort_latch_via_relay", None)
+        if callable(trigger):
+            trigger()
+            return
+        QMessageBox.critical(
+            self,
+            "Return to Normal Unavailable",
+            "AbortRelay is not available for this SCADA window.",
+        )
 
     def abort(self) -> None:
         logger.fatal("Abort triggered! Slap the big red button NOW!")

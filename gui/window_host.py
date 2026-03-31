@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton, QFrame, QLab
 
 import settings  # noqa: E402
 from gui import QLoggingHandler  # noqa: E402
-from gui.abort_relay import send_abort_request  # noqa: E402
+from gui.abort_relay import send_abort_request, send_clear_abort_latch_request  # noqa: E402
 from gui.backend_client import BackendClient, GuiBackendActionAPI  # noqa: E402
 from gui.controller_window import ControllerWindow  # noqa: E402
 from gui.device_catalog import BackendDeviceCatalog  # noqa: E402
@@ -1459,6 +1459,123 @@ def _abort_failure_text(reply: dict[str, Any] | None) -> str:
     return "Backend did not accept the abort request."
 
 
+
+def _clear_abort_result_ok(reply: dict[str, Any]) -> bool:
+    if not isinstance(reply, dict):
+        return False
+    payload = reply.get("payload", {})
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("ok"))
+
+
+def _clear_abort_failure_text(reply: dict[str, Any] | None) -> str:
+    if not isinstance(reply, dict):
+        return "AbortRelay returned an invalid response."
+
+    payload = reply.get("payload", {})
+    if not isinstance(payload, dict):
+        return f"AbortRelay response payload is invalid: {reply!r}"
+
+    gateway_response = payload.get("gateway_response")
+    if isinstance(gateway_response, dict):
+        gateway_payload = gateway_response.get("payload", {})
+        if isinstance(gateway_payload, dict):
+            message = gateway_payload.get("message") or gateway_payload.get("backend_error") or gateway_payload.get("error")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+
+    return "Gateway did not accept the clear abort latch request."
+
+
+def _make_clear_abort_latch_trigger(
+    *,
+    actual_window: Any,
+    facade: Any,
+    mode: str,
+    window_kind: str,
+) -> Any:
+    def trigger_clear_abort_latch() -> None:
+        relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
+        relay_available = bool(getattr(actual_window, "abort_relay_available", False))
+
+        if not relay_available or not relay_socket:
+            QMessageBox.critical(
+                actual_window,
+                "Return to Normal Unavailable",
+                "AbortRelay is not available for this window.",
+            )
+            return
+
+        answer = QMessageBox.question(
+            actual_window,
+            "Back to Normal",
+            "Are you sure you DO NOT want Abort and want to turn back to normal?"
+            "This will clear the abort latch and reinitialize script/runtime state.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        window_role = _workspace_role(mode, window_kind)
+        command_payload = {
+            "command_name": "clear_abort_latch",
+            "device_id": None,
+            "command_args": [],
+            "command_kwargs": {},
+        }
+        operator_action = {
+            "event_kind": "operator_action",
+            "action": "clear_abort_latch_requested",
+            "source": "gui_clear_abort_latch_button",
+            "source_window_role": window_role,
+            "source_window_kind": window_kind,
+            "source_mode": mode,
+        }
+
+        try:
+            reply = send_clear_abort_latch_request(
+                relay_socket=relay_socket,
+                source_window_role=window_role,
+                source_window_kind=window_kind,
+                source_mode=mode,
+                command_payload=command_payload,
+                operator_action=operator_action,
+                timeout_s=4.0,
+            )
+        except Exception as exc:
+            log.exception("Clear abort latch request failed for %s", window_role)
+            QMessageBox.critical(
+                actual_window,
+                "Return to Normal Failed",
+                f"Clear abort latch request failed.\n\nError: {exc}",
+            )
+            return
+
+        setattr(actual_window, "last_clear_abort_latch_reply", dict(reply))
+        setattr(facade, "last_clear_abort_latch_reply", dict(reply))
+
+        if _clear_abort_result_ok(reply):
+            if hasattr(actual_window, "handle_script_status"):
+                try:
+                    actual_window.handle_script_status({"status": "idle"})
+                except Exception:
+                    pass
+            log.warning("Clear abort latch accepted via AbortRelay for %s", window_role)
+            return
+
+        failure_text = _clear_abort_failure_text(reply)
+        log.error("Clear abort latch failed via AbortRelay for %s: %s", window_role, failure_text)
+        QMessageBox.critical(
+            actual_window,
+            "Return to Normal Failed",
+            failure_text,
+        )
+
+    return trigger_clear_abort_latch
+
+
 def _make_abort_trigger(
     *,
     actual_window: Any,
@@ -1559,6 +1676,23 @@ def _wire_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
     return True
 
 
+
+def _wire_clear_abort_latch_button(*, actual_window: Any, trigger_clear_abort_latch: Any) -> bool:
+    button = getattr(actual_window, "btn_clear_abort", None)
+    if not isinstance(button, QPushButton):
+        return False
+
+    try:
+        button.clicked.disconnect()
+    except Exception:
+        pass
+
+    button.clicked.connect(trigger_clear_abort_latch)
+    setattr(actual_window, "trigger_clear_abort_latch_via_relay", trigger_clear_abort_latch)
+    button.setToolTip("Clear the abort latch and return to fresh initialized runtime state")
+    return True
+
+
 def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_kind: str) -> None:
     relay_available = bool(getattr(actual_window, "abort_relay_available", False))
     relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
@@ -1571,14 +1705,29 @@ def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_
         mode=mode,
         window_kind=window_kind,
     )
-
-    if _wire_abort_button(actual_window=actual_window, trigger_abort=trigger_abort):
-        return
-
-    log.warning(
-        "AbortRelay available but no standard abort button was found for %s",
-        window_kind,
+    trigger_clear_abort_latch = _make_clear_abort_latch_trigger(
+        actual_window=actual_window,
+        facade=facade,
+        mode=mode,
+        window_kind=window_kind,
     )
+
+    wired_abort = _wire_abort_button(actual_window=actual_window, trigger_abort=trigger_abort)
+    wired_clear = _wire_clear_abort_latch_button(
+        actual_window=actual_window,
+        trigger_clear_abort_latch=trigger_clear_abort_latch,
+    )
+
+    if not wired_abort:
+        log.warning(
+            "AbortRelay available but no standard abort button was found for %s",
+            window_kind,
+        )
+    if not wired_clear:
+        log.warning(
+            "AbortRelay available but no standard clear-abort button was found for %s",
+            window_kind,
+        )
 
 
 def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_socket: str | None) -> None:

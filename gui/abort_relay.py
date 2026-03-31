@@ -16,6 +16,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.script_runtime.abort_flow_contract import (
+    CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE,
+    build_clear_abort_latch_command_payload,
+    build_clear_abort_latch_operator_action_payload,
+)
 from scripts.script_runtime.script_contract import (
     ABORT_RELAY_MESSAGE_TYPE,
     build_abort_command_payload,
@@ -105,6 +110,35 @@ def send_abort_request(
     return send_abort_relay_message(
         relay_socket=relay_socket,
         message_type=ABORT_RELAY_MESSAGE_TYPE,
+        payload=payload,
+        timeout_s=timeout_s,
+    )
+
+
+def send_clear_abort_latch_request(
+    *,
+    relay_socket: str | Path,
+    source_window_role: str | None = None,
+    source_window_kind: str | None = None,
+    source_mode: str | None = None,
+    command_payload: Mapping[str, Any] | None = None,
+    operator_action: Mapping[str, Any] | None = None,
+    timeout_s: float = 4.0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if source_window_role:
+        payload["source_window_role"] = source_window_role
+    if source_window_kind:
+        payload["source_window_kind"] = source_window_kind
+    if source_mode:
+        payload["source_mode"] = source_mode
+    if command_payload:
+        payload["command_payload"] = dict(command_payload)
+    if operator_action:
+        payload["operator_action"] = dict(operator_action)
+    return send_abort_relay_message(
+        relay_socket=relay_socket,
+        message_type=CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE,
         payload=payload,
         timeout_s=timeout_s,
     )
@@ -212,6 +246,8 @@ class AbortRelayServer:
             }
         if message_type == ABORT_RELAY_MESSAGE_TYPE:
             return self._handle_abort_request(payload)
+        if message_type == CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE:
+            return self._handle_clear_abort_latch_request(payload)
         raise ValueError(f"Unsupported AbortRelay message type: {message_type!r}")
 
     def _handle_abort_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -242,6 +278,7 @@ class AbortRelayServer:
         )
 
         gateway_response = self._gateway_exchange(
+            message_type=ABORT_RELAY_MESSAGE_TYPE,
             payload={
                 "relay_request_id": relay_request_id,
                 "relay_session_id": self.session_id,
@@ -272,9 +309,70 @@ class AbortRelayServer:
             },
         }
 
+
+    def _handle_clear_abort_latch_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        relay_request_id = uuid4().hex
+        source_window_role = self._get_optional_string(payload, "source_window_role")
+        source_window_kind = self._get_optional_string(payload, "source_window_kind")
+        source_mode = self._get_optional_string(payload, "source_mode")
+        requested_at = isoformat_z()
+        operator_action_extra = self._get_optional_mapping(payload, "operator_action") or {}
+        command_payload_override = self._get_optional_mapping(payload, "command_payload") or {}
+
+        operator_action_payload = build_clear_abort_latch_operator_action_payload(
+            relay_request_id=relay_request_id,
+            relay_session_id=self.session_id,
+            requested_at=requested_at,
+            source_window_role=source_window_role,
+            source_window_kind=source_window_kind,
+            source_mode=source_mode,
+            extra=operator_action_extra,
+        )
+        command_payload = build_clear_abort_latch_command_payload(
+            relay_request_id=relay_request_id,
+            relay_session_id=self.session_id,
+            source_window_role=source_window_role,
+            source_window_kind=source_window_kind,
+            source_mode=source_mode,
+            extra=command_payload_override,
+        )
+
+        gateway_response = self._gateway_exchange(
+            message_type=CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE,
+            payload={
+                "relay_request_id": relay_request_id,
+                "relay_session_id": self.session_id,
+                "requested_via": "abort_relay",
+                "requested_at": requested_at,
+                "source_window_role": source_window_role,
+                "source_window_kind": source_window_kind,
+                "source_mode": source_mode,
+                "operator_action": operator_action_payload,
+                "command_payload": command_payload,
+            },
+            expected_response_types=("clear_abort_latch_result", "error"),
+        )
+        payload_body = gateway_response.get("payload", {}) if isinstance(gateway_response, dict) else {}
+        ok = (
+            gateway_response.get("type") == "clear_abort_latch_result"
+            and isinstance(payload_body, Mapping)
+            and bool(payload_body.get("ok"))
+        )
+        return {
+            "type": "clear_abort_latch_result",
+            "payload": {
+                "ok": ok,
+                "relay_request_id": relay_request_id,
+                "relay_session_id": self.session_id,
+                "gateway_response": gateway_response,
+                "wall_time": isoformat_z(),
+            },
+        }
+
     def _gateway_exchange(
         self,
         *,
+        message_type: str,
         payload: Mapping[str, Any],
         expected_response_types: tuple[str, ...],
         timeout_s: float = 3.0,
@@ -292,7 +390,7 @@ class AbortRelayServer:
             sock.settimeout(timeout_s)
             sock.connect(str(self.gateway_socket))
             sock.sendall(_json_line({"type": "hello", "payload": hello_payload}))
-            sock.sendall(_json_line({"type": ABORT_RELAY_MESSAGE_TYPE, "payload": dict(payload)}))
+            sock.sendall(_json_line({"type": message_type, "payload": dict(payload)}))
             buffer = ""
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:

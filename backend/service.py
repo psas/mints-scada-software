@@ -20,6 +20,12 @@ from .abort_command import (
     is_abort_command_payload,
     record_abort_system_event,
 )
+from .clear_abort_latch_command import (
+    build_clear_abort_latch_dispatch_info,
+    build_clear_abort_latch_structured_event,
+    is_clear_abort_latch_command_payload,
+    record_clear_abort_latch_system_event,
+)
 from .command_router import CommandRouter
 from .device_registry import DeviceRegistry
 from .health import BackendHealthMonitor, HealthPublisher
@@ -569,6 +575,7 @@ class BackendService:
 
         if message.type == "command_request":
             abort_system_event = None
+            clear_abort_latch_system_event = None
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 if is_abort_command_payload(payload):
@@ -589,6 +596,25 @@ class BackendService:
                     legacy_abort_message = dispatch_info.get("legacy_abort_message")
                     if isinstance(legacy_abort_message, str):
                         log.warning("%s", legacy_abort_message)
+                elif is_clear_abort_latch_command_payload(payload):
+                    dispatch_info = build_clear_abort_latch_dispatch_info(
+                        payload,
+                        default_request_source="gui",
+                    )
+                    clear_abort_latch_system_event = build_clear_abort_latch_structured_event(dispatch_info)
+                    record_clear_abort_latch_system_event(
+                        self.health,
+                        dispatch_info,
+                        current_run_id=(
+                            self.history_manager.current_run.run_id
+                            if self.history_manager.current_run is not None
+                            else None
+                        ),
+                    )
+                    self._reset_runtime_after_clear_abort_latch(dispatch_info)
+                    legacy_clear_message = dispatch_info.get("legacy_clear_message")
+                    if isinstance(legacy_clear_message, str):
+                        log.warning("%s", legacy_clear_message)
                 else:
                     dispatch_info = self._dispatch_command_request(
                         payload,
@@ -627,6 +653,9 @@ class BackendService:
 
             if abort_system_event is not None:
                 yield structured_event_message(abort_system_event)
+
+            if clear_abort_latch_system_event is not None:
+                yield structured_event_message(clear_abort_latch_system_event)
 
             yield command_result_message(
                 success=bool(dispatch_info.get("success")),
@@ -1730,6 +1759,24 @@ class BackendService:
             log.warning("%s", legacy_abort_message)
         self.health_monitor.sample_once()
         return dispatch_info
+
+    def _reset_runtime_after_clear_abort_latch(self, dispatch_info: Mapping[str, Any]) -> None:
+        if self.script_runner.is_running:
+            try:
+                self.script_runner.stop_script(reason="clear_abort_latch", timeout_s=1.0)
+            except Exception:
+                log.exception("Failed to stop script runner while clearing abort latch")
+        self.health.record_system_event(
+            "script_runtime_reinitialized",
+            severity="info",
+            message="Abort latch cleared. Script/runtime state was reinitialized.",
+            request_id=dispatch_info.get("request_id"),
+            relay_request_id=dispatch_info.get("relay_request_id"),
+            relay_session_id=dispatch_info.get("relay_session_id"),
+            request_source=dispatch_info.get("request_source"),
+            run_mode=dispatch_info.get("run_mode"),
+        )
+        self.health_monitor.sample_once()
 
     def _handle_script_output(self, info: Mapping[str, Any]) -> None:
         output_text = info.get("output_text")

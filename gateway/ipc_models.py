@@ -231,6 +231,35 @@ def abort_result_message(
     return GatewayIPCMessage(type="abort_result", payload=payload)
 
 
+
+def clear_abort_latch_result_message(
+    *,
+    ok: bool,
+    abort_latched: bool,
+    was_latched: bool,
+    relay_request_id: str | None,
+    relay_session_id: str | None,
+    backend_forwarded: bool,
+    backend_error: str | None = None,
+    message: str | None = None,
+    wall_time: str | None = None,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "ok": bool(ok),
+        "abort_latched": bool(abort_latched),
+        "was_latched": bool(was_latched),
+        "backend_forwarded": bool(backend_forwarded),
+        "relay_request_id": relay_request_id,
+        "relay_session_id": relay_session_id,
+        "wall_time": wall_time,
+    }
+    if backend_error is not None:
+        payload["backend_error"] = backend_error
+    if message is not None:
+        payload["message"] = message
+    return GatewayIPCMessage(type="clear_abort_latch_result", payload=payload)
+
+
 def gateway_status_message(
     *,
     service_name: str,
