@@ -12,17 +12,23 @@ SCRIPT_HOST_MESSAGE_PONG = "pong"
 SCRIPT_HOST_MESSAGE_SHUTDOWN = "shutdown"
 SCRIPT_HOST_MESSAGE_SHUTDOWN_ACK = "shutdown_ack"
 SCRIPT_HOST_MESSAGE_ERROR = "error"
-SCRIPT_HOST_MESSAGE_EVENT = "event"
+SCRIPT_HOST_MESSAGE_EXECUTE_LEGACY_SCRIPT = "execute_legacy_script"
+SCRIPT_HOST_MESSAGE_EXECUTE_STARTED = "execute_started"
+SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT = "script_output"
+SCRIPT_HOST_MESSAGE_COMMAND_REQUEST = "command_request"
+SCRIPT_HOST_MESSAGE_ABORT_REQUEST = "abort_request"
+SCRIPT_HOST_MESSAGE_SCRIPT_EXIT = "script_exit"
 
 SCRIPT_HOST_SUPPORTED_REQUEST_TYPES: tuple[str, ...] = (
     SCRIPT_HOST_MESSAGE_PING,
     SCRIPT_HOST_MESSAGE_SHUTDOWN,
+    SCRIPT_HOST_MESSAGE_EXECUTE_LEGACY_SCRIPT,
 )
 
 
 @dataclass(frozen=True)
 class ScriptHostMessage:
-    """Plain JSON-serializable protocol envelope used by the script host scaffold."""
+    """Plain JSON-serializable protocol envelope used by the script host."""
 
     type: str
     payload: dict[str, Any]
@@ -37,6 +43,7 @@ class ScriptHostMessage:
         if self.request_id:
             message["request_id"] = self.request_id
         return message
+
 
 
 def build_message(

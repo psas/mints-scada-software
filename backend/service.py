@@ -127,8 +127,11 @@ class BackendService:
         )
         self.script_runner = ScriptRunner(
             command_dispatcher=self._dispatch_script_command,
+            abort_dispatcher=self._dispatch_script_abort,
             state_snapshot_getter=self.state_store.get_snapshot,
             progress_callback=self._handle_script_progress,
+            output_callback=self._handle_script_output,
+            project_root=self.project_root,
         )
         self.health_monitor = BackendHealthMonitor(
             history_manager=self.history_manager,
@@ -1708,6 +1711,41 @@ class BackendService:
 
     def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._dispatch_command_request(payload, default_request_source="script")
+
+    def _dispatch_script_abort(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        from .abort_command import build_abort_dispatch_info, record_abort_system_event
+
+        dispatch_info = build_abort_dispatch_info(payload, default_request_source="script")
+        record_abort_system_event(
+            self.health,
+            dispatch_info,
+            current_run_id=(
+                self.history_manager.current_run.run_id
+                if self.history_manager.current_run is not None
+                else None
+            ),
+        )
+        legacy_abort_message = dispatch_info.get("legacy_abort_message")
+        if isinstance(legacy_abort_message, str):
+            log.warning("%s", legacy_abort_message)
+        self.health_monitor.sample_once()
+        return dispatch_info
+
+    def _handle_script_output(self, info: Mapping[str, Any]) -> None:
+        output_text = info.get("output_text")
+        if not isinstance(output_text, str) or not output_text.strip():
+            return
+        self.health.record_system_event(
+            "script_output",
+            severity="info",
+            script_id=info.get("script_id"),
+            name=info.get("name"),
+            pid=info.get("pid"),
+            launch_mode=info.get("launch_mode"),
+            output_level=info.get("output_level"),
+            message=output_text,
+        )
+        self.health_monitor.sample_once()
 
     def _handle_script_progress(self, info: Mapping[str, Any]) -> None:
         progress_wall_time = info.get("progress_wall_time")

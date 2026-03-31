@@ -5,11 +5,15 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.script_runtime.script_protocol import (
+    SCRIPT_HOST_MESSAGE_EXECUTE_LEGACY_SCRIPT,
+    SCRIPT_HOST_MESSAGE_EXECUTE_STARTED,
     SCRIPT_HOST_MESSAGE_HOST_READY,
     SCRIPT_HOST_MESSAGE_PING,
     SCRIPT_HOST_MESSAGE_PONG,
@@ -22,11 +26,7 @@ from scripts.script_runtime.script_protocol import (
 
 
 class ScriptHostProxy:
-    """Backend-side process wrapper for the future subprocess script host.
-
-    Commit4 scope: launch the host scaffold, exchange protocol messages, and own
-    shutdown/termination. Production script execution will flip over in commit5.
-    """
+    """Backend-side process wrapper for the subprocess script host."""
 
     def __init__(
         self,
@@ -38,9 +38,10 @@ class ScriptHostProxy:
         self.python_executable = python_executable or sys.executable
         self._process: subprocess.Popen[str] | None = None
         self._stdout_thread: threading.Thread | None = None
-        self._message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
+        self._message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._pending_messages: deque[dict[str, Any]] = deque()
+        self._stderr_lines: list[str] = []
 
     @property
     def process(self) -> subprocess.Popen[str] | None:
@@ -49,6 +50,10 @@ class ScriptHostProxy:
     @property
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
+
+    @property
+    def stderr_lines(self) -> list[str]:
+        return list(self._stderr_lines)
 
     def start(self, *, script_path: str | None = None, cwd: str | None = None) -> dict[str, Any]:
         if self.is_running:
@@ -76,14 +81,18 @@ class ScriptHostProxy:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         self._stdout_thread = threading.Thread(target=self._pump_stdout, daemon=True)
         self._stdout_thread.start()
         self._stderr_thread = threading.Thread(target=self._pump_stderr, daemon=True)
         self._stderr_thread.start()
 
-        ready = self.read_message(expected_type=SCRIPT_HOST_MESSAGE_HOST_READY, timeout_s=3.0)
-        return ready
+        return self._read_matching_message(
+            expected_type=SCRIPT_HOST_MESSAGE_HOST_READY,
+            request_id=None,
+            timeout_s=3.0,
+        )
 
     def send_request(
         self,
@@ -95,19 +104,35 @@ class ScriptHostProxy:
     ) -> dict[str, Any]:
         if not self.is_running or self._process is None or self._process.stdin is None:
             raise RuntimeError("Script host is not running")
+
         request_id = uuid.uuid4().hex
-        self._process.stdin.write(
-            encode_json_line(build_message(message_type, payload, request_id=request_id)).decode("utf-8")
-        )
+        request_bytes = encode_json_line(build_message(message_type, payload, request_id=request_id))
+        self._process.stdin.write(request_bytes.decode("utf-8"))
         self._process.stdin.flush()
         if expected_type is None:
             return {"ok": True, "request_id": request_id}
-        response = self.read_message(expected_type=expected_type, timeout_s=timeout_s)
-        if response.get("request_id") != request_id:
-            raise RuntimeError(
-                f"Script host response request_id {response.get('request_id')!r} did not match {request_id!r}"
-            )
-        return response
+        return self._read_matching_message(
+            expected_type=expected_type,
+            request_id=request_id,
+            timeout_s=timeout_s,
+        )
+
+    def execute_legacy_script(
+        self,
+        *,
+        script_text: str,
+        device_ids: list[str],
+        timeout_s: float = 3.0,
+    ) -> dict[str, Any]:
+        return self.send_request(
+            SCRIPT_HOST_MESSAGE_EXECUTE_LEGACY_SCRIPT,
+            {
+                "script_text": script_text,
+                "device_ids": list(device_ids),
+            },
+            timeout_s=timeout_s,
+            expected_type=SCRIPT_HOST_MESSAGE_EXECUTE_STARTED,
+        )
 
     def ping(self, *, timeout_s: float = 3.0) -> dict[str, Any]:
         return self.send_request(
@@ -155,18 +180,58 @@ class ScriptHostProxy:
                 pass
         self._process = None
 
-    def read_message(self, *, expected_type: str, timeout_s: float) -> dict[str, Any]:
-        deadline = threading.Event()
-        del deadline
+    def read_next_message(self, *, timeout_s: float = 0.5) -> dict[str, Any]:
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        try:
+            return self._message_queue.get(timeout=timeout_s)
+        except queue.Empty as exc:
+            raise TimeoutError("Timed out waiting for next script host message") from exc
+
+    def _read_matching_message(
+        self,
+        *,
+        expected_type: str,
+        request_id: str | None,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_s
+        deferred: deque[dict[str, Any]] = deque()
         while True:
+            while self._pending_messages:
+                message = self._pending_messages.popleft()
+                if message.get("type") == expected_type and (
+                    request_id is None or message.get("request_id") == request_id
+                ):
+                    while deferred:
+                        self._pending_messages.appendleft(deferred.pop())
+                    return message
+                deferred.append(message)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                while deferred:
+                    self._pending_messages.appendleft(deferred.pop())
+                raise TimeoutError(
+                    f"Timed out waiting for script host message type {expected_type!r}"
+                )
+
             try:
-                message = self._message_queue.get(timeout=timeout_s)
+                message = self._message_queue.get(timeout=remaining)
             except queue.Empty as exc:
+                while deferred:
+                    self._pending_messages.appendleft(deferred.pop())
                 raise TimeoutError(
                     f"Timed out waiting for script host message type {expected_type!r}"
                 ) from exc
-            if message.get("type") == expected_type:
+
+            if message.get("type") == expected_type and (
+                request_id is None or message.get("request_id") == request_id
+            ):
+                while deferred:
+                    self._pending_messages.appendleft(deferred.pop())
                 return message
+            deferred.append(message)
 
     def _pump_stdout(self) -> None:
         assert self._process is not None and self._process.stdout is not None

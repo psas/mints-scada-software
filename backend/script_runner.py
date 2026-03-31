@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -7,7 +8,19 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from scripts.script_runtime.script_protocol import (
+    SCRIPT_HOST_MESSAGE_ABORT_REQUEST,
+    SCRIPT_HOST_MESSAGE_COMMAND_REQUEST,
+    SCRIPT_HOST_MESSAGE_SCRIPT_EXIT,
+    SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT,
+)
+from scripts.script_runtime.script_proxy import ScriptHostProxy
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,6 +61,9 @@ class ScriptRunner:
         command_dispatcher: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
         state_snapshot_getter: Callable[[], Mapping[str, Any]] | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        abort_dispatcher: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+        output_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        project_root: str | Path | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._process: subprocess.Popen[str] | None = None
@@ -64,8 +80,13 @@ class ScriptRunner:
         self._stop_watcher = threading.Event()
         self._on_exit: Callable[[Mapping[str, Any]], None] | None = None
         self._command_dispatcher = command_dispatcher
+        self._abort_dispatcher = abort_dispatcher or command_dispatcher
         self._state_snapshot_getter = state_snapshot_getter
         self._progress_callback = progress_callback
+        self._output_callback = output_callback
+        self._project_root = Path(project_root).expanduser().resolve() if project_root else Path.cwd().resolve()
+        self._host_proxy: ScriptHostProxy | None = None
+        self._captured_output_lines: list[str] = []
         self._total_steps: int | None = None
         self._current_step_index: int | None = None
         self._current_step_name: str | None = None
@@ -103,6 +124,15 @@ class ScriptRunner:
 
             if "plan_steps" in payload:
                 return self._start_plan_script(
+                    payload,
+                    script_id=script_id,
+                    name=name,
+                    cwd=cwd,
+                    on_exit=on_exit,
+                )
+
+            if "inline_python" in payload:
+                return self._start_legacy_host_script(
                     payload,
                     script_id=script_id,
                     name=name,
@@ -180,6 +210,14 @@ class ScriptRunner:
             stopped_via = "sigkill"
 
         self._stop_watcher.set()
+        host_proxy = None
+        with self._lock:
+            host_proxy = self._host_proxy
+        if host_proxy is not None:
+            try:
+                host_proxy.close()
+            except Exception:
+                pass
         self._clear_after_exit()
 
         return {
@@ -236,6 +274,69 @@ class ScriptRunner:
                 self.stop_script(reason="backend_shutdown")
             except Exception:
                 pass
+
+    def _start_legacy_host_script(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        script_id: str,
+        name: str,
+        cwd: str | None,
+        on_exit,
+    ) -> ScriptStartResult:
+        script_text = payload.get("inline_python")
+        if not isinstance(script_text, str) or not script_text.strip():
+            raise ValueError("'inline_python' must be a non-empty string")
+
+        resolved_cwd = cwd or str(self._project_root)
+        host_proxy = ScriptHostProxy(project_root=self._project_root)
+        host_ready = host_proxy.start(script_path=payload.get("script_path"), cwd=resolved_cwd)
+        host_pid = host_ready.get("payload", {}).get("pid")
+
+        execute_started = host_proxy.execute_legacy_script(
+            script_text=script_text,
+            device_ids=self._build_legacy_device_ids(),
+            timeout_s=3.0,
+        )
+
+        process = host_proxy.process
+        if process is None:
+            raise RuntimeError("Legacy script host did not stay running after execute_started")
+
+        self._process = process
+        self._host_proxy = host_proxy
+        self._plan_thread = None
+        self._script_id = script_id
+        self._script_name = name
+        self._launch_mode = "inline_python"
+        self._command = [self.python_executable if hasattr(self, "python_executable") else sys.executable, "-u", str(self._project_root / "scripts" / "script_runtime" / "script_host.py")]
+        self._cwd = resolved_cwd
+        self._on_exit = on_exit
+        self._total_steps = None
+        self._current_step_index = None
+        self._current_step_name = None
+        self._current_step_type = None
+        self._current_step_status = None
+        self._plan_steps_summary = []
+        self._is_held = False
+        self._captured_output_lines = []
+
+        self._stop_watcher.clear()
+        self._watcher_thread = threading.Thread(
+            target=self._watch_host_process,
+            name=f"backend-script-host-watcher-{script_id[:8]}",
+            daemon=True,
+        )
+        self._watcher_thread.start()
+
+        return ScriptStartResult(
+            script_id=script_id,
+            name=name,
+            pid=int(host_pid) if isinstance(host_pid, int) else process.pid,
+            launch_mode=self._launch_mode,
+            command=list(self._command),
+            cwd=resolved_cwd,
+        )
 
     def _start_subprocess_script(
         self,
@@ -590,6 +691,131 @@ class ScriptRunner:
         if callable(self._progress_callback):
             self._progress_callback(payload)
 
+    def _watch_host_process(self) -> None:
+        with self._lock:
+            host_proxy = self._host_proxy
+            process = self._process
+            script_id = self._script_id
+            script_name = self._script_name
+            launch_mode = self._launch_mode
+            command = list(self._command)
+            cwd = self._cwd
+            on_exit = self._on_exit
+
+        if host_proxy is None or process is None:
+            return
+
+        exit_payload: dict[str, Any] | None = None
+
+        while True:
+            if self._stop_watcher.is_set():
+                return
+
+            try:
+                message = host_proxy.read_next_message(timeout_s=0.20)
+            except TimeoutError:
+                if process.poll() is not None:
+                    break
+                continue
+
+            message_type = message.get("type")
+            payload = message.get("payload")
+            if not isinstance(payload, Mapping):
+                payload = {}
+
+            if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT:
+                self._handle_host_output(payload)
+                continue
+
+            if message_type == SCRIPT_HOST_MESSAGE_COMMAND_REQUEST:
+                self._handle_host_command_request(payload)
+                continue
+
+            if message_type == SCRIPT_HOST_MESSAGE_ABORT_REQUEST:
+                self._handle_host_abort_request(payload)
+                continue
+
+            if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_EXIT:
+                exit_payload = {
+                    "script_id": script_id,
+                    "name": script_name,
+                    "pid": process.pid,
+                    "launch_mode": launch_mode,
+                    "command": command,
+                    "cwd": cwd,
+                    "returncode": payload.get("returncode"),
+                }
+                if isinstance(payload.get("failure_message"), str) and payload.get("failure_message"):
+                    exit_payload["failure_message"] = payload.get("failure_message")
+                break
+
+        try:
+            if host_proxy.is_running:
+                host_proxy.shutdown(timeout_s=1.0)
+            else:
+                host_proxy.close()
+        except Exception:
+            try:
+                host_proxy.terminate()
+            except Exception:
+                pass
+
+        if self._stop_watcher.is_set():
+            return
+
+        if exit_payload is None:
+            return_code = process.poll()
+            exit_payload = {
+                "script_id": script_id,
+                "name": script_name,
+                "pid": process.pid,
+                "launch_mode": launch_mode,
+                "command": command,
+                "cwd": cwd,
+                "returncode": return_code,
+            }
+
+        self._clear_after_exit()
+
+        if callable(on_exit):
+            on_exit(exit_payload)
+
+    def _handle_host_output(self, payload: Mapping[str, Any]) -> None:
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return
+        with self._lock:
+            self._captured_output_lines.append(text)
+            callback = self._output_callback
+            info = {
+                "script_id": self._script_id,
+                "name": self._script_name,
+                "pid": self._process.pid if self._process is not None else None,
+                "launch_mode": self._launch_mode,
+                "output_text": text,
+                "output_level": payload.get("level") if isinstance(payload.get("level"), str) else "info",
+                "progress_wall_time": payload.get("wall_time") if isinstance(payload.get("wall_time"), str) else self._utc_now_iso(),
+            }
+        if callable(callback):
+            callback(info)
+
+    def _handle_host_command_request(self, payload: Mapping[str, Any]) -> None:
+        if self._command_dispatcher is None:
+            return
+        try:
+            self._command_dispatcher(dict(payload))
+        except Exception:
+            log.exception("Script host command request failed")
+
+    def _handle_host_abort_request(self, payload: Mapping[str, Any]) -> None:
+        dispatcher = self._abort_dispatcher or self._command_dispatcher
+        if dispatcher is None:
+            return
+        try:
+            dispatcher(dict(payload))
+        except Exception:
+            log.exception("Script host abort request failed")
+
     def _watch_process(self) -> None:
         with self._lock:
             process = self._process
@@ -626,6 +852,7 @@ class ScriptRunner:
     def _clear_after_exit(self) -> None:
         with self._lock:
             self._process = None
+            self._host_proxy = None
             self._plan_thread = None
             self._script_id = None
             self._script_name = None
@@ -639,6 +866,7 @@ class ScriptRunner:
             self._current_step_type = None
             self._current_step_status = None
             self._plan_steps_summary = []
+            self._captured_output_lines = []
             self._is_held = False
             self._plan_stop.clear()
             self._plan_hold_requested.clear()
@@ -660,9 +888,33 @@ class ScriptRunner:
             code = payload["inline_python"]
             if not isinstance(code, str) or not code.strip():
                 raise ValueError("'inline_python' must be a non-empty string")
-            return [sys.executable, "-c", code]
+            return [sys.executable, "-u", str(self._project_root / "scripts" / "script_runtime" / "script_host.py")]
 
         return []
+
+    def _build_legacy_device_ids(self) -> list[str]:
+        if self._state_snapshot_getter is None:
+            return []
+        try:
+            snapshot = self._state_snapshot_getter()
+        except Exception:
+            return []
+        if not isinstance(snapshot, Mapping):
+            return []
+        registry = snapshot.get("device_registry")
+        if not isinstance(registry, Mapping):
+            return []
+        devices = registry.get("devices")
+        if not isinstance(devices, list):
+            return []
+        result: list[str] = []
+        for item in devices:
+            if not isinstance(item, Mapping):
+                continue
+            device_id = item.get("id")
+            if isinstance(device_id, str) and device_id.strip():
+                result.append(device_id.strip())
+        return result
 
     def _normalize_plan_steps(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list) or not value:
@@ -861,6 +1113,7 @@ class ScriptRunner:
                 "current_step_type": self._current_step_type,
                 "current_step_status": self._current_step_status,
                 "plan_steps_summary": list(self._plan_steps_summary),
+                "captured_output_lines": list(self._captured_output_lines),
                 "is_held": self._is_held,
                 "hold_requested": self._plan_hold_requested.is_set(),
                 "supports_hold_continue": bool(self._launch_mode == "plan"),
