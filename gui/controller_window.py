@@ -2244,9 +2244,6 @@ class ControllerWindow(QMainWindow):
         self.scripter = ScriptView(
             MintsScriptAPI(
                 devices=self.devices,
-                graph=self.graph,
-                exporter=self.exporter,
-                autopoller=self.autopoller,
                 abort=self.abort,
             )
         )
@@ -2880,6 +2877,13 @@ class ControllerWindow(QMainWindow):
 
         self._update_time_displays()
 
+
+    def handle_script_status(self, payload: dict):
+        scripter = getattr(self, "scripter", None)
+        handler = getattr(scripter, "handle_script_status", None)
+        if callable(handler):
+            handler(dict(payload))
+
     def apply_backend_state_snapshot(self, snapshot: dict):
         if not isinstance(snapshot, dict):
             return
@@ -2915,6 +2919,11 @@ class ControllerWindow(QMainWindow):
         if self.playback_mode:
             self._sync_playback_graph_provider_window()
         self._sync_finish_run_button(snapshot)
+
+        scripter = getattr(self, "scripter", None)
+        script_snapshot_handler = getattr(scripter, "apply_backend_state_snapshot", None)
+        if callable(script_snapshot_handler):
+            script_snapshot_handler(dict(snapshot))
 
     def handle_structured_event(self, payload: dict):
         provider = getattr(self, "graph_provider", None)

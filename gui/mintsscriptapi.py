@@ -4,7 +4,7 @@ from typing import Callable
 
 from nexus import BusRider
 
-from gui import AutoPoller, ExportView, GraphView
+from scripts.script_runtime.script_compat import UnsupportedLegacyScriptMember
 from scripts.script_runtime.script_contract import (
     DEPRECATED_MINTS_MEMBERS as CONTRACT_DEPRECATED_MINTS_MEMBERS,
     LEGACY_SCRIPT_SUPPORTED_SURFACE,
@@ -13,25 +13,11 @@ from scripts.script_runtime.script_contract import (
 
 
 class MintsScriptAPI:
-    """Legacy GUI script API.
+    """Minimal script API metadata for the GUI script editor.
 
-    This class intentionally keeps the historical attribute names alive while we
-    migrate script execution from GUI-thread ``exec(...)`` to backend-owned
-    subprocess execution.
-
-    Commit 1 only defines the compatibility boundary; it does not remove any of
-    the legacy passthrough attributes yet.
-
-    Supported long-term script surface:
-    - print(...)
-    - wait(seconds)
-    - abort(message=None)
-    - mints.devices["device-id"]
-
-    Legacy passthrough attributes kept temporarily during migration:
-    - mints.graph
-    - mints.exporter
-    - mints.autopoller
+    GUI-thread script execution is gone. The editor now launches scripts through
+    subprocess-backed runtime paths only, so display-oriented legacy helpers are
+    no longer exposed here.
     """
 
     SUPPORTED_SCRIPT_SURFACE = LEGACY_SCRIPT_SUPPORTED_SURFACE
@@ -41,16 +27,17 @@ class MintsScriptAPI:
     def __init__(
         self,
         devices: dict[str, BusRider] | None = None,
-        graph: GraphView | None = None,
-        exporter: ExportView | None = None,
-        autopoller: AutoPoller | None = None,
         abort: Callable | None = None,
     ) -> None:
         self.devices = devices if devices is not None else {}
-        self.graph = graph
-        self.exporter = exporter
-        self.autopoller = autopoller
         self.abort = abort
+
+    def __getattr__(self, name: str):
+        if name in self.DEPRECATED_MINTS_MEMBERS:
+            raise UnsupportedLegacyScriptMember(
+                f"Legacy script member {name!r} is no longer available"
+            )
+        raise AttributeError(name)
 
     @classmethod
     def describe_script_surface(cls) -> dict[str, tuple[str, ...]]:

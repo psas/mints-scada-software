@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import threading
+from pathlib import Path
+from typing import Any, Mapping
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -18,73 +19,53 @@ from PyQt5.QtWidgets import (
 
 from gui import MintsScriptAPI
 from scripts.script_runtime.script_contract import DEFAULT_SCRIPT_FILENAME
-
-################################
-#
-#   IMPORTANT NOTE
-#
-# This method of running the code assumes that we trust the user's code
-# This is not generally a good idea, however it is much simpler than trying
-#   to properly sandbox it while still giving it access to what it needs.
-# Since the rest of the program already runs as the user, I'm not too worried about it.
-#
-################################
+from scripts.script_runtime.script_protocol import (
+    SCRIPT_HOST_MESSAGE_ABORT_REQUEST,
+    SCRIPT_HOST_MESSAGE_COMMAND_REQUEST,
+    SCRIPT_HOST_MESSAGE_SCRIPT_EXIT,
+    SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT,
+)
+from scripts.script_runtime.script_proxy import ScriptHostProxy
 
 
 class ScriptView(QWidget):
-    _THREAD_KILL_DELAY = 0.01
-    # The delay between asking the thread to stop and brutally murdering it.
-
     START_BUTTON_TEXT = "Run Script"
     STOP_BUTTON_TEXT = "Stop Script"
     STOPPING_BUTTON_TEXT = "Stopping script ..."
 
-    # This has to go here, not in the constructor. Not sure why, but this works.
     doneSignal = pyqtSignal()
-    # Signal to trigger when the script is done.
-
     stoppedSignal = pyqtSignal()
-    # Signal to trigger when the script is stopped.
 
     def __init__(self, mintsapi: MintsScriptAPI):
         super().__init__()
         self.log = logging.getLogger("script")
-
         self.running = threading.Event()
-        # Event to trigger when the script starts/stops.
-
         self.mints = mintsapi
-        # The minTS API scripts can use.
+        self.runner = None
+        self._active_runtime_owner = "idle"
+        self._local_host_proxy: ScriptHostProxy | None = None
+        self._local_host_thread: threading.Thread | None = None
+        self._project_root = Path(__file__).resolve().parent.parent
 
-        # Set up signals
         self.doneSignal.connect(self._done)
         self.stoppedSignal.connect(self._setStoppingText)
 
-        # Main Layout
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
         self.layout.setAlignment(Qt.AlignTop)
 
         self.controlLayout = QHBoxLayout()
-        # Layout at the top for control buttons.
-
         self.layout.addLayout(self.controlLayout)
 
-        # self.scripteditor = QTextEdit()
         self.scripteditor = QPlainTextEdit()
-        # Main editor window for the script.
-
         self.layout.addWidget(self.scripteditor)
 
-        # Run Controls
         self.runbutton = QPushButton(self.START_BUTTON_TEXT)
         self.runbutton.clicked.connect(self._run)
         self.controlLayout.addWidget(self.runbutton)
 
-        # Space things out
         self.controlLayout.addStretch()
 
-        # Editor Controls
         self.openbutton = QPushButton("Open")
         self.openbutton.clicked.connect(self._load)
         self.controlLayout.addWidget(self.openbutton)
@@ -93,20 +74,15 @@ class ScriptView(QWidget):
         self.savebutton.clicked.connect(self._save)
         self.controlLayout.addWidget(self.savebutton)
 
-        # Lock editor checkbox. If it is partially checked, that is unlocked
-        # normally but locked now since the script is running.
         self.lockcheck = QCheckBox("Lock editor")
         self.lockcheck.toggled.connect(self._updateLock)
         self.lockcheck.setChecked(True)
         self.controlLayout.addWidget(self.lockcheck)
 
-        # Load the default script
         self.filename = DEFAULT_SCRIPT_FILENAME
         self._load(self.filename)
 
     def _load(self, filename: str | None = None):
-        """Load a script file, defaulting to the shared scripts directory."""
-        # Prepare the filename
         if filename is None:
             self.log.error("Can't try to select file yet")
             return
@@ -114,16 +90,13 @@ class ScriptView(QWidget):
         self.filename = filename
         self.scripteditor.clear()
 
-        # Load the file and put it in the editor
         if os.path.isfile(self.filename):
             with open(self.filename, encoding="utf-8") as f:
                 for line in f:
                     self.scripteditor.insertPlainText(line)
-            self.log.info(f"Loaded file {self.filename}")
+            self.log.info("Loaded file %s", self.filename)
         else:
-            msg = f"Can not open file {self.filename} since it doesn't exist"
-            self.log.error(msg)
-            # self._alerter(msg)
+            self.log.error("Can not open file %s since it doesn't exist", self.filename)
 
     def _save(self):
         self.log.info("Saving now")
@@ -153,34 +126,25 @@ class ScriptView(QWidget):
             == yes
         ):
             self.log.info("Script editor unlocked")
-            if not self.running.isSet():
+            if not self.running.is_set():
                 self._unlock()
         else:
             self.lockcheck.setChecked(True)
             self._lock()
 
     def _lock(self):
-        # Disable file buttons
         self.openbutton.setEnabled(False)
         self.savebutton.setEnabled(False)
-
-        # Lock the editor
         self.scripteditor.setReadOnly(True)
 
     def _unlock(self, force: bool = False):
-        """Unlock the editor if the lock checkbox allows it."""
         if not self.lockcheck.checkState() == Qt.CheckState.Checked or force:
-            # Enable file buttons
             self.openbutton.setEnabled(True)
             self.savebutton.setEnabled(True)
-
-            # Unlock the editor
             self.scripteditor.setReadOnly(False)
-            self.lockcheck.blockSignals(True)  # Don't call the _updateLock method this time
+            self.lockcheck.blockSignals(True)
             self.lockcheck.setChecked(False)
             self.lockcheck.blockSignals(False)
-
-            # Uncheck the checkbox
             self.lockcheck.setEnabled(True)
             self.lockcheck.setTristate(False)
 
@@ -189,114 +153,235 @@ class ScriptView(QWidget):
 
     def _done(self):
         self.runner = None
+        self._active_runtime_owner = "idle"
+        self.running.clear()
         self.runbutton.setText(self.START_BUTTON_TEXT)
         self._unlock()
         self.log.info("Script done running")
 
-    def _run(self):
-        if self.running.isSet():
-            self.stop()
-            return
+    def _backend_window(self):
+        window = self.window()
+        if window is self:
+            return None
+        return window
 
-        self.log.info("Starting script now")
+    def _backend_script_control_available(self) -> bool:
+        window = self._backend_window()
+        return bool(
+            window is not None
+            and callable(getattr(window, "start_backend_script", None))
+            and callable(getattr(window, "stop_backend_script", None))
+        )
+
+    def _script_name_for_backend(self) -> str:
+        base = os.path.basename(self.filename or "")
+        return base or "script.py"
+
+    def _mark_running(self, *, runtime_owner: str) -> None:
         self.running.set()
-        self._waiter = threading.Event()
-        script = self.scripteditor.toPlainText()
-
-        def runthread(script_text: str, doneSignal):
-            try:
-                # Internal variables for the script
-                log = logging.getLogger("script.exe")
-
-                def wait(time: float):
-                    self._waiter.wait(time)
-
-                # Actually run the script
-                exec(
-                    script_text,
-                    {
-                        "print": log.info,
-                        "mints": self.mints,
-                        "abort": self.mints.abort,
-                        "exit": None,
-                        "wait": wait,
-                    },
-                )
-            except Exception as e:
-                # If something goes wrong, trigger an abort
-                self.log.fatal("An exception occurred in the script. Aborting now.")
-                self.log.fatal(repr(e))
-                self.mints.abort()
-            except PleaseStopNowException:
-                # If we're asked nicely to stop, do so
-                self.log.info("Script received stop request")
-            finally:
-                self.running.clear()
-                doneSignal.emit()
-
-        self.runner = threading.Thread(target=runthread, args=(script, self.doneSignal))
-        self.runner.start()
+        self._active_runtime_owner = runtime_owner
         self._lock()
         self.runbutton.setText(self.STOP_BUTTON_TEXT)
         self.lockcheck.setTristate(True)
-
-        # Mark things as locked if they were unlocked before
         self.lockcheck.setEnabled(False)
         if not self.lockcheck.isChecked():
             self.lockcheck.setCheckState(Qt.CheckState.PartiallyChecked)
 
-    def scriptPrint(self, message):
-        self.log.info(message)
-
-    def stop(self):
-        """Ask the script to stop execution.
-
-        This does NOT force the script to stop.
-        """
-        if self.runner is None:
+    def _run(self):
+        if self.running.is_set():
+            self.stop()
             return
 
-        self.log.error("Asking script to stop")
-        thread_id = self.runner.ident
-        exception = PleaseStopNowException
+        script = self.scripteditor.toPlainText()
+        if not isinstance(script, str) or not script.strip():
+            QMessageBox.warning(self.parent(), "No script", "There is no script text to run.")
+            return
 
-        # Based on https://stackoverflow.com/questions/36484151/throw-an-exception-into-another-thread
-        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_long(thread_id), ctypes.py_object(exception)
-        )
+        if self._backend_script_control_available():
+            self._run_via_backend(script)
+            return
 
-        # ref: http://docs.python.org/c-api/init.html#PyThreadState_SetAsyncExc
-        if ret == 0:
-            raise ValueError("Invalid thread ID")
-        if ret > 1:
-            # Huh? Why would we notify more than one threads?
-            # Because we punch a hole into C level interpreter.
-            # So it is better to clean up the mess.
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
-            raise SystemError("PyThreadState_SetAsyncExc failed")
+        self._run_via_local_subprocess(script)
 
-        self.stoppedSignal.emit()
+    def _run_via_backend(self, script_text: str) -> None:
+        window = self._backend_window()
+        if window is None:
+            raise RuntimeError("Backend script control window is unavailable")
 
-        # Stop any delays
-        self._waiter.set()
-
-        # Give the script a few ms to stop before we forcefully kill it.
-        self.runner.join(self._THREAD_KILL_DELAY)
-        if self.running.isSet():
-            # If it's not done yet, ask the user to press Estop
-            self.log.warning("Script didn't die in 10ms, this is bad!")
-            QMessageBox.critical(
-                self.parent(),
-                "Script did not stop",
-                (
-                    "The script didn't stop in "
-                    f"{self._THREAD_KILL_DELAY * 1000:.0f}ms\nPRESS E-STOP NOW!"
-                ),
+        self.log.info("Starting script through backend-owned subprocess runtime")
+        try:
+            window.start_backend_script(
+                name=self._script_name_for_backend(),
+                inline_python=script_text,
+                cwd=os.getcwd(),
             )
-        else:
-            self.log.info("Script stopped in time")
+        except Exception as exc:
+            self.log.exception("Failed to request backend script start")
+            QMessageBox.warning(
+                self.parent(),
+                "Backend Error",
+                f"Failed to start backend-owned script.\n\nError: {exc}",
+            )
+            return
 
+        self._mark_running(runtime_owner="backend")
 
-class PleaseStopNowException(BaseException):
-    def __init__(self):
-        super().__init__()
+    def _run_via_local_subprocess(self, script_text: str) -> None:
+        self.log.warning(
+            "Backend script control is unavailable; using subprocess host directly instead"
+        )
+        proxy = ScriptHostProxy(project_root=self._project_root)
+        try:
+            proxy.start(script_path=self.filename, cwd=str(self._project_root))
+            proxy.execute_legacy_script(script_text=script_text, device_ids=[])
+        except Exception as exc:
+            try:
+                proxy.terminate()
+            except Exception:
+                pass
+            self.log.exception("Failed to start local subprocess script host")
+            QMessageBox.warning(
+                self.parent(),
+                "Script Runtime Error",
+                f"Failed to start subprocess script host.\n\nError: {exc}",
+            )
+            return
+
+        self._local_host_proxy = proxy
+        self._mark_running(runtime_owner="local_subprocess")
+        self._local_host_thread = threading.Thread(
+            target=self._watch_local_host,
+            name="gui-script-local-host-watcher",
+            daemon=True,
+        )
+        self._local_host_thread.start()
+
+    def _watch_local_host(self) -> None:
+        proxy = self._local_host_proxy
+        if proxy is None:
+            return
+
+        try:
+            while True:
+                try:
+                    message = proxy.read_next_message(timeout_s=0.2)
+                except TimeoutError:
+                    if not proxy.is_running:
+                        break
+                    continue
+
+                message_type = message.get("type")
+                payload = message.get("payload")
+                if not isinstance(payload, Mapping):
+                    payload = {}
+
+                if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT:
+                    text = payload.get("text")
+                    if isinstance(text, str) and text:
+                        self.log.info("[local script] %s", text)
+                    continue
+
+                if message_type == SCRIPT_HOST_MESSAGE_COMMAND_REQUEST:
+                    self.log.warning(
+                        "Ignoring local subprocess command request because backend control is unavailable: %s",
+                        dict(payload),
+                    )
+                    continue
+
+                if message_type == SCRIPT_HOST_MESSAGE_ABORT_REQUEST:
+                    self.log.warning(
+                        "Ignoring local subprocess abort request because backend control is unavailable: %s",
+                        dict(payload),
+                    )
+                    continue
+
+                if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_EXIT:
+                    break
+        finally:
+            try:
+                if proxy.is_running:
+                    proxy.shutdown(timeout_s=1.0)
+                else:
+                    proxy.close()
+            except Exception:
+                try:
+                    proxy.terminate()
+                except Exception:
+                    pass
+            self.doneSignal.emit()
+
+    def stop(self):
+        if not self.running.is_set():
+            return
+
+        if self._active_runtime_owner == "backend" and self._backend_script_control_available():
+            window = self._backend_window()
+            try:
+                window.stop_backend_script(reason="operator_stop")
+            except Exception as exc:
+                self.log.exception("Failed to request backend script stop")
+                QMessageBox.warning(
+                    self.parent(),
+                    "Backend Error",
+                    f"Failed to stop backend-owned script.\n\nError: {exc}",
+                )
+                return
+            self.stoppedSignal.emit()
+            return
+
+        if self._active_runtime_owner == "local_subprocess":
+            self._stop_local_subprocess()
+            return
+
+    def _stop_local_subprocess(self) -> None:
+        proxy = self._local_host_proxy
+        if proxy is None:
+            return
+        self.stoppedSignal.emit()
+        try:
+            proxy.shutdown(timeout_s=1.0)
+        except Exception:
+            try:
+                proxy.terminate()
+            except Exception:
+                pass
+        self.doneSignal.emit()
+
+    def scriptPrint(self, message: Any):
+        self.log.info("%s", message)
+
+    def handle_script_status(self, payload: dict[str, object]) -> None:
+        if not isinstance(payload, dict):
+            return
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"started", "running", "hold_requested", "held", "continued"}:
+            if not self.running.is_set():
+                self._mark_running(runtime_owner="backend")
+            return
+        if status in {"stopped", "finished", "completed", "exited", "idle", "not_running"}:
+            self._done()
+
+    def apply_backend_state_snapshot(self, snapshot: dict) -> None:
+        if not isinstance(snapshot, dict):
+            return
+
+        section = None
+        for key in ("script", "script_runtime", "script_runner"):
+            candidate = snapshot.get(key)
+            if isinstance(candidate, dict):
+                section = candidate
+                break
+
+        if section is None:
+            return
+
+        if isinstance(section.get("is_running"), bool):
+            if section.get("is_running"):
+                self._mark_running(runtime_owner="backend")
+            else:
+                self._done()
+            return
+
+        status = section.get("status")
+        if isinstance(status, str):
+            self.handle_script_status({"status": status})
