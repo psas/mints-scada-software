@@ -2277,14 +2277,7 @@ class ControllerWindow(QMainWindow):
         )
 
     def _build_playback_widgets(self):
-        # ScriptView still created for layout compatibility; commit 2 will
-        # replace or remove it in playback mode.
-        self.scripter = ScriptView(
-            MintsScriptAPI(
-                devices=self.devices,
-                abort=self.abort,
-            )
-        )
+        pass
 
     def _build_main_layout(self):
         central = QWidget()
@@ -2618,19 +2611,16 @@ class ControllerWindow(QMainWindow):
         return split
 
     # =========================================================
-    # Right column:
-    # - Top: Logs (big)
-    # - Bottom row: Fuel Capacity (left) | Script area (right)
-    #   Script area split vertically:
-    #   - Top: Script Control
-    #   - Bottom: Engine Force
+    # Right column (mode-dispatched):
+    #   Live:     Logs | Fuel + Script + Engine | button column
+    #   Playback: Logs | Fuel + Engine (no Script, no buttons)
     # =========================================================
     def _create_right_controller_area(self) -> QWidget:
         if self.playback_mode:
             return self._create_playback_right_controller_area()
         return self._create_live_right_controller_area()
 
-    def _create_right_content_stack(self) -> QSplitter:
+    def _create_live_right_content_stack(self) -> QSplitter:
         main_stack = QSplitter(Qt.Vertical)
         main_stack.setHandleWidth(2)
         main_stack.setChildrenCollapsible(False)
@@ -2657,6 +2647,28 @@ class ControllerWindow(QMainWindow):
         script_stack.setSizes([240, 340])
 
         bottom_row.addWidget(script_stack)
+        bottom_row.setStretchFactor(0, 1)
+        bottom_row.setStretchFactor(1, 1)
+        bottom_row.setSizes([520, 520])
+
+        main_stack.addWidget(bottom_row)
+        main_stack.setSizes([620, 380])
+
+        return main_stack
+
+    def _create_playback_right_content_stack(self) -> QSplitter:
+        main_stack = QSplitter(Qt.Vertical)
+        main_stack.setHandleWidth(2)
+        main_stack.setChildrenCollapsible(False)
+
+        main_stack.addWidget(self._panel("Logs", self.console))
+
+        bottom_row = QSplitter(Qt.Horizontal)
+        bottom_row.setHandleWidth(2)
+        bottom_row.setChildrenCollapsible(False)
+
+        bottom_row.addWidget(self._panel("Fuel Capacity", self.telemetry_widget))
+        bottom_row.addWidget(self._panel("Engine Force", self.engine_force_widget))
         bottom_row.setStretchFactor(0, 1)
         bottom_row.setStretchFactor(1, 1)
         bottom_row.setSizes([520, 520])
@@ -2729,7 +2741,7 @@ class ControllerWindow(QMainWindow):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(8)
 
-        main_stack = self._create_right_content_stack()
+        main_stack = self._create_live_right_content_stack()
         btn_col = self._create_button_column()
 
         outer_layout.addWidget(main_stack, 1)
@@ -2737,21 +2749,7 @@ class ControllerWindow(QMainWindow):
         return outer
 
     def _create_playback_right_controller_area(self) -> QWidget:
-        outer = QWidget()
-        outer_layout = QHBoxLayout(outer)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(8)
-
-        main_stack = self._create_right_content_stack()
-        btn_col = self._create_button_column()
-
-        for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
-            _btn.setEnabled(False)
-            _btn.setToolTip("Playback mode is view-only")
-
-        outer_layout.addWidget(main_stack, 1)
-        outer_layout.addWidget(btn_col, 0)
-        return outer
+        return self._create_playback_right_content_stack()
 
     def _panel(self, title: str, widget: QWidget) -> QWidget:
         panel = QFrame()
@@ -3281,11 +3279,14 @@ class ControllerWindow(QMainWindow):
 
     def _sync_finish_run_button(self, snapshot: dict) -> None:
         """Show or hide the Finish Run button based on backend run state."""
+        btn = getattr(self, "btn_finish_run", None)
+        if btn is None:
+            return
         run = snapshot.get("run")
         if isinstance(run, dict) and run.get("is_running"):
-            self.btn_finish_run.setVisible(True)
+            btn.setVisible(True)
         else:
-            self.btn_finish_run.setVisible(False)
+            btn.setVisible(False)
 
     @staticmethod
     def _parse_recording_start_time(recording_clock) -> datetime | None:
