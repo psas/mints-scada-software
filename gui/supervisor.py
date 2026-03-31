@@ -280,13 +280,17 @@ def _monitor_session(
         last_backend_poll_monotonic = now
         return last_recording_state
 
-    # Force an initial read so live-not-recording starts in the correct state.
+    # Only live mode needs backend recording-state polling.
     if mode == "live":
         refresh_recording_state(force=True)
 
     try:
         while True:
-            recording_active = refresh_recording_state()
+            if mode == "live":
+                recording_active = refresh_recording_state()
+            else:
+                recording_active = False
+
             for name, process in list(child_map.items()):
                 return_code = process.poll()
                 if return_code is None:
