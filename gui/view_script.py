@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -19,13 +18,6 @@ from PyQt5.QtWidgets import (
 
 from gui import MintsScriptAPI
 from scripts.script_runtime.script_contract import DEFAULT_SCRIPT_FILENAME
-from scripts.script_runtime.script_protocol import (
-    SCRIPT_HOST_MESSAGE_ABORT_REQUEST,
-    SCRIPT_HOST_MESSAGE_COMMAND_REQUEST,
-    SCRIPT_HOST_MESSAGE_SCRIPT_EXIT,
-    SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT,
-)
-from scripts.script_runtime.script_proxy import ScriptHostProxy
 
 
 class ScriptView(QWidget):
@@ -43,9 +35,6 @@ class ScriptView(QWidget):
         self.mints = mintsapi
         self.runner = None
         self._active_runtime_owner = "idle"
-        self._local_host_proxy: ScriptHostProxy | None = None
-        self._local_host_thread: threading.Thread | None = None
-        self._project_root = Path(__file__).resolve().parent.parent
 
         self.doneSignal.connect(self._done)
         self.stoppedSignal.connect(self._setStoppingText)
@@ -107,23 +96,21 @@ class ScriptView(QWidget):
         self.log.info(msg)
         QMessageBox.information(self.parent(), "File saved", msg)
 
-    def _updateLock(self):
-        self.log.info("Checkbox state changed")
-        if self.lockcheck.isChecked():
-            self._lock()
-            self.log.info("Script editor locked")
-            return
 
-        ynb = QMessageBox(self.parent())
-        yes = QMessageBox.StandardButton.Yes
-        if (
-            ynb.question(
+    def _updateLock(self, yes: bool):
+        self.log.info("Checkbox state changed")
+        if yes:
+            self.log.info("Script editor locked")
+            self._lock()
+        elif (
+            QMessageBox.question(
                 self.parent(),
                 "Unlock Verification",
                 "Do you want to unlock the editor?",
-                yes | QMessageBox.StandardButton.No,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
-            == yes
+            == QMessageBox.Yes
         ):
             self.log.info("Script editor unlocked")
             if not self.running.is_set():
@@ -152,12 +139,14 @@ class ScriptView(QWidget):
         self.runbutton.setText(self.STOPPING_BUTTON_TEXT)
 
     def _done(self):
+        was_active = self.running.is_set() or self._active_runtime_owner != "idle"
         self.runner = None
         self._active_runtime_owner = "idle"
         self.running.clear()
         self.runbutton.setText(self.START_BUTTON_TEXT)
         self._unlock()
-        self.log.info("Script done running")
+        if was_active:
+            self.log.info("Script done running")
 
     def _backend_window(self):
         window = self.window()
@@ -197,11 +186,19 @@ class ScriptView(QWidget):
             QMessageBox.warning(self.parent(), "No script", "There is no script text to run.")
             return
 
-        if self._backend_script_control_available():
-            self._run_via_backend(script)
+        if not self._backend_script_control_available():
+            self.log.error("Backend script control is unavailable; refusing to start script")
+            QMessageBox.warning(
+                self.parent(),
+                "Backend Unavailable",
+                (
+                    "Scripts require backend control availability.\n\n"
+                    "This script was not started because backend control is unavailable."
+                ),
+            )
             return
 
-        self._run_via_local_subprocess(script)
+        self._run_via_backend(script)
 
     def _run_via_backend(self, script_text: str) -> None:
         window = self._backend_window()
@@ -226,126 +223,46 @@ class ScriptView(QWidget):
 
         self._mark_running(runtime_owner="backend")
 
-    def _run_via_local_subprocess(self, script_text: str) -> None:
-        self.log.warning(
-            "Backend script control is unavailable; using subprocess host directly instead"
-        )
-        proxy = ScriptHostProxy(project_root=self._project_root)
-        try:
-            proxy.start(script_path=self.filename, cwd=str(self._project_root))
-            proxy.execute_legacy_script(script_text=script_text, device_ids=[])
-        except Exception as exc:
-            try:
-                proxy.terminate()
-            except Exception:
-                pass
-            self.log.exception("Failed to start local subprocess script host")
-            QMessageBox.warning(
-                self.parent(),
-                "Script Runtime Error",
-                f"Failed to start subprocess script host.\n\nError: {exc}",
-            )
-            return
-
-        self._local_host_proxy = proxy
-        self._mark_running(runtime_owner="local_subprocess")
-        self._local_host_thread = threading.Thread(
-            target=self._watch_local_host,
-            name="gui-script-local-host-watcher",
-            daemon=True,
-        )
-        self._local_host_thread.start()
-
-    def _watch_local_host(self) -> None:
-        proxy = self._local_host_proxy
-        if proxy is None:
-            return
-
-        try:
-            while True:
-                try:
-                    message = proxy.read_next_message(timeout_s=0.2)
-                except TimeoutError:
-                    if not proxy.is_running:
-                        break
-                    continue
-
-                message_type = message.get("type")
-                payload = message.get("payload")
-                if not isinstance(payload, Mapping):
-                    payload = {}
-
-                if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_OUTPUT:
-                    text = payload.get("text")
-                    if isinstance(text, str) and text:
-                        self.log.info("[local script] %s", text)
-                    continue
-
-                if message_type == SCRIPT_HOST_MESSAGE_COMMAND_REQUEST:
-                    self.log.warning(
-                        "Ignoring local subprocess command request because backend control is unavailable: %s",
-                        dict(payload),
-                    )
-                    continue
-
-                if message_type == SCRIPT_HOST_MESSAGE_ABORT_REQUEST:
-                    self.log.warning(
-                        "Ignoring local subprocess abort request because backend control is unavailable: %s",
-                        dict(payload),
-                    )
-                    continue
-
-                if message_type == SCRIPT_HOST_MESSAGE_SCRIPT_EXIT:
-                    break
-        finally:
-            try:
-                if proxy.is_running:
-                    proxy.shutdown(timeout_s=1.0)
-                else:
-                    proxy.close()
-            except Exception:
-                try:
-                    proxy.terminate()
-                except Exception:
-                    pass
-            self.doneSignal.emit()
-
     def stop(self):
         if not self.running.is_set():
             return
 
-        if self._active_runtime_owner == "backend" and self._backend_script_control_available():
-            window = self._backend_window()
-            try:
-                window.stop_backend_script(reason="operator_stop")
-            except Exception as exc:
-                self.log.exception("Failed to request backend script stop")
-                QMessageBox.warning(
-                    self.parent(),
-                    "Backend Error",
-                    f"Failed to stop backend-owned script.\n\nError: {exc}",
-                )
-                return
-            self.stoppedSignal.emit()
+        if self._active_runtime_owner != "backend":
+            self.log.error(
+                "ScriptView is in unexpected runtime owner %r; refusing to stop locally",
+                self._active_runtime_owner,
+            )
+            QMessageBox.warning(
+                self.parent(),
+                "Script Runtime Error",
+                "Unexpected script runtime owner. The script was not stopped locally.",
+            )
             return
 
-        if self._active_runtime_owner == "local_subprocess":
-            self._stop_local_subprocess()
+        if not self._backend_script_control_available():
+            self.log.error("Backend script control became unavailable while script was running")
+            QMessageBox.warning(
+                self.parent(),
+                "Backend Unavailable",
+                (
+                    "Backend control is unavailable, so this window cannot stop the "
+                    "running script directly."
+                ),
+            )
             return
 
-    def _stop_local_subprocess(self) -> None:
-        proxy = self._local_host_proxy
-        if proxy is None:
+        window = self._backend_window()
+        try:
+            window.stop_backend_script(reason="operator_stop")
+        except Exception as exc:
+            self.log.exception("Failed to request backend script stop")
+            QMessageBox.warning(
+                self.parent(),
+                "Backend Error",
+                f"Failed to stop backend-owned script.\n\nError: {exc}",
+            )
             return
         self.stoppedSignal.emit()
-        try:
-            proxy.shutdown(timeout_s=1.0)
-        except Exception:
-            try:
-                proxy.terminate()
-            except Exception:
-                pass
-        self.doneSignal.emit()
 
     def scriptPrint(self, message: Any):
         self.log.info("%s", message)
@@ -359,7 +276,8 @@ class ScriptView(QWidget):
                 self._mark_running(runtime_owner="backend")
             return
         if status in {"stopped", "finished", "completed", "exited", "idle", "not_running"}:
-            self._done()
+            if self.running.is_set() or self._active_runtime_owner != "idle":
+                self._done()
 
     def apply_backend_state_snapshot(self, snapshot: dict) -> None:
         if not isinstance(snapshot, dict):
@@ -379,7 +297,8 @@ class ScriptView(QWidget):
             if section.get("is_running"):
                 self._mark_running(runtime_owner="backend")
             else:
-                self._done()
+                if self.running.is_set() or self._active_runtime_owner != "idle":
+                    self._done()
             return
 
         status = section.get("status")

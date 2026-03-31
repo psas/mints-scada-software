@@ -6,7 +6,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget, QMessageBox
 
 from gui.mintsscriptapi import MintsScriptAPI
 from gui.view_script import ScriptView
@@ -23,38 +23,6 @@ class _DummyTopLevel(QWidget):
 
     def stop_backend_script(self, *, reason: str = "operator_stop"):
         self.stopped.append(reason)
-
-
-class _DummyLocalHostProxy:
-    def __init__(self, *args, **kwargs) -> None:
-        self.started = False
-        self.executed = False
-        self.closed = False
-
-    @property
-    def is_running(self) -> bool:
-        return False
-
-    def start(self, *, script_path=None, cwd=None):
-        self.started = True
-        return {"type": "host_ready", "payload": {"pid": 1234}}
-
-    def execute_legacy_script(self, *, script_text: str, device_ids: list[str]):
-        self.executed = True
-        return {"type": "execute_started", "payload": {"ok": True}}
-
-    def read_next_message(self, *, timeout_s: float = 0.5):
-        return {"type": "script_exit", "payload": {"returncode": 0}}
-
-    def shutdown(self, *, timeout_s: float = 1.0):
-        self.closed = True
-        return {"type": "shutdown_ack", "payload": {"ok": True}}
-
-    def close(self) -> None:
-        self.closed = True
-
-    def terminate(self):
-        self.closed = True
 
 
 class ScriptViewBackendRuntimeTests(unittest.TestCase):
@@ -92,20 +60,39 @@ class ScriptViewBackendRuntimeTests(unittest.TestCase):
         self.assertFalse(view.running.is_set())
         self.assertEqual(view.runbutton.text(), view.START_BUTTON_TEXT)
 
-    def test_without_backend_control_it_still_uses_subprocess_host(self) -> None:
-        host = _DummyLocalHostProxy()
+    def test_without_backend_control_script_start_is_rejected(self) -> None:
         orphan_parent = QWidget()
         layout = QVBoxLayout(orphan_parent)
         view = ScriptView(MintsScriptAPI())
         layout.addWidget(view)
         view.scripteditor.setPlainText('print("local")')
 
-        with mock.patch("gui.view_script.ScriptHostProxy", return_value=host):
+        with mock.patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok) as warning:
             view._run()
 
-        self.assertTrue(host.started)
-        self.assertTrue(host.executed)
-        self.assertIn(view._active_runtime_owner, {"local_subprocess", "idle"})
+        warning.assert_called_once()
+        self.assertFalse(view.running.is_set())
+        self.assertEqual(view._active_runtime_owner, "idle")
+
+    def test_idle_backend_snapshots_do_not_repeat_done_log(self) -> None:
+        top = _DummyTopLevel()
+        layout = QVBoxLayout(top)
+        view = ScriptView(MintsScriptAPI())
+        layout.addWidget(view)
+
+        view.scripteditor.setPlainText('print("hello")')
+        view._run()
+
+        with mock.patch.object(view.log, "info") as info:
+            view.handle_script_status({"status": "stopped"})
+            info.assert_called_once_with("Script done running")
+            info.reset_mock()
+
+            for _ in range(3):
+                view.apply_backend_state_snapshot({"script_runtime": {"is_running": False}})
+                view.handle_script_status({"status": "idle"})
+
+            info.assert_not_called()
 
 
 if __name__ == "__main__":
