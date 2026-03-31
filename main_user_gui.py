@@ -108,7 +108,7 @@ def _ping_abort_relay(socket_path: Path, *, timeout_s: float = 0.75) -> bool:
 
 def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
     script_path = _abort_relay_script()
-    backend_socket = _project_root() / ".backend_service.sock"
+    gateway_socket = _project_root() / ".gateway_service.sock"
 
     socket_dir = Path(tempfile.gettempdir()) / "mints_scada_abort"
     socket_dir.mkdir(parents=True, exist_ok=True)
@@ -119,8 +119,8 @@ def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
     cmd = [
         sys.executable,
         str(script_path),
-        "--backend-socket",
-        str(backend_socket),
+        "--gateway-socket",
+        str(gateway_socket),
         "--relay-socket",
         str(relay_socket),
     ]
@@ -134,7 +134,7 @@ def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
         start_new_session=False,
     )
     _register_pid(process.pid, "abort_relay")
-    log.info("Spawned AbortRelay pid=%s socket=%s", process.pid, relay_socket)
+    log.info("Spawned AbortRelay pid=%s socket=%s gateway=%s", process.pid, relay_socket, gateway_socket)
 
     deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:

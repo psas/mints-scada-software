@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import os
-import signal
 import socket
 import sys
 import threading
@@ -22,6 +21,7 @@ from scripts.script_runtime.script_contract import (
     build_abort_command_payload,
     build_abort_operator_action_payload,
 )
+
 log = logging.getLogger(__name__)
 
 
@@ -111,9 +111,9 @@ def send_abort_request(
 
 
 class AbortRelayServer:
-    def __init__(self, *, relay_socket: str | Path, backend_socket: str | Path) -> None:
+    def __init__(self, *, relay_socket: str | Path, gateway_socket: str | Path) -> None:
         self.relay_socket = Path(relay_socket).expanduser().resolve()
-        self.backend_socket = Path(backend_socket).expanduser().resolve()
+        self.gateway_socket = Path(gateway_socket).expanduser().resolve()
         self.session_id = uuid4().hex
         self._stop_event = threading.Event()
         self._server_socket: socket.socket | None = None
@@ -127,7 +127,7 @@ class AbortRelayServer:
         server.bind(str(self.relay_socket))
         server.listen(16)
         server.settimeout(0.5)
-        log.info("AbortRelay listening on %s (backend=%s)", self.relay_socket, self.backend_socket)
+        log.info("AbortRelay listening on %s (gateway=%s)", self.relay_socket, self.gateway_socket)
         try:
             while not self._stop_event.is_set():
                 try:
@@ -206,7 +206,7 @@ class AbortRelayServer:
                     "session_id": self.session_id,
                     "pid": os.getpid(),
                     "relay_socket": str(self.relay_socket),
-                    "backend_socket": str(self.backend_socket),
+                    "gateway_socket": str(self.gateway_socket),
                     "wall_time": isoformat_z(),
                 },
             }
@@ -241,37 +241,40 @@ class AbortRelayServer:
             extra=command_payload_override,
         )
 
-        action_response = self._backend_exchange(
-            message_type="operator_action",
-            payload=operator_action_payload,
-            expected_response_types=("operator_action_recorded", "error"),
+        gateway_response = self._gateway_exchange(
+            payload={
+                "relay_request_id": relay_request_id,
+                "relay_session_id": self.session_id,
+                "requested_via": "abort_relay",
+                "requested_at": requested_at,
+                "source_window_role": source_window_role,
+                "source_window_kind": source_window_kind,
+                "source_mode": source_mode,
+                "operator_action": operator_action_payload,
+                "command_payload": command_payload,
+            },
+            expected_response_types=("abort_result", "error"),
         )
-        command_response = self._backend_exchange(
-            message_type="command_request",
-            payload=command_payload,
-            expected_response_types=("command_result", "error"),
-        )
-        command_payload_body = command_response.get("payload", {}) if isinstance(command_response, dict) else {}
+        payload_body = gateway_response.get("payload", {}) if isinstance(gateway_response, dict) else {}
         ok = (
-            action_response.get("type") == "operator_action_recorded"
-            and command_response.get("type") == "command_result"
-            and isinstance(command_payload_body, Mapping)
-            and bool(command_payload_body.get("success"))
+            gateway_response.get("type") == "abort_result"
+            and isinstance(payload_body, Mapping)
+            and bool(payload_body.get("ok"))
         )
-        result_payload = {
-            "ok": ok,
-            "relay_request_id": relay_request_id,
-            "relay_session_id": self.session_id,
-            "operator_action_response": action_response,
-            "command_response": command_response,
-            "wall_time": isoformat_z(),
+        return {
+            "type": "abort_result",
+            "payload": {
+                "ok": ok,
+                "relay_request_id": relay_request_id,
+                "relay_session_id": self.session_id,
+                "gateway_response": gateway_response,
+                "wall_time": isoformat_z(),
+            },
         }
-        return {"type": "abort_result", "payload": result_payload}
 
-    def _backend_exchange(
+    def _gateway_exchange(
         self,
         *,
-        message_type: str,
         payload: Mapping[str, Any],
         expected_response_types: tuple[str, ...],
         timeout_s: float = 3.0,
@@ -287,9 +290,9 @@ class AbortRelayServer:
         }
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout_s)
-            sock.connect(str(self.backend_socket))
+            sock.connect(str(self.gateway_socket))
             sock.sendall(_json_line({"type": "hello", "payload": hello_payload}))
-            sock.sendall(_json_line({"type": message_type, "payload": dict(payload)}))
+            sock.sendall(_json_line({"type": ABORT_RELAY_MESSAGE_TYPE, "payload": dict(payload)}))
             buffer = ""
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
@@ -306,10 +309,12 @@ class AbortRelayServer:
                     if not isinstance(decoded, dict):
                         continue
                     decoded_type = decoded.get("type")
+                    if decoded_type == "hello_ack":
+                        continue
                     if decoded_type in expected_response_types:
                         return decoded
         raise TimeoutError(
-            f"AbortRelay timed out waiting for backend response types {expected_response_types!r}"
+            f"AbortRelay timed out waiting for gateway response types {expected_response_types!r}"
         )
 
     def _get_optional_mapping(self, payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
@@ -332,7 +337,7 @@ class AbortRelayServer:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the minTS local AbortRelay process")
-    parser.add_argument("--backend-socket", required=True)
+    parser.add_argument("--gateway-socket", required=True)
     parser.add_argument("--relay-socket", required=True)
     return parser
 
@@ -343,7 +348,7 @@ def main() -> int:
     args = parser.parse_args()
     server = AbortRelayServer(
         relay_socket=args.relay_socket,
-        backend_socket=args.backend_socket,
+        gateway_socket=args.gateway_socket,
     )
     try:
         server.serve_forever()

@@ -114,6 +114,7 @@ def hardware_status_message(
         },
     )
 
+
 def packet_sent_message(
     *,
     device_id: str | None,
@@ -204,6 +205,32 @@ def raw_event_recorded_message(
     return GatewayIPCMessage(type="raw_event_recorded", payload=payload)
 
 
+def abort_result_message(
+    *,
+    ok: bool,
+    abort_latched: bool,
+    relay_request_id: str | None,
+    relay_session_id: str | None,
+    backend_forwarded: bool,
+    backend_error: str | None = None,
+    placeholder_message: str | None = None,
+    wall_time: str | None = None,
+) -> GatewayIPCMessage:
+    payload: dict[str, Any] = {
+        "ok": bool(ok),
+        "abort_latched": bool(abort_latched),
+        "backend_forwarded": bool(backend_forwarded),
+        "relay_request_id": relay_request_id,
+        "relay_session_id": relay_session_id,
+        "wall_time": wall_time,
+    }
+    if backend_error is not None:
+        payload["backend_error"] = backend_error
+    if placeholder_message is not None:
+        payload["placeholder_message"] = placeholder_message
+    return GatewayIPCMessage(type="abort_result", payload=payload)
+
+
 def gateway_status_message(
     *,
     service_name: str,
@@ -222,6 +249,9 @@ def gateway_status_message(
     raw_test_name: str | None = None,
     raw_started_wall_time: str | None = None,
     backend_link_ok: bool | None = None,
+    abort_latched: bool = False,
+    abort_latched_at: str | None = None,
+    abort_relay_request_id: str | None = None,
 ) -> GatewayIPCMessage:
     payload: dict[str, Any] = {
         "service_name": service_name,
@@ -235,6 +265,7 @@ def gateway_status_message(
         "registered_ids": list(registered_ids),
         "skipped_ids": list(skipped_ids),
         "raw_run_active": bool(raw_run_active),
+        "abort_latched": bool(abort_latched),
     }
     if raw_run_id is not None:
         payload["raw_run_id"] = raw_run_id
@@ -246,6 +277,10 @@ def gateway_status_message(
         payload["raw_started_wall_time"] = raw_started_wall_time
     if backend_link_ok is not None:
         payload["backend_link_ok"] = bool(backend_link_ok)
+    if abort_latched_at is not None:
+        payload["abort_latched_at"] = abort_latched_at
+    if abort_relay_request_id is not None:
+        payload["abort_relay_request_id"] = abort_relay_request_id
 
     return GatewayIPCMessage(type="gateway_status", payload=payload)
 

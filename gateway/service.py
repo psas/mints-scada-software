@@ -14,6 +14,7 @@ from backend.device_registry import DeviceRegistry
 from .backend_client import BackendIPCClient
 from .ipc_models import (
     GatewayIPCMessage,
+    abort_result_message,
     error_message,
     gateway_status_message,
     hardware_status_message,
@@ -26,8 +27,16 @@ from .ipc_models import (
 )
 from .ipc_server import GatewayIPCServer
 from .models import GatewayRuntimeConfig
+from scripts.script_runtime.script_contract import ABORT_RELAY_MESSAGE_TYPE
 
 log = logging.getLogger(__name__)
+
+ABORT_LATCHED_PLACEHOLDER_MESSAGE = "ABORT LATCHED !!! PRESS THE E-STOP BUTTON NOW !!!"
+ABORT_LATCHED_PLACEHOLDER_TODOS = (
+    "TODO(psas-abort-fastpath): gateway abort is currently a placeholder only.",
+    "TODO(psas-abort-fastpath): define the real hardware-side abort behavior here.",
+    "TODO(psas-abort-fastpath): future options may include forwarding an abort packet, forcing safe state, or running a dedicated abort routine.",
+)
 
 
 def isoformat_z() -> str:
@@ -86,6 +95,7 @@ class GatewayService:
             "initialize_live_hardware",
             "shutdown_live_hardware",
             "send_packet",
+            ABORT_RELAY_MESSAGE_TYPE,
         ]
 
         self._lock = threading.RLock()
@@ -96,6 +106,10 @@ class GatewayService:
         self._bus_connected = False
         self._backend_link_ok = True
         self._last_backend_link_failure_reason: str | None = None
+        self._abort_latched = False
+        self._abort_latched_at: str | None = None
+        self._abort_latched_request_id: str | None = None
+        self._abort_latched_session_id: str | None = None
         
         self.raw_history_manager = HistoryManager(
             project_root=project_root,
@@ -271,6 +285,86 @@ class GatewayService:
             raw_test_name=raw_run["raw_test_name"],
             raw_started_wall_time=raw_run["raw_started_wall_time"],
             backend_link_ok=self._backend_link_ok,
+            abort_latched=self._abort_latched,
+            abort_latched_at=self._abort_latched_at,
+            abort_relay_request_id=self._abort_latched_request_id,
+        )
+
+    def _latch_abort(self, payload: Mapping[str, Any]) -> None:
+        relay_request_id = str(payload.get("relay_request_id") or "") or None
+        relay_session_id = str(payload.get("relay_session_id") or "") or None
+        if self._abort_latched:
+            if relay_request_id is not None:
+                self._abort_latched_request_id = relay_request_id
+            if relay_session_id is not None:
+                self._abort_latched_session_id = relay_session_id
+            return
+
+        self._abort_latched = True
+        self._abort_latched_at = isoformat_z()
+        self._abort_latched_request_id = relay_request_id
+        self._abort_latched_session_id = relay_session_id
+
+        log.critical(ABORT_LATCHED_PLACEHOLDER_MESSAGE)
+        for line in ABORT_LATCHED_PLACEHOLDER_TODOS:
+            log.critical(line)
+
+    def _record_abort_placeholder_raw_event(self, payload: Mapping[str, Any]) -> None:
+        if not self.raw_history_manager.is_running:
+            return
+        event = {
+            "event_type": "system_event",
+            "event_name": "gateway_abort_latched",
+            "severity": "critical",
+            "message": ABORT_LATCHED_PLACEHOLDER_MESSAGE,
+            "relay_request_id": payload.get("relay_request_id"),
+            "relay_session_id": payload.get("relay_session_id"),
+            "source_window_role": payload.get("source_window_role"),
+            "source_window_kind": payload.get("source_window_kind"),
+            "source_mode": payload.get("source_mode"),
+            "requested_via": payload.get("requested_via"),
+            "placeholder_todos": list(ABORT_LATCHED_PLACEHOLDER_TODOS),
+            "wall_time": isoformat_z(),
+        }
+        self.raw_history_manager.record_raw_event("system_event", event)
+
+    def _forward_abort_to_backend(self, payload: Mapping[str, Any]) -> tuple[bool, str | None]:
+        operator_action_payload = dict(payload.get("operator_action") or {})
+        command_payload = dict(payload.get("command_payload") or {})
+        if not operator_action_payload or not command_payload:
+            return False, "gateway abort request requires operator_action and command_payload"
+        try:
+            forwarded, reason = self.backend_client.forward_abort_to_backend(
+                operator_action_payload=operator_action_payload,
+                command_payload=command_payload,
+            )
+        except Exception as exc:
+            self._mark_backend_link_failure(f"gateway abort forward failed: {exc}")
+            return False, str(exc)
+
+        if forwarded:
+            self._mark_backend_link_restored()
+        else:
+            self._mark_backend_link_failure(reason or "gateway abort forward was rejected")
+        return forwarded, reason
+
+    def _handle_abort_request_message(self, payload: Mapping[str, Any]) -> GatewayIPCMessage:
+        self._latch_abort(payload)
+        try:
+            self._record_abort_placeholder_raw_event(payload)
+        except Exception:
+            log.exception("Gateway failed to record abort placeholder raw event")
+
+        forwarded, backend_error = self._forward_abort_to_backend(payload)
+        return abort_result_message(
+            ok=True,
+            abort_latched=self._abort_latched,
+            relay_request_id=str(payload.get("relay_request_id") or "") or None,
+            relay_session_id=str(payload.get("relay_session_id") or "") or None,
+            backend_forwarded=forwarded,
+            backend_error=backend_error,
+            placeholder_message=ABORT_LATCHED_PLACEHOLDER_MESSAGE,
+            wall_time=isoformat_z(),
         )
 
     def _sync_hardware_status_to_backend(self, payload: Mapping[str, Any]) -> None:
@@ -476,6 +570,15 @@ class GatewayService:
             yield self._build_status_message()
             return
 
+        if message.type == ABORT_RELAY_MESSAGE_TYPE:
+            try:
+                yield self._handle_abort_request_message(dict(message.payload))
+            except Exception as exc:
+                yield error_message(
+                    code="gateway_abort_request_failed",
+                    message=str(exc),
+                )
+            return
 
         if message.type == "record_raw_event":
             try:
@@ -644,6 +747,9 @@ class GatewayService:
                 payload = dict(message.payload)
                 device_id_raw = payload.get("device_id")
                 device_id = str(device_id_raw) if device_id_raw is not None else None
+
+                if self._abort_latched:
+                    raise RuntimeError("gateway abort latch is active; refusing ordinary send_packet request")
 
                 if not self._bus_connected:
                     raise RuntimeError("gateway live bus is not connected")
