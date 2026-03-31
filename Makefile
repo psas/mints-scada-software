@@ -10,9 +10,9 @@ VENV := .venv
 VENV_ACTIVATE := $(VENV)/bin/activate
 REQUIREMENTS := requirements.txt
 
-GATEWAY := main_gateway.py
-BACKEND := main_backend.py
-GUI := main_user_gui.py
+GATEWAY := -m gateway.main
+BACKEND := -m backend.main
+GUI := -m gui.main
 GATEWAY_SOCKET := .gateway_service.sock
 BACKEND_SOCKET := .backend_service.sock
 

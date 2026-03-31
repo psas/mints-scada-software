@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _application_pid_file() -> Path:

@@ -1,4 +1,4 @@
-from main_user_gui import main
+from gui.main import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

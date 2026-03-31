@@ -37,7 +37,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption("--mints-live-ready-pattern", action="store", default=_env_or_default("MINTS_LIVE_READY_PATTERN"))
     group.addoption("--mints-checklist-dev-bypass-pattern", action="store", default=_env_or_default("MINTS_CHECKLIST_DEV_BYPASS_PATTERN", "dev bypass"))
     group.addoption("--mints-live-log-pattern", action="store", default=_env_or_default("MINTS_LIVE_LOG_PATTERN"))
-    group.addoption("--mints-process-matchers", action="store", default=_env_or_default("MINTS_PROCESS_MATCHERS", "main_backend.py,main_user_gui.py,window_host.py,scada_window.py,controller_window.py"))
+    group.addoption("--mints-process-matchers", action="store", default=_env_or_default("MINTS_PROCESS_MATCHERS", "backend.main,gui.main,window_host.py,scada_window.py,controller_window.py"))
     group.addoption("--mints-startup-timeout", action="store", type=float, default=float(_env_or_default("MINTS_STARTUP_TIMEOUT", "30")))
     group.addoption("--mints-action-timeout", action="store", type=float, default=float(_env_or_default("MINTS_ACTION_TIMEOUT", "10")))
     group.addoption("--mints-shutdown-timeout", action="store", type=float, default=float(_env_or_default("MINTS_SHUTDOWN_TIMEOUT", "10")))
