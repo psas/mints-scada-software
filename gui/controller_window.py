@@ -2182,64 +2182,92 @@ class ControllerWindow(QMainWindow):
         super().__init__()
         self.manager = manager
 
+        self._init_mode_state(autopoller, playback_mode, test_name)
+        self._init_shared_runtime()
+        self._init_mode_specific_runtime()
+        self._build_shared_widgets(loghandler)
+        self._build_mode_specific_widgets()
+        self._build_main_layout()
+        self._connect_shared_signals()
+        self._connect_mode_specific_signals()
+        self._set_initial_state()
+
+    # ----- Initialization phases -----
+
+    def _init_mode_state(self, autopoller, playback_mode, test_name):
         logging.getLogger("qdarkstyle").setLevel(logging.ERROR)
         self.log = logging.getLogger("controller_window")
 
         self.autopoller = autopoller
         self.playback_mode = playback_mode
         self.test_name = test_name
-        self.graph_provider = PlaybackGraphDataProvider() if self.playback_mode else LiveGraphDataProvider()
-        self.live_telemetry_poller = None if self.playback_mode else LiveTelemetryPoller(self.autopoller)
 
         self.devices: dict[str, object] = {}
         self.device_meta: dict[str, dict] = {}
 
         self.mission_start_time = None
         self.mission_running = False
-        self.playback_time = 0.0
-        self.playback_duration_seconds = None
-        self._playback_running = False
-        self._playback_anchor = 0.0       # playback_time when play started/resumed
-        self._playback_mono_start = 0.0   # time.monotonic() when play started/resumed
 
         self._backend_mission_clock = None
         self._backend_recording_clock = None
         self._backend_playback_clock = None
         self._recording_started_dt: datetime | None = None
 
-        self.setWindowTitle("minTS Controller - Left Screen")
+        self.playback_time = 0.0
+        self.playback_duration_seconds = None
+        self._playback_running = False
+        self._playback_anchor = 0.0       # playback_time when play started/resumed
+        self._playback_mono_start = 0.0   # time.monotonic() when play started/resumed
 
+    def _init_shared_runtime(self):
+        self.setWindowTitle("minTS Controller - Left Screen")
         QApplication.setStyle("Fusion")
         self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api="pyqt5"))
         self.setFont(QFont("Arial", 10))
 
-        # ====== Application widgets ======
+    def _init_mode_specific_runtime(self):
+        if self.playback_mode:
+            self.graph_provider = PlaybackGraphDataProvider()
+            self.live_telemetry_poller = None
+        else:
+            self.graph_provider = LiveGraphDataProvider()
+            self.live_telemetry_poller = LiveTelemetryPoller(self.autopoller)
+
+    def _build_shared_widgets(self, loghandler):
         self.timeline = TimelineView(
             playback_mode=self.playback_mode,
             show_event_columns=False,
             embedded=True,
         )
-        self.timeline.stage_changed.connect(self.set_stages)
-        if self.playback_mode:
-            self.timeline.seek_requested.connect(self._on_timeline_seek)
 
         self.graph = GraphView()
         attach_provider = getattr(self.graph, "attach_graph_provider", None)
         if callable(attach_provider) and self.graph_provider is not None:
             attach_provider(self.graph_provider)
             self.graph_provider.start()
+
+        self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
+        self.exporter = ExportView()
+        self.device_library = DeviceLibraryPanel()
+        self.workspace = GraphWorkspace(self.graph, graph_provider=self.graph_provider)
+
+        self.engine_force_widget = EngineForceWidget(dot_gain=0.90)
+        self.engine_force_widget.set_sensors(None, None, None, None)
+
+        self.telemetry_widget = TelemetryWidget()
+
+    def _build_mode_specific_widgets(self):
+        if self.playback_mode:
+            self._build_playback_widgets()
+        else:
+            self._build_live_widgets()
+
+    def _build_live_widgets(self):
         if self.live_telemetry_poller is not None:
             try:
                 self.live_telemetry_poller.start()
             except Exception:
                 self.log.exception("Failed to start live telemetry poller")
-        self.console = ConsoleView(loghandler, playback_mode=self.playback_mode)
-        self.exporter = ExportView()
-
-        self.device_library = DeviceLibraryPanel()
-        self.workspace = GraphWorkspace(self.graph, graph_provider=self.graph_provider)
-        self.workspace.deviceDropped.connect(self._on_device_requested)
-        self.device_library.deviceActivated.connect(self._on_device_requested)
 
         self.scripter = ScriptView(
             MintsScriptAPI(
@@ -2248,15 +2276,17 @@ class ControllerWindow(QMainWindow):
             )
         )
 
-        # Engine force widget
-        self.engine_force_widget = EngineForceWidget(dot_gain=0.90)
-        self.engine_force_widget.set_sensors(None, None, None, None)
+    def _build_playback_widgets(self):
+        # ScriptView still created for layout compatibility; commit 2 will
+        # replace or remove it in playback mode.
+        self.scripter = ScriptView(
+            MintsScriptAPI(
+                devices=self.devices,
+                abort=self.abort,
+            )
+        )
 
-        # Telemetry widget
-        self.telemetry_widget = TelemetryWidget()
-        self.telemetry_widget.tank_clicked.connect(self._on_tank_clicked)
-
-        # ====== UI ======
+    def _build_main_layout(self):
         central = QWidget()
         self.setCentralWidget(central)
         central.setStyleSheet("background:#121212;")
@@ -2274,7 +2304,6 @@ class ControllerWindow(QMainWindow):
         body_layout.setSpacing(0)
         body_layout.setContentsMargins(8, 8, 8, 8)
 
-        # Make the LEFT main window area and the RIGHT (Logs/controls) column draggable
         body_split = QSplitter(Qt.Horizontal)
         body_split.setHandleWidth(4)
         body_split.setChildrenCollapsible(False)
@@ -2304,25 +2333,31 @@ class ControllerWindow(QMainWindow):
         body_layout.addWidget(body_split, 1)
         self.mainlayout.addWidget(body, 1)
 
-        # ====== Timers ======
+    def _connect_shared_signals(self):
+        self.timeline.stage_changed.connect(self.set_stages)
+        self.workspace.deviceDropped.connect(self._on_device_requested)
+        self.device_library.deviceActivated.connect(self._on_device_requested)
+        self.telemetry_widget.tank_clicked.connect(self._on_tank_clicked)
+
         self.display_timer = QTimer(self)
         self.display_timer.timeout.connect(self._update_time_displays)
         self.display_timer.start(100)
 
-        # Playback advance timer (only used in playback mode)
         self._playback_advance_timer = QTimer(self)
         self._playback_advance_timer.setInterval(100)
         self._playback_advance_timer.timeout.connect(self._on_playback_advance)
 
-        # P key play/pause shortcut (playback mode only)
+    def _connect_mode_specific_signals(self):
         if self.playback_mode:
+            self.timeline.seek_requested.connect(self._on_timeline_seek)
+
             from PyQt5.QtGui import QKeySequence
             sc = QShortcut(QKeySequence("P"), self)
             sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(self._on_playback_shortcut)
             self._playback_shortcut = sc  # prevent GC
 
-        # Initial state
+    def _set_initial_state(self):
         self.set_status("idle" if not self.playback_mode else "hold")
         self.set_health("default" if not self.playback_mode else "ok")
         self.set_mode("playback" if self.playback_mode else "auto")
@@ -2591,11 +2626,11 @@ class ControllerWindow(QMainWindow):
     #   - Bottom: Engine Force
     # =========================================================
     def _create_right_controller_area(self) -> QWidget:
-        outer = QWidget()
-        outer_layout = QHBoxLayout(outer)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(8)
+        if self.playback_mode:
+            return self._create_playback_right_controller_area()
+        return self._create_live_right_controller_area()
 
+    def _create_right_content_stack(self) -> QSplitter:
         main_stack = QSplitter(Qt.Vertical)
         main_stack.setHandleWidth(2)
         main_stack.setChildrenCollapsible(False)
@@ -2618,12 +2653,10 @@ class ControllerWindow(QMainWindow):
 
         script_stack.addWidget(self._panel("Script Control", self.scripter))
         script_stack.addWidget(self._panel("Engine Force", self.engine_force_widget))
-
         # Give the engine widget enough height by default
         script_stack.setSizes([240, 340])
 
         bottom_row.addWidget(script_stack)
-
         bottom_row.setStretchFactor(0, 1)
         bottom_row.setStretchFactor(1, 1)
         bottom_row.setSizes([520, 520])
@@ -2631,7 +2664,9 @@ class ControllerWindow(QMainWindow):
         main_stack.addWidget(bottom_row)
         main_stack.setSizes([620, 380])
 
-        # Button column
+        return main_stack
+
+    def _create_button_column(self) -> QFrame:
         btn_col = QFrame()
         btn_col.setFixedWidth(170)
         btn_col.setStyleSheet(
@@ -2685,12 +2720,34 @@ class ControllerWindow(QMainWindow):
         self.btn_finish_run.setVisible(False)
         blay.addWidget(self.btn_finish_run)
 
-        if self.playback_mode:
-            for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
-                _btn.setEnabled(False)
-                _btn.setToolTip("Playback mode is view-only")
-
         blay.addStretch(1)
+        return btn_col
+
+    def _create_live_right_controller_area(self) -> QWidget:
+        outer = QWidget()
+        outer_layout = QHBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(8)
+
+        main_stack = self._create_right_content_stack()
+        btn_col = self._create_button_column()
+
+        outer_layout.addWidget(main_stack, 1)
+        outer_layout.addWidget(btn_col, 0)
+        return outer
+
+    def _create_playback_right_controller_area(self) -> QWidget:
+        outer = QWidget()
+        outer_layout = QHBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(8)
+
+        main_stack = self._create_right_content_stack()
+        btn_col = self._create_button_column()
+
+        for _btn in (self.btn_continue, self.btn_hold, self.btn_abort, self.btn_manual_auto):
+            _btn.setEnabled(False)
+            _btn.setToolTip("Playback mode is view-only")
 
         outer_layout.addWidget(main_stack, 1)
         outer_layout.addWidget(btn_col, 0)
