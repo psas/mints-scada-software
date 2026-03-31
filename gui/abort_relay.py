@@ -4,20 +4,24 @@ import argparse
 import json
 import logging
 import os
+import signal
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from scripts.script_runtime.script_contract import (
     ABORT_RELAY_MESSAGE_TYPE,
     build_abort_command_payload,
     build_abort_operator_action_payload,
 )
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger(__name__)
 
 

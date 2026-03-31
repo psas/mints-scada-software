@@ -1425,36 +1425,6 @@ def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback
     raise ValueError(f"Unsupported window kind: {window_kind}")
 
 
-
-class _AbortOverlayController(QObject):
-    def __init__(self, *, window: Any, button: QPushButton) -> None:
-        super().__init__(window)
-        self.window = window
-        self.button = button
-        window.installEventFilter(self)
-        self.reposition()
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.window and event.type() in (
-            QEvent.Resize,
-            QEvent.Show,
-            QEvent.WindowStateChange,
-            QEvent.Move,
-        ):
-            self.reposition()
-        return False
-
-    def reposition(self) -> None:
-        margin = 18
-        width = max(120, self.button.sizeHint().width() + 18)
-        height = max(52, self.button.sizeHint().height() + 12)
-        self.button.resize(width, height)
-        target_x = max(margin, self.window.width() - width - margin)
-        target_y = margin
-        self.button.move(target_x, target_y)
-        self.button.raise_()
-
-
 def _abort_result_ok(reply: dict[str, Any]) -> bool:
     if not isinstance(reply, dict):
         return False
@@ -1573,7 +1543,7 @@ def _make_abort_trigger(
     return trigger_abort
 
 
-def _wire_controller_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
+def _wire_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
     button = getattr(actual_window, "btn_abort", None)
     if not isinstance(button, QPushButton):
         return False
@@ -1589,38 +1559,6 @@ def _wire_controller_abort_button(*, actual_window: Any, trigger_abort: Any) -> 
     return True
 
 
-def _install_scada_abort_overlay(*, actual_window: Any, trigger_abort: Any) -> None:
-    button = QPushButton("ABORT", actual_window)
-    button.setObjectName("abortRelayOverlayButton")
-    button.setCursor(Qt.PointingHandCursor)
-    button.setToolTip("Send abort through AbortRelay and backend command dispatch")
-    button.setStyleSheet(
-        """
-        QPushButton#abortRelayOverlayButton {
-            background-color: #b71c1c;
-            color: white;
-            border: 2px solid #ff8a80;
-            border-radius: 10px;
-            font-size: 20px;
-            font-weight: 700;
-            padding: 10px 18px;
-        }
-        QPushButton#abortRelayOverlayButton:hover {
-            background-color: #d32f2f;
-        }
-        QPushButton#abortRelayOverlayButton:pressed {
-            background-color: #7f0000;
-        }
-        """
-    )
-    button.clicked.connect(trigger_abort)
-    button.show()
-    controller = _AbortOverlayController(window=actual_window, button=button)
-    setattr(actual_window, "_abort_overlay_button", button)
-    setattr(actual_window, "_abort_overlay_controller", controller)
-    setattr(actual_window, "trigger_abort_via_relay", trigger_abort)
-
-
 def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_kind: str) -> None:
     relay_available = bool(getattr(actual_window, "abort_relay_available", False))
     relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
@@ -1634,11 +1572,13 @@ def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_
         window_kind=window_kind,
     )
 
-    if window_kind == "controller":
-        if _wire_controller_abort_button(actual_window=actual_window, trigger_abort=trigger_abort):
-            return
+    if _wire_abort_button(actual_window=actual_window, trigger_abort=trigger_abort):
+        return
 
-    _install_scada_abort_overlay(actual_window=actual_window, trigger_abort=trigger_abort)
+    log.warning(
+        "AbortRelay available but no standard abort button was found for %s",
+        window_kind,
+    )
 
 
 def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_socket: str | None) -> None:

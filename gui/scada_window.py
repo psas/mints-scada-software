@@ -153,12 +153,23 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         self.reset_button.clicked.connect(self.reset_all_xv)
         blay.addWidget(self.reset_button)
 
+        self.btn_abort = QPushButton("Abort")
+        self.btn_abort.setMinimumHeight(72)
+        self.btn_abort.clicked.connect(self._on_abort_clicked)
+        blay.addWidget(self.btn_abort)
+
         self.debug_button = QPushButton("Print States")
         self.debug_button.setMinimumHeight(72)
         self.debug_button.clicked.connect(self.print_states)
         blay.addWidget(self.debug_button)
 
-        for button in (self.open_26_button, self.close_26_button, self.reset_button, self.debug_button):
+        for button in (
+            self.open_26_button,
+            self.close_26_button,
+            self.reset_button,
+            self.btn_abort,
+            self.debug_button,
+        ):
             button.setStyleSheet(
                 """
                 QPushButton{
@@ -551,6 +562,24 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
 
     def print_states(self) -> None:
         logger.info("[SCADA] XV states: %s", self.xv_states)
+
+    def _on_abort_clicked(self) -> None:
+        if self.playback_mode:
+            logger.info("[SCADA] Ignoring abort in playback mode")
+            return
+        trigger = getattr(self, "trigger_abort_via_relay", None)
+        if callable(trigger):
+            trigger()
+            return
+        self.abort()
+
+    def abort(self) -> None:
+        logger.fatal("Abort triggered! Slap the big red button NOW!")
+        QMessageBox.critical(
+            self,
+            "Abort Unavailable",
+            "AbortRelay is not available for this SCADA window.",
+        )
 
     def _snapshot_run_section(self) -> dict[str, Any]:
         snapshot = getattr(self, "backend_state_snapshot", None)
