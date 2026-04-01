@@ -24,13 +24,17 @@ def _application_pid_file() -> Path:
 
 
 def kill_all_application_processes() -> None:
-    """Kill all processes listed in .applicationpid file."""
+    """Kill all tracked application processes except this watcher itself."""
     pid_file = _application_pid_file()
     if not pid_file.exists():
         log.info("No .applicationpid file found, nothing to kill")
         return
 
-    pids_to_kill = []
+    own_pid = os.getpid()
+    pids_to_kill: list[tuple[int, str]] = []
+    skipped_self: list[tuple[int, str]] = []
+    seen: set[int] = set()
+
     try:
         lines = pid_file.read_text().splitlines()
         for line in lines:
@@ -40,16 +44,32 @@ def kill_all_application_processes() -> None:
             parts = line.split(None, 1)
             if not parts:
                 continue
+
             pid_str = parts[0]
             label = parts[1] if len(parts) > 1 else "unknown"
+
             try:
                 pid = int(pid_str)
-                pids_to_kill.append((pid, label))
             except ValueError:
                 log.warning("Invalid PID in .applicationpid: %s", line)
+                continue
+
+            if pid in seen:
+                continue
+            seen.add(pid)
+
+            # Never kill the watcher itself. It will exit after cleanup.
+            if pid == own_pid or label == "shutdown_watcher":
+                skipped_self.append((pid, label))
+                continue
+
+            pids_to_kill.append((pid, label))
     except Exception as exc:
         log.error("Failed to read .applicationpid: %s", exc)
         return
+
+    if skipped_self:
+        log.info("Skipping self entries during watcher cleanup: %s", skipped_self)
 
     # First pass: SIGTERM (graceful)
     for pid, label in pids_to_kill:
@@ -59,7 +79,7 @@ def kill_all_application_processes() -> None:
         except ProcessLookupError:
             log.debug("Process %s (pid=%s) already dead", label, pid)
         except Exception as exc:
-            log.warning("Failed to kill %s (pid=%s): %s", label, pid, exc)
+            log.warning("Failed to terminate %s (pid=%s): %s", label, pid, exc)
 
     # Wait a bit for graceful shutdown
     time.sleep(2.0)
@@ -71,14 +91,16 @@ def kill_all_application_processes() -> None:
             os.kill(pid, signal.SIGKILL)
             log.warning("Sent SIGKILL to %s (pid=%s)", label, pid)
         except ProcessLookupError:
-            pass  # Already dead, good
+            pass  # Already dead
         except Exception as exc:
             log.warning("Failed to force-kill %s (pid=%s): %s", label, pid, exc)
 
-    # Clean up .applicationpid
+    # Clean up application pid file
     try:
         pid_file.unlink()
         log.info("Deleted .applicationpid")
+    except FileNotFoundError:
+        pass
     except Exception as exc:
         log.warning("Failed to delete .applicationpid: %s", exc)
 
@@ -86,26 +108,29 @@ def kill_all_application_processes() -> None:
 def watch_for_shutdown_signal() -> None:
     """Watch for shutdown signal file and kill all processes when it appears."""
     signal_file = _shutdown_signal_file()
-    
+
     log.info("Shutdown watcher started, watching for %s", signal_file)
-    
+
     try:
         while True:
             if signal_file.exists():
                 log.warning("Shutdown signal detected! Killing all application processes...")
-                
-                # Remove signal file first
+
+                # Remove signal file first so launcher can observe progress.
                 try:
                     signal_file.unlink()
+                    log.info("Deleted .shutdown_signal")
+                except FileNotFoundError:
+                    pass
                 except Exception as exc:
                     log.warning("Failed to remove shutdown signal file: %s", exc)
-                
-                # Kill everything
+
+                # Kill everything except this watcher.
                 kill_all_application_processes()
-                
+
                 log.info("Shutdown watcher exiting after cleanup")
                 sys.exit(0)
-            
+
             time.sleep(0.25)
     except KeyboardInterrupt:
         log.info("Shutdown watcher interrupted")
@@ -117,7 +142,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s [shutdown_watcher] [%(levelname)s] %(message)s",
     )
-    
+
     watch_for_shutdown_signal()
     return 0
 

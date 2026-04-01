@@ -319,7 +319,7 @@ def _monitor_session(
                     mode,
                 )
                 _shutdown_remaining(child_map, skip=name)
-                return int(return_code or 0)
+                return 0
 
             time.sleep(_MONITOR_POLL_S)
     except KeyboardInterrupt:

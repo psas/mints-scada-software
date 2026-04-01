@@ -146,12 +146,13 @@ class ChecklistWindow(QDialog):
     Pre-flight checklist window.
 
     Supports two startup paths:
-    - live mode: collect run metadata before backend start_run
+    - live mode: collect run metadata before backend/gateway startup
     - playback mode: select a recorded run from ignitionhistory
 
-    Dev-friendly behavior:
-    - If serial port exists and backend has device inventory, Live is allowed
-      even when bus is not fully ready yet.
+    Startup behavior:
+    - System Startup only checks the serial link and shows lightweight status.
+    - Live service startup and backend/gateway readiness are deferred to Live Setup
+      / later live-launch stages.
     """
 
     def __init__(
@@ -161,6 +162,7 @@ class ChecklistWindow(QDialog):
         *,
         backend_socket_path: str | Path | None = None,
         auto_refresh_ms: int = 2000,
+        live_startup_callback=None,
     ):
         super().__init__(parent)
         self.serial_port = serial_port
@@ -171,10 +173,11 @@ class ChecklistWindow(QDialog):
         )
         self.backend_probe_snapshot: dict[str, object] | None = None
         self._check_refresh_ms = max(500, int(auto_refresh_ms))
+        self.live_startup_callback = live_startup_callback
 
         self.all_passed = False
         self.live_entry_allowed = False
-        self.live_entry_mode = "blocked"  # blocked | degraded | full
+        self.live_entry_mode = "blocked"  # blocked | full
 
         self.selected_test = None
         self.playback_mode = False
@@ -219,7 +222,7 @@ class ChecklistWindow(QDialog):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Checking serial link, backend, and device readiness.")
+        subtitle = QLabel("Checking serial link and startup environment.")
         subtitle.setFont(QFont("Arial", 11))
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #9a9a9a; margin-bottom: 6px;")
@@ -232,8 +235,8 @@ class ChecklistWindow(QDialog):
         checks_layout.setSpacing(2)
 
         self.check_serial = ChecklistItem("Serial link")
-        self.check_bus = ChecklistItem("Live bus")
-        self.check_devices = ChecklistItem("Devices")
+        self.check_bus = ChecklistItem("Live services")
+        self.check_devices = ChecklistItem("Device readiness")
 
         checks_layout.addWidget(self.check_serial)
         checks_layout.addWidget(self.check_bus)
@@ -377,11 +380,12 @@ class ChecklistWindow(QDialog):
         return widget
 
     def run_checks(self):
-        """Run all pre-flight checks with dev-friendly live unlock rules."""
+        """Run lightweight startup checks for launcher entry."""
         self.continue_button.setEnabled(False)
         self.live_entry_allowed = False
         self.live_entry_mode = "blocked"
         self.all_passed = False
+        self.backend_probe_snapshot = None
 
         self.status_message.setText("Running startup checks...")
         self.status_message.setStyleSheet(
@@ -399,117 +403,27 @@ class ChecklistWindow(QDialog):
             self.check_serial.set_fail("Not detected")
             log.error("Serial port not found: %s", self.serial_port)
 
-        self.check_bus.set_checking()
-        QApplication.processEvents()
+        # These are intentionally deferred to the later Live Setup / launch flow.
+        self.check_bus.set_pass("Deferred to Live Setup")
+        self.check_devices.set_pass("Deferred to Live Setup")
 
-        probe = self._probe_backend_live_state()
-        self.backend_probe_snapshot = (
-            probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else None
-        )
-
-        bus_ok = False
-        devices_ok = False
-        backend_reachable = bool(probe.get("reachable"))
-        total_devices = 0
-        load_error_count = 0
-
-        bus_message = "Unavailable"
-        devices_message = "Unavailable"
-
-        if backend_reachable:
-            snapshot = probe.get("snapshot") if isinstance(probe.get("snapshot"), dict) else {}
-            bus_state = snapshot.get("bus") if isinstance(snapshot.get("bus"), dict) else {}
-            registry_state = (
-                snapshot.get("device_registry")
-                if isinstance(snapshot.get("device_registry"), dict)
-                else {}
-            )
-
-            bus_connected = bool(bus_state.get("connected"))
-            bus_reconnecting = bool(bus_state.get("reconnecting"))
-
-            if bus_connected and not bus_reconnecting:
-                bus_ok = True
-                bus_message = "Ready"
-            elif bus_reconnecting:
-                bus_message = "Reconnecting"
-            else:
-                bus_message = "Not ready"
-
-            total_devices = int(registry_state.get("total_devices") or 0)
-            load_error_count = int(registry_state.get("load_error_count") or 0)
-
-            if bus_ok and total_devices > 0 and load_error_count == 0:
-                devices_ok = True
-                devices_message = f"{total_devices} ready"
-            elif load_error_count > 0:
-                devices_message = "Registry errors"
-            elif total_devices > 0:
-                devices_message = f"{total_devices} found"
-            else:
-                devices_message = "None found"
-        else:
-            bus_message = "Backend unavailable"
-            devices_message = "Backend unavailable"
-
-        if bus_ok:
-            self.check_bus.set_pass(bus_message)
-        else:
-            self.check_bus.set_fail(bus_message)
-
-        self.check_devices.set_checking()
-        QApplication.processEvents()
-
-        if devices_ok:
-            self.check_devices.set_pass(devices_message)
-        else:
-            self.check_devices.set_fail(devices_message)
-
-        # Strict success
-        if serial_ok and bus_ok and devices_ok:
+        if serial_ok:
             self._handle_success()
-            return
-
-        # Dev bypass success
-        if serial_ok and backend_reachable and total_devices > 0 and load_error_count == 0:
-            self._handle_degraded_success(
-                f"Serial link is online and {total_devices} device(s) were found."
-            )
-            return
-
-        failure_parts: list[str] = []
-        if not serial_ok:
-            failure_parts.append("serial link missing")
-        if not bus_ok:
-            failure_parts.append(bus_message)
-        if not devices_ok:
-            failure_parts.append(devices_message)
-        self._handle_failure("; ".join(failure_parts))
+        else:
+            self._handle_failure("serial link missing")
 
     def _handle_success(self):
         self.all_passed = True
         self.live_entry_allowed = True
         self.live_entry_mode = "full"
-        self.status_message.setText("All checks passed. Live mode is ready.")
+        self.status_message.setText(
+            "Serial link detected. Continue to Live Setup."
+        )
         self.status_message.setStyleSheet(
             "color: #4CAF50; padding: 12px; border-radius: 8px; font-weight: bold;"
         )
         self.continue_button.setEnabled(True)
-        log.info("All pre-flight checks passed")
-
-    def _handle_degraded_success(self, message: str):
-        self.all_passed = False
-        self.live_entry_allowed = True
-        self.live_entry_mode = "degraded"
-        self.status_message.setText(
-            f"{message}\nLive mode is available in development bypass mode."
-        )
-        self.status_message.setStyleSheet(
-            "color: #FFA726; padding: 12px; "
-            "background-color: #3a3211; border-radius: 8px; font-weight: bold;"
-        )
-        self.continue_button.setEnabled(True)
-        log.warning("Checklist allowing degraded live entry: %s", message)
+        log.info("Startup serial check passed; live entry is allowed")
 
     def _handle_failure(self, message):
         self.all_passed = False
@@ -522,43 +436,19 @@ class ChecklistWindow(QDialog):
             "color: #F44336; padding: 12px; "
             "background-color: #3a1a1a; border-radius: 8px;"
         )
-        log.error("Pre-flight check failed: %s", message)
+        log.error("Startup check failed: %s", message)
 
     def show_live_setup(self):
         """Switch to live run metadata entry view."""
         self.run_checks()
 
         if not self.live_entry_allowed:
-            self.status_message.setText("Attempting backend live initialization...")
-            self.status_message.setStyleSheet(
-                "color: #FFA726; padding: 12px; border-radius: 8px;"
-            )
-            QApplication.processEvents()
-
-            init_ok, init_message = self._initialize_backend_live_hardware()
-            if init_ok:
-                log.info("Checklist-triggered live hardware init succeeded: %s", init_message)
-            else:
-                log.error("Checklist-triggered live hardware init failed: %s", init_message)
-
-            self.run_checks()
-
-        if not self.live_entry_allowed:
             QMessageBox.warning(
                 self,
                 "Live Mode Not Ready",
-                "Live mode is still blocked. Serial link or backend/device readiness is not sufficient yet.",
+                "Live mode requires a detected serial link before continuing.",
             )
             return
-
-        if self.live_entry_mode == "degraded":
-            QMessageBox.information(
-                self,
-                "Development Live Mode",
-                "Live mode is being opened in development bypass mode.\n\n"
-                "Serial link and backend device registry are available, "
-                "but the live bus is not fully ready yet.",
-            )
 
         self.checklist_widget.hide()
 
@@ -793,10 +683,6 @@ class ChecklistWindow(QDialog):
             return "Check archive"
         return "Archive mismatch"
 
-
-
-
-
     def _maybe_refresh_checks(self) -> None:
         if self.checklist_widget.isVisible() and not self._live_init_in_progress:
             self.run_checks()
@@ -983,7 +869,7 @@ class ChecklistWindow(QDialog):
 
         if ready:
             self.live_setup_status.setText(
-                "Live metadata is ready. Click Continue to start the session."
+                "Live metadata is ready. Continue to launch live services and start the session."
             )
             self.live_setup_status.setStyleSheet(
                 "color: #4CAF50; padding: 10px;"
@@ -1035,6 +921,39 @@ class ChecklistWindow(QDialog):
             self.live_run_metadata["profile_name"] = profile_name
         if notes:
             self.live_run_metadata["notes"] = notes
+
+        if callable(self.live_startup_callback):
+            self._live_init_in_progress = True
+            if self.live_continue_button is not None:
+                self.live_continue_button.setEnabled(False)
+            self.live_setup_status.setText("Starting live services...")
+            self.live_setup_status.setStyleSheet(
+                "color: #FFA726; padding: 10px; background-color: #3a3211; border-radius: 8px;"
+            )
+            QApplication.processEvents()
+
+            try:
+                ok, message = self.live_startup_callback(dict(self.live_run_metadata))
+            except Exception as exc:
+                ok = False
+                message = f"Failed to start live services: {exc}"
+            finally:
+                self._live_init_in_progress = False
+
+            if not ok:
+                self.live_setup_status.setText(message or "Failed to start live services.")
+                self.live_setup_status.setStyleSheet(
+                    "color: #F44336; padding: 10px; background-color: #3a1a1a; border-radius: 8px;"
+                )
+                if self.live_continue_button is not None:
+                    self.live_continue_button.setEnabled(True)
+                return
+
+            self.live_setup_status.setText(message or "Live services are ready.")
+            self.live_setup_status.setStyleSheet(
+                "color: #4CAF50; padding: 10px; background-color: #16301b; border-radius: 8px;"
+            )
+            QApplication.processEvents()
 
         self.playback_mode = False
         log.info(
@@ -1195,7 +1114,6 @@ class ChecklistWindow(QDialog):
             },
         }
 
-
     def _apply_integrity_report(
         self,
         report: dict[str, object],
@@ -1232,7 +1150,6 @@ class ChecklistWindow(QDialog):
             self._build_playback_summary_text(rebuild_status)
         )
 
-
     def _build_playback_summary_text(
         self,
         rebuild_status: dict[str, object] | None = None,
@@ -1245,7 +1162,6 @@ class ChecklistWindow(QDialog):
             return "Using native archive. Rebuild is also available."
 
         return "Using native archive."
-
 
     def _set_integrity_placeholder(self, text: str) -> None:
         if hasattr(self, "playback_selected_title"):
@@ -1269,7 +1185,6 @@ class ChecklistWindow(QDialog):
             self.playback_continue_button.setEnabled(False)
         if hasattr(self, "prepare_rebuild_button"):
             self.prepare_rebuild_button.setEnabled(False)
-
 
     def _build_list_item_tooltip(self, base_tooltip: str, report: dict[str, object]) -> str:
         parts = [base_tooltip]

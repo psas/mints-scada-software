@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -19,13 +20,39 @@ from gui import ChecklistWindow, QLoggingHandler
 
 log = logging.getLogger(__name__)
 
+_SERVICE_SOCKET_TIMEOUT_S = 10.0
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _dev_dir() -> Path:
+    return _project_root() / ".dev"
+
+
 def _application_pid_file() -> Path:
     return _project_root() / ".applicationpid"
+
+
+def _shutdown_signal_file() -> Path:
+    return _project_root() / ".shutdown_signal"
+
+
+def _backend_socket_path() -> Path:
+    return _project_root() / ".backend_service.sock"
+
+
+def _gateway_socket_path() -> Path:
+    return _project_root() / ".gateway_service.sock"
+
+
+def _backend_pid_file() -> Path:
+    return _dev_dir() / "backend.pid"
+
+
+def _gateway_pid_file() -> Path:
+    return _dev_dir() / "gateway.pid"
 
 
 def _register_pid(pid: int, label: str) -> None:
@@ -108,7 +135,7 @@ def _ping_abort_relay(socket_path: Path, *, timeout_s: float = 0.75) -> bool:
 
 def _spawn_abort_relay() -> tuple[subprocess.Popen[str], Path]:
     script_path = _abort_relay_script()
-    gateway_socket = _project_root() / ".gateway_service.sock"
+    gateway_socket = _gateway_socket_path()
 
     socket_dir = Path(tempfile.gettempdir()) / "mints_scada_abort"
     socket_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +187,7 @@ def _spawn_supervisor(
     abort_relay_socket: str | None = None,
 ) -> int:
     script_path = _supervisor_script()
-    socket_path = _project_root() / ".backend_service.sock"
+    socket_path = _backend_socket_path()
 
     cmd = [
         sys.executable,
@@ -233,7 +260,7 @@ def _wait_for_process_exit(process: subprocess.Popen[str], *, timeout_s: float) 
 
 def _request_backend_shutdown() -> None:
     """Request backend service shutdown via IPC socket."""
-    socket_path = _project_root() / ".backend_service.sock"
+    socket_path = _backend_socket_path()
     if not socket_path.exists():
         log.debug("Backend socket not found, assuming backend already stopped")
         return
@@ -246,10 +273,248 @@ def _request_backend_shutdown() -> None:
             wire = json.dumps(request, ensure_ascii=False, sort_keys=False) + "\n"
             sock.sendall(wire.encode("utf-8"))
             log.info("Requested backend service shutdown")
-            # Give backend a moment to acknowledge and begin shutdown
             time.sleep(0.5)
     except Exception as exc:
         log.debug("Failed to request backend shutdown via IPC: %s", exc)
+
+
+def _write_pid_file(pid_file: Path, pid: int) -> None:
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{pid}\n")
+
+
+def _read_pid_file(pid_file: Path) -> int | None:
+    try:
+        raw = pid_file.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        log.warning("Failed to read pid file %s: %s", pid_file, exc)
+        return None
+
+    if not raw:
+        return None
+
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("Invalid pid file contents in %s: %r", pid_file, raw)
+        return None
+
+
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return False
+
+
+def _remove_file_if_exists(path: Path) -> None:
+    try:
+        if path.exists() or path.is_socket():
+            path.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.debug("Failed to remove %s: %s", path, exc)
+
+
+def _can_connect_unix_socket(socket_path: Path, *, timeout_s: float = 0.25) -> bool:
+    if not socket_path.exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout_s)
+            sock.connect(str(socket_path))
+            return True
+    except Exception:
+        return False
+
+
+def _wait_for_socket(socket_path: Path, *, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if _can_connect_unix_socket(socket_path, timeout_s=0.25):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _spawn_service_process(
+    *,
+    module_name: str,
+    label: str,
+    pid_file: Path,
+    socket_path: Path,
+) -> subprocess.Popen[str]:
+    cmd = [sys.executable, "-m", module_name]
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(_project_root()),
+        env=env,
+        text=True,
+        start_new_session=False,
+    )
+    _write_pid_file(pid_file, process.pid)
+    _register_pid(process.pid, label)
+    log.info("Spawned %s pid=%s", label, process.pid)
+    return process
+
+
+def _ensure_service_running(
+    *,
+    module_name: str,
+    label: str,
+    pid_file: Path,
+    socket_path: Path,
+) -> tuple[subprocess.Popen[str] | None, bool]:
+    pid = _read_pid_file(pid_file)
+
+    if _can_connect_unix_socket(socket_path, timeout_s=0.25):
+        if pid is not None and not _is_pid_alive(pid):
+            log.info("Removing stale %s pid file %s", label, pid_file)
+            _remove_file_if_exists(pid_file)
+        log.info("Using existing %s via socket %s", label, socket_path)
+        return None, False
+
+    if pid is not None and _is_pid_alive(pid):
+        log.info("%s pid=%s is alive; waiting for socket %s", label, pid, socket_path)
+        if _wait_for_socket(socket_path, timeout_s=_SERVICE_SOCKET_TIMEOUT_S):
+            return None, False
+        raise RuntimeError(f"{label.capitalize()} pid={pid} did not make socket ready: {socket_path}")
+
+    if pid is not None:
+        log.info("Removing stale %s pid file %s", label, pid_file)
+        _remove_file_if_exists(pid_file)
+
+    if socket_path.exists():
+        log.info("Removing stale %s socket %s", label, socket_path)
+        _remove_file_if_exists(socket_path)
+
+    process = _spawn_service_process(
+        module_name=module_name,
+        label=label,
+        pid_file=pid_file,
+        socket_path=socket_path,
+    )
+
+    if _wait_for_socket(socket_path, timeout_s=_SERVICE_SOCKET_TIMEOUT_S):
+        return process, True
+
+    _terminate_process(process, label=label)
+    _wait_for_process_exit(process, timeout_s=2.0)
+    if process.poll() is None:
+        _kill_process(process, label=label)
+        _wait_for_process_exit(process, timeout_s=1.0)
+
+    _remove_file_if_exists(pid_file)
+    _remove_file_if_exists(socket_path)
+    raise RuntimeError(f"{label.capitalize()} did not become ready at {socket_path}")
+
+
+def _ensure_backend_running() -> tuple[subprocess.Popen[str] | None, bool]:
+    return _ensure_service_running(
+        module_name="backend.main",
+        label="backend",
+        pid_file=_backend_pid_file(),
+        socket_path=_backend_socket_path(),
+    )
+
+
+def _ensure_gateway_running() -> tuple[subprocess.Popen[str] | None, bool]:
+    return _ensure_service_running(
+        module_name="gateway.main",
+        label="gateway",
+        pid_file=_gateway_pid_file(),
+        socket_path=_gateway_socket_path(),
+    )
+
+
+def _track_existing_service_pid(pid_file: Path, label: str) -> None:
+    pid = _read_pid_file(pid_file)
+    if pid is None:
+        return
+    if not _is_pid_alive(pid):
+        return
+    _register_pid(pid, label)
+
+
+def _signal_pid(pid: int, sig: int, *, label: str) -> None:
+    try:
+        os.kill(pid, sig)
+        log.info("Sent signal %s to %s pid=%s", sig, label, pid)
+    except ProcessLookupError:
+        pass
+    except Exception as exc:
+        log.warning("Failed to signal %s pid=%s: %s", label, pid, exc)
+
+
+def _cleanup_pid_backed_service(
+    *,
+    process: subprocess.Popen[str] | None,
+    pid_file: Path,
+    socket_path: Path,
+    label: str,
+    request_shutdown_first: bool = False,
+) -> None:
+    if request_shutdown_first:
+        _request_backend_shutdown()
+        time.sleep(0.5)
+
+    if process is not None:
+        _wait_for_process_exit(process, timeout_s=2.5)
+        if process.poll() is None:
+            _terminate_process(process, label=label)
+            _wait_for_process_exit(process, timeout_s=2.0)
+        if process.poll() is None:
+            _kill_process(process, label=label)
+            _wait_for_process_exit(process, timeout_s=1.0)
+    else:
+        pid = _read_pid_file(pid_file)
+        if pid is not None and _is_pid_alive(pid):
+            _signal_pid(pid, signal.SIGTERM, label=label)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and _is_pid_alive(pid):
+                time.sleep(0.1)
+            if _is_pid_alive(pid):
+                _signal_pid(pid, signal.SIGKILL, label=label)
+
+    _remove_file_if_exists(pid_file)
+    if socket_path.exists() and not _can_connect_unix_socket(socket_path, timeout_s=0.2):
+        _remove_file_if_exists(socket_path)
+
+
+def _cleanup_session_backend(process: subprocess.Popen[str] | None) -> None:
+    _cleanup_pid_backed_service(
+        process=process,
+        pid_file=_backend_pid_file(),
+        socket_path=_backend_socket_path(),
+        label="backend",
+        request_shutdown_first=True,
+    )
+
+
+def _cleanup_session_gateway(process: subprocess.Popen[str] | None) -> None:
+    _cleanup_pid_backed_service(
+        process=process,
+        pid_file=_gateway_pid_file(),
+        socket_path=_gateway_socket_path(),
+        label="gateway",
+        request_shutdown_first=False,
+    )
+
+
+def _trigger_shutdown_watcher() -> None:
+    try:
+        _shutdown_signal_file().write_text("1\n", encoding="utf-8")
+        log.info("Created shutdown signal file for shutdown_watcher")
+    except Exception as exc:
+        log.warning("Failed to create shutdown signal file: %s", exc)
 
 
 def main() -> int:
@@ -257,49 +522,101 @@ def main() -> int:
     _configure_logging()
     log.debug("Starting user GUI launcher entrypoint")
 
-    checklist = ChecklistWindow(settings.sender)
-    result = checklist.exec_()
-    if result != ChecklistWindow.Accepted:
-        log.info("Checklist cancelled; exiting launcher")
-        return 0
+    backend_process: subprocess.Popen[str] | None = None
+    backend_session_managed = False
+    gateway_process: subprocess.Popen[str] | None = None
+    gateway_session_managed = False
+    abort_relay_process: subprocess.Popen[str] | None = None
+    abort_relay_socket: Path | None = None
+    session_should_shutdown_all = False
 
-    if checklist.playback_mode:
-        selected_test = checklist.selected_test
-        if not selected_test:
+    def _prepare_live_services_for_setup(live_metadata: dict[str, Any]) -> tuple[bool, str]:
+        nonlocal backend_process, backend_session_managed
+        nonlocal gateway_process, gateway_session_managed
+        nonlocal session_should_shutdown_all
+
+        try:
+            if not gateway_session_managed:
+                gateway_process, _ = _ensure_gateway_running()
+                gateway_session_managed = True
+                if gateway_process is None:
+                    _track_existing_service_pid(_gateway_pid_file(), "gateway")
+
+            if not backend_session_managed:
+                backend_process, _ = _ensure_backend_running()
+                backend_session_managed = True
+                if backend_process is None:
+                    _track_existing_service_pid(_backend_pid_file(), "backend")
+
+            session_should_shutdown_all = True
+            return True, "Live services are ready. Launching session..."
+        except Exception as exc:
+            log.exception("Failed to prepare live services from Live Setup")
+            return False, f"Failed to start live services: {exc}"
+
+    try:
+        checklist = ChecklistWindow(
+            settings.sender,
+            live_startup_callback=_prepare_live_services_for_setup,
+        )
+        result = checklist.exec_()
+        if result != ChecklistWindow.Accepted:
+            log.info("Checklist cancelled; exiting launcher")
+            return 0
+
+        if checklist.playback_mode:
+            selected_test = checklist.selected_test
+            if not selected_test:
+                QMessageBox.critical(
+                    None,
+                    "Playback Error",
+                    "Playback mode was selected, but no playback run was provided.",
+                )
+                return 1
+
+            if not backend_session_managed:
+                backend_process, _ = _ensure_backend_running()
+                backend_session_managed = True
+                if backend_process is None:
+                    _track_existing_service_pid(_backend_pid_file(), "backend")
+
+            session_should_shutdown_all = True
+            log.info(
+                "Launching playback GUI supervisor for run=%s (backend session managed=%s)",
+                selected_test,
+                backend_session_managed,
+            )
+            supervisor_exit_code = _spawn_supervisor(mode="playback", selected_test=selected_test)
+            return supervisor_exit_code
+
+        live_metadata = dict(checklist.live_run_metadata or {}) or None
+        if not live_metadata:
             QMessageBox.critical(
                 None,
-                "Playback Error",
-                "Playback mode was selected, but no playback run was provided.",
+                "Live Start Error",
+                "Live mode requires run metadata before the operator windows can open.",
             )
             return 1
 
-        log.info("Launching GUI supervisor for playback run: %s", selected_test)
-        supervisor_exit_code = _spawn_supervisor(mode="playback", selected_test=selected_test)
+        if not gateway_session_managed:
+            gateway_process, _ = _ensure_gateway_running()
+            gateway_session_managed = True
+            if gateway_process is None:
+                _track_existing_service_pid(_gateway_pid_file(), "gateway")
 
-        # After supervisor exits, request backend shutdown
-        _request_backend_shutdown()
+        if not backend_session_managed:
+            backend_process, _ = _ensure_backend_running()
+            backend_session_managed = True
+            if backend_process is None:
+                _track_existing_service_pid(_backend_pid_file(), "backend")
 
-        return supervisor_exit_code
-
-    live_metadata = dict(checklist.live_run_metadata or {}) or None
-    if not live_metadata:
-        QMessageBox.critical(
-            None,
-            "Live Start Error",
-            "Live mode requires run metadata before the operator windows can open.",
+        session_should_shutdown_all = True
+        log.info(
+            "Launching live GUI supervisor without pre-starting backend recording. "
+            "Checklist metadata will be passed through to the controller Start Recording button: %s",
+            live_metadata,
         )
-        return 1
 
-    log.info(
-        "Launching live GUI supervisor without pre-starting backend recording. "
-        "Checklist metadata will be passed through to the controller Start Recording button: %s",
-        live_metadata,
-    )
-
-    abort_relay_process: subprocess.Popen[str] | None = None
-    abort_relay_socket: Path | None = None
-
-    try:
         abort_relay_process, abort_relay_socket = _spawn_abort_relay()
         supervisor_exit_code = _spawn_supervisor(
             mode="live",
@@ -307,20 +624,22 @@ def main() -> int:
             start_run_payload=live_metadata,
             abort_relay_socket=str(abort_relay_socket),
         )
-
-        # After supervisor exits, request backend shutdown
-        _request_backend_shutdown()
-
         return supervisor_exit_code
+
     except Exception as exc:
         QMessageBox.critical(
             None,
-            "Abort Relay Launch Error",
-            "The live GUI support process failed to launch.\n\n"
+            "GUI Launch Error",
+            "The GUI support process failed to launch.\n\n"
             f"Error: {exc}",
         )
         return 1
+
     finally:
+        if session_should_shutdown_all:
+            _trigger_shutdown_watcher()
+            time.sleep(0.8)
+
         if abort_relay_process is not None:
             _terminate_process(abort_relay_process, label="abort relay")
             _wait_for_process_exit(abort_relay_process, timeout_s=2.0)
@@ -334,6 +653,12 @@ def main() -> int:
                     abort_relay_socket.unlink()
             except Exception:
                 pass
+
+        if backend_session_managed:
+            _cleanup_session_backend(backend_process)
+
+        if gateway_session_managed:
+            _cleanup_session_gateway(gateway_process)
 
 
 if __name__ == "__main__":
