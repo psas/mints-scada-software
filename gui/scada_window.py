@@ -131,70 +131,69 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
 
         layout.addWidget(diagram, 1)
 
-        btn_col = QFrame()
-        btn_col.setFixedWidth(220)
-        btn_col.setStyleSheet("QFrame{background:#2b2b2b; border:1px solid #444; border-radius:10px;}")
-        blay = QVBoxLayout(btn_col)
-        blay.setContentsMargins(16, 16, 16, 16)
-        blay.setSpacing(14)
+        if not self.playback_mode:
+            btn_col = QFrame()
+            btn_col.setFixedWidth(220)
+            btn_col.setStyleSheet("QFrame{background:#2b2b2b; border:1px solid #444; border-radius:10px;}")
+            blay = QVBoxLayout(btn_col)
+            blay.setContentsMargins(16, 16, 16, 16)
+            blay.setSpacing(14)
 
-        self.open_26_button = QPushButton("Open LOX-XV-26")
-        self.open_26_button.setMinimumHeight(72)
-        self.open_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "open"))
-        blay.addWidget(self.open_26_button)
+            self.open_26_button = QPushButton("Open LOX-XV-26")
+            self.open_26_button.setMinimumHeight(72)
+            self.open_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "open"))
+            blay.addWidget(self.open_26_button)
 
-        self.close_26_button = QPushButton("Close LOX-XV-26")
-        self.close_26_button.setMinimumHeight(72)
-        self.close_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "closed"))
-        blay.addWidget(self.close_26_button)
+            self.close_26_button = QPushButton("Close LOX-XV-26")
+            self.close_26_button.setMinimumHeight(72)
+            self.close_26_button.clicked.connect(lambda: self._on_manual_button("lox-xv-26", "closed"))
+            blay.addWidget(self.close_26_button)
 
-        self.reset_button = QPushButton("Reset XV")
-        self.reset_button.setMinimumHeight(72)
-        self.reset_button.clicked.connect(self.reset_all_xv)
-        blay.addWidget(self.reset_button)
+            self.reset_button = QPushButton("Reset XV")
+            self.reset_button.setMinimumHeight(72)
+            self.reset_button.clicked.connect(self.reset_all_xv)
+            blay.addWidget(self.reset_button)
 
-        self.btn_abort = QPushButton("Abort")
-        self.btn_abort.setMinimumHeight(72)
-        self.btn_abort.clicked.connect(self._on_abort_clicked)
-        blay.addWidget(self.btn_abort)
+            self.btn_abort = QPushButton("Abort")
+            self.btn_abort.setMinimumHeight(72)
+            self.btn_abort.clicked.connect(self._on_abort_clicked)
+            blay.addWidget(self.btn_abort)
 
-        self.btn_clear_abort = QPushButton("Back to Normal")
-        self.btn_clear_abort.setMinimumHeight(72)
-        self.btn_clear_abort.clicked.connect(self._on_clear_abort_clicked)
-        blay.addWidget(self.btn_clear_abort)
+            self.btn_clear_abort = QPushButton("Back to Normal")
+            self.btn_clear_abort.setMinimumHeight(72)
+            self.btn_clear_abort.clicked.connect(self._on_clear_abort_clicked)
+            blay.addWidget(self.btn_clear_abort)
 
-        self.debug_button = QPushButton("Print States")
-        self.debug_button.setMinimumHeight(72)
-        self.debug_button.clicked.connect(self.print_states)
-        blay.addWidget(self.debug_button)
+            self.debug_button = QPushButton("Print States")
+            self.debug_button.setMinimumHeight(72)
+            self.debug_button.clicked.connect(self.print_states)
+            blay.addWidget(self.debug_button)
 
-        for button in (
-            self.open_26_button,
-            self.close_26_button,
-            self.reset_button,
-            self.btn_abort,
-            self.btn_clear_abort,
-            self.debug_button,
-        ):
-            button.setStyleSheet(
-                """
-                QPushButton{
-                    background:#8e24aa;
-                    color:white;
-                    border:none;
-                    border-radius:10px;
-                    font-size:16px;
-                    font-weight:800;
-                }
-                QPushButton:hover{ background:#7b1fa2; }
-                QPushButton:pressed{ background:#6a1b9a; }
-                """
-            )
-            if self.playback_mode:
-                button.setEnabled(False)
+            for button in (
+                self.open_26_button,
+                self.close_26_button,
+                self.reset_button,
+                self.btn_abort,
+                self.btn_clear_abort,
+                self.debug_button,
+            ):
+                button.setStyleSheet(
+                    """
+                    QPushButton{
+                        background:#8e24aa;
+                        color:white;
+                        border:none;
+                        border-radius:10px;
+                        font-size:16px;
+                        font-weight:800;
+                    }
+                    QPushButton:hover{ background:#7b1fa2; }
+                    QPushButton:pressed{ background:#6a1b9a; }
+                    """
+                )
 
-        blay.addStretch()
-        layout.addWidget(btn_col, 0)
+            blay.addStretch()
+            layout.addWidget(btn_col, 0)
 
     def _on_svg_loaded(self, ok: bool) -> None:
         self._svg_loaded = bool(ok)

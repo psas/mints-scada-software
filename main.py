@@ -654,10 +654,10 @@ def main() -> int:
             except Exception:
                 pass
 
-        if backend_session_managed:
+        if not session_should_shutdown_all and backend_session_managed:
             _cleanup_session_backend(backend_process)
 
-        if gateway_session_managed:
+        if not session_should_shutdown_all and gateway_session_managed:
             _cleanup_session_gateway(gateway_process)
 
 

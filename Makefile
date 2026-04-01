@@ -184,6 +184,7 @@ run-direct:
 			done < "$(APPLICATION_PID_FILE)"; \
 			rm -f "$(APPLICATION_PID_FILE)"; \
 		fi; \
+		rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
 		rm -f .shutdown_signal; \
 		echo "[OK] Launcher session ended"; \
 		exit "$$gui_code"; \

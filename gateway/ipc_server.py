@@ -113,10 +113,17 @@ class GatewayIPCServer:
                         )
                     ]
 
-                for response in responses:
-                    writer.write(encode_message(response))
-                    writer.write(b"\n")
-                writer.flush()
+                try:
+                    for response in responses:
+                        writer.write(encode_message(response))
+                        writer.write(b"\n")
+                    writer.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                    log.debug(
+                        "Gateway IPC client write failed during disconnect cleanup: %s",
+                        exc,
+                    )
+                    break
         finally:
             try:
                 reader.close()

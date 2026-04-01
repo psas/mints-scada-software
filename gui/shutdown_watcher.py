@@ -23,6 +23,44 @@ def _application_pid_file() -> Path:
     return _project_root() / ".applicationpid"
 
 
+def _dev_dir() -> Path:
+    return _project_root() / ".dev"
+
+
+def _backend_socket_path() -> Path:
+    return _project_root() / ".backend_service.sock"
+
+
+def _gateway_socket_path() -> Path:
+    return _project_root() / ".gateway_service.sock"
+
+
+def _backend_pid_file() -> Path:
+    return _dev_dir() / "backend.pid"
+
+
+def _gateway_pid_file() -> Path:
+    return _dev_dir() / "gateway.pid"
+
+
+def _remove_if_exists(path: Path) -> None:
+    try:
+        if path.exists() or path.is_socket():
+            path.unlink()
+            log.info("Deleted %s", path)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("Failed to delete %s: %s", path, exc)
+
+
+def cleanup_service_artifacts() -> None:
+    _remove_if_exists(_backend_pid_file())
+    _remove_if_exists(_gateway_pid_file())
+    _remove_if_exists(_backend_socket_path())
+    _remove_if_exists(_gateway_socket_path())
+
+
 def kill_all_application_processes() -> None:
     """Kill all tracked application processes except this watcher itself."""
     pid_file = _application_pid_file()
@@ -127,6 +165,7 @@ def watch_for_shutdown_signal() -> None:
 
                 # Kill everything except this watcher.
                 kill_all_application_processes()
+                cleanup_service_artifacts()
 
                 log.info("Shutdown watcher exiting after cleanup")
                 sys.exit(0)

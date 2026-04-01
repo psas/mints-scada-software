@@ -263,30 +263,46 @@ class SupervisorHeartbeatClient(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.send_heartbeat)
+        self._disabled = False
+
+    def _is_dummy_socket(self) -> bool:
+        if not self.socket_path:
+            return True
+        name = Path(self.socket_path).name
+        return "mints_scada_supervisor_dummy" in self.socket_path or name.startswith("noop_supervisor_")
 
     def start(self) -> None:
-        if not self.socket_path:
+        if not self.socket_path or self._is_dummy_socket():
+            log.debug(
+                "Supervisor heartbeat disabled for %s via dummy socket: %s",
+                self.window_role,
+                self.socket_path,
+            )
+            self._disabled = True
             return
         self._send("hello")
-        self._timer.start()
-        log.info(
-            "Started supervisor heartbeat for %s via %s",
-            self.window_role,
-            self.socket_path,
-        )
+        if not self._disabled:
+            self._timer.start()
+            log.info(
+                "Started supervisor heartbeat for %s via %s",
+                self.window_role,
+                self.socket_path,
+            )
 
     def stop(self) -> None:
         if self._timer.isActive():
             self._timer.stop()
-        if self.socket_path:
+        if self.socket_path and not self._disabled:
             self._send("goodbye")
 
     def send_heartbeat(self) -> None:
-        if not self.socket_path:
+        if not self.socket_path or self._disabled:
             return
         self._send("heartbeat")
 
     def _send(self, message_type: str) -> None:
+        if self._disabled:
+            return
         payload = _supervisor_message_payload(
             message_type=message_type,
             mode=self.mode,
@@ -299,6 +315,15 @@ class SupervisorHeartbeatClient(QObject):
                 sock.connect(self.socket_path)
                 wire = json.dumps(payload, ensure_ascii=False, sort_keys=False) + "\n"
                 sock.sendall(wire.encode("utf-8"))
+        except FileNotFoundError:
+            self._disabled = True
+            if self._timer.isActive():
+                self._timer.stop()
+            log.debug(
+                "Supervisor heartbeat disabled for %s because socket disappeared: %s",
+                self.window_role,
+                self.socket_path,
+            )
         except Exception as exc:
             log.debug(
                 "Supervisor heartbeat send failed for %s (%s): %s",
