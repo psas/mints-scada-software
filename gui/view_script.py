@@ -7,10 +7,10 @@ from typing import Any
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QCheckBox,
+    QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -21,20 +21,23 @@ from scripts.script_runtime.script_contract import DEFAULT_SCRIPT_FILENAME
 
 
 class ScriptView(QWidget):
-    START_BUTTON_TEXT = "Run Script"
-    STOP_BUTTON_TEXT = "Stop Script"
-    STOPPING_BUTTON_TEXT = "Stopping script ..."
+    START_BUTTON_TEXT = "Run"
+    STOP_BUTTON_TEXT = "Stop"
+    STOPPING_BUTTON_TEXT = "Stopping..."
+    NO_SCRIPT_TEXT = "No script selected"
 
     doneSignal = pyqtSignal()
     stoppedSignal = pyqtSignal()
 
     def __init__(self, mintsapi: MintsScriptAPI):
         super().__init__()
+
         self.log = logging.getLogger("script")
         self.running = threading.Event()
         self.mints = mintsapi
         self.runner = None
         self._active_runtime_owner = "idle"
+        self.filename = ""
 
         self.doneSignal.connect(self._done)
         self.stoppedSignal.connect(self._setStoppingText)
@@ -43,108 +46,140 @@ class ScriptView(QWidget):
         self.setLayout(self.layout)
         self.layout.setAlignment(Qt.AlignTop)
 
-        self.controlLayout = QHBoxLayout()
-        self.layout.addLayout(self.controlLayout)
+        self.headerLayout = QHBoxLayout()
+        self.layout.addLayout(self.headerLayout)
 
-        self.scripteditor = QPlainTextEdit()
-        self.layout.addWidget(self.scripteditor)
+        self.titleLabel = QLabel("Script Control")
+        self.titleLabel.setStyleSheet("font-weight: 600;")
+        self.headerLayout.addWidget(self.titleLabel)
+
+        self.headerLayout.addStretch()
+
+        self.openbutton = QPushButton("Load")
+        self.openbutton.clicked.connect(self._choose_script)
+        self.headerLayout.addWidget(self.openbutton)
 
         self.runbutton = QPushButton(self.START_BUTTON_TEXT)
         self.runbutton.clicked.connect(self._run)
-        self.controlLayout.addWidget(self.runbutton)
+        self.headerLayout.addWidget(self.runbutton)
 
-        self.controlLayout.addStretch()
+        self.selectedTitleLabel = QLabel("Selected script")
+        self.layout.addWidget(self.selectedTitleLabel)
 
-        self.openbutton = QPushButton("Open")
-        self.openbutton.clicked.connect(self._load)
-        self.controlLayout.addWidget(self.openbutton)
+        self.selectedScriptLabel = QLabel(self.NO_SCRIPT_TEXT)
+        self.selectedScriptLabel.setWordWrap(True)
+        self.selectedScriptLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.selectedScriptLabel.setStyleSheet("font-weight: 600;")
+        self.layout.addWidget(self.selectedScriptLabel)
 
-        self.savebutton = QPushButton("Save")
-        self.savebutton.clicked.connect(self._save)
-        self.controlLayout.addWidget(self.savebutton)
+        self._select_default_script_if_available()
+        self._refresh_ui()
 
-        self.lockcheck = QCheckBox("Lock editor")
-        self.lockcheck.toggled.connect(self._updateLock)
-        self.lockcheck.setChecked(True)
-        self.controlLayout.addWidget(self.lockcheck)
+    def _select_default_script_if_available(self) -> None:
+        default_script = os.path.abspath(DEFAULT_SCRIPT_FILENAME)
+        if os.path.isfile(default_script):
+            self.filename = default_script
+            self.log.info("Selected default script %s", self.filename)
+        else:
+            self.filename = ""
+            self.log.info(
+                "Default script file %s is unavailable; waiting for operator selection",
+                DEFAULT_SCRIPT_FILENAME,
+            )
 
-        self.filename = DEFAULT_SCRIPT_FILENAME
-        self._load(self.filename)
+    def _dialog_start_dir(self) -> str:
+        if self.filename and os.path.exists(self.filename):
+            return os.path.dirname(self.filename) or os.getcwd()
+        return os.getcwd()
 
-    def _load(self, filename: str | None = None):
-        if filename is None:
-            self.log.error("Can't try to select file yet")
+    def _refresh_ui(self) -> None:
+        has_script = bool(self.filename and os.path.isfile(self.filename))
+        is_running = self.running.is_set()
+
+        if has_script:
+            self.selectedScriptLabel.setText(os.path.basename(self.filename))
+            self.selectedScriptLabel.setToolTip(self.filename)
+        else:
+            self.selectedScriptLabel.setText(self.NO_SCRIPT_TEXT)
+            self.selectedScriptLabel.setToolTip("")
+
+        self.openbutton.setEnabled(not is_running)
+        self.runbutton.setEnabled(is_running or has_script)
+        self.runbutton.setText(self.STOP_BUTTON_TEXT if is_running else self.START_BUTTON_TEXT)
+
+    def _choose_script(self, checked: bool = False) -> None:
+        del checked
+        self._load()
+
+    def _load(self, filename: str | None = None) -> None:
+        if self.running.is_set():
+            self.log.warning("Ignoring load request while script is running")
             return
 
-        self.filename = filename
-        self.scripteditor.clear()
+        if isinstance(filename, bool):
+            filename = None
 
-        if os.path.isfile(self.filename):
-            with open(self.filename, encoding="utf-8") as f:
-                for line in f:
-                    self.scripteditor.insertPlainText(line)
-            self.log.info("Loaded file %s", self.filename)
-        else:
-            self.log.error("Can not open file %s since it doesn't exist", self.filename)
-
-    def _save(self):
-        self.log.info("Saving now")
-        os.makedirs(os.path.dirname(self.filename) or ".", exist_ok=True)
-        with open(self.filename, "w", encoding="utf-8") as f:
-            f.write(self.scripteditor.toPlainText())
-        msg = f"Saved file {self.filename}"
-        self.log.info(msg)
-        QMessageBox.information(self.parent(), "File saved", msg)
-
-
-    def _updateLock(self, yes: bool):
-        self.log.info("Checkbox state changed")
-        if yes:
-            self.log.info("Script editor locked")
-            self._lock()
-        elif (
-            QMessageBox.question(
-                self.parent(),
-                "Unlock Verification",
-                "Do you want to unlock the editor?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+        if filename is None:
+            selected, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select script",
+                self._dialog_start_dir(),
+                "Python Scripts (*.py);;All Files (*)",
             )
-            == QMessageBox.Yes
-        ):
-            self.log.info("Script editor unlocked")
-            if not self.running.is_set():
-                self._unlock()
-        else:
-            self.lockcheck.setChecked(True)
-            self._lock()
+            if not selected:
+                return
+            filename = selected
 
-    def _lock(self):
-        self.openbutton.setEnabled(False)
-        self.savebutton.setEnabled(False)
-        self.scripteditor.setReadOnly(True)
+        candidate = os.path.abspath(filename)
+        if not os.path.isfile(candidate):
+            self.log.error("Cannot open file %s since it doesn't exist", candidate)
+            QMessageBox.warning(
+                self,
+                "Script Not Found",
+                f"Cannot open script file:\n\n{candidate}",
+            )
+            return
 
-    def _unlock(self, force: bool = False):
-        if not self.lockcheck.checkState() == Qt.CheckState.Checked or force:
-            self.openbutton.setEnabled(True)
-            self.savebutton.setEnabled(True)
-            self.scripteditor.setReadOnly(False)
-            self.lockcheck.blockSignals(True)
-            self.lockcheck.setChecked(False)
-            self.lockcheck.blockSignals(False)
-            self.lockcheck.setEnabled(True)
-            self.lockcheck.setTristate(False)
+        self.filename = candidate
+        self.log.info("Selected script %s", self.filename)
+        self._refresh_ui()
 
-    def _setStoppingText(self):
+    def _read_selected_script(self) -> str | None:
+        if not self.filename:
+            QMessageBox.warning(self, "No script selected", "Please load a script first.")
+            return None
+
+        if not os.path.isfile(self.filename):
+            QMessageBox.warning(
+                self,
+                "Script Not Found",
+                f"The selected script no longer exists:\n\n{self.filename}",
+            )
+            self._refresh_ui()
+            return None
+
+        try:
+            with open(self.filename, encoding="utf-8") as f:
+                return f.read()
+        except OSError as exc:
+            self.log.exception("Failed to read selected script %s", self.filename)
+            QMessageBox.warning(
+                self,
+                "Read Error",
+                f"Failed to read script file.\n\nError: {exc}",
+            )
+            return None
+
+    def _setStoppingText(self) -> None:
         self.runbutton.setText(self.STOPPING_BUTTON_TEXT)
 
-    def _done(self):
+    def _done(self) -> None:
         was_active = self.running.is_set() or self._active_runtime_owner != "idle"
         self.runner = None
         self._active_runtime_owner = "idle"
         self.running.clear()
-        self.runbutton.setText(self.START_BUTTON_TEXT)
-        self._unlock()
+        self._refresh_ui()
+
         if was_active:
             self.log.info("Script done running")
 
@@ -169,27 +204,22 @@ class ScriptView(QWidget):
     def _mark_running(self, *, runtime_owner: str) -> None:
         self.running.set()
         self._active_runtime_owner = runtime_owner
-        self._lock()
-        self.runbutton.setText(self.STOP_BUTTON_TEXT)
-        self.lockcheck.setTristate(True)
-        self.lockcheck.setEnabled(False)
-        if not self.lockcheck.isChecked():
-            self.lockcheck.setCheckState(Qt.CheckState.PartiallyChecked)
+        self._refresh_ui()
 
-    def _run(self):
+    def _run(self) -> None:
         if self.running.is_set():
             self.stop()
             return
 
-        script = self.scripteditor.toPlainText()
+        script = self._read_selected_script()
         if not isinstance(script, str) or not script.strip():
-            QMessageBox.warning(self.parent(), "No script", "There is no script text to run.")
+            QMessageBox.warning(self, "Empty script", "The selected script file is empty.")
             return
 
         if not self._backend_script_control_available():
             self.log.error("Backend script control is unavailable; refusing to start script")
             QMessageBox.warning(
-                self.parent(),
+                self,
                 "Backend Unavailable",
                 (
                     "Scripts require backend control availability.\n\n"
@@ -205,17 +235,23 @@ class ScriptView(QWidget):
         if window is None:
             raise RuntimeError("Backend script control window is unavailable")
 
-        self.log.info("Starting script through backend-owned subprocess runtime")
+        script_cwd = os.path.dirname(self.filename) or os.getcwd()
+
+        self.log.info(
+            "Starting selected script through backend-owned subprocess runtime: %s",
+            self.filename or "<inline>",
+        )
+
         try:
             window.start_backend_script(
                 name=self._script_name_for_backend(),
                 inline_python=script_text,
-                cwd=os.getcwd(),
+                cwd=script_cwd,
             )
         except Exception as exc:
             self.log.exception("Failed to request backend script start")
             QMessageBox.warning(
-                self.parent(),
+                self,
                 "Backend Error",
                 f"Failed to start backend-owned script.\n\nError: {exc}",
             )
@@ -223,7 +259,7 @@ class ScriptView(QWidget):
 
         self._mark_running(runtime_owner="backend")
 
-    def stop(self):
+    def stop(self) -> None:
         if not self.running.is_set():
             return
 
@@ -233,7 +269,7 @@ class ScriptView(QWidget):
                 self._active_runtime_owner,
             )
             QMessageBox.warning(
-                self.parent(),
+                self,
                 "Script Runtime Error",
                 "Unexpected script runtime owner. The script was not stopped locally.",
             )
@@ -242,7 +278,7 @@ class ScriptView(QWidget):
         if not self._backend_script_control_available():
             self.log.error("Backend script control became unavailable while script was running")
             QMessageBox.warning(
-                self.parent(),
+                self,
                 "Backend Unavailable",
                 (
                     "Backend control is unavailable, so this window cannot stop the "
@@ -257,27 +293,30 @@ class ScriptView(QWidget):
         except Exception as exc:
             self.log.exception("Failed to request backend script stop")
             QMessageBox.warning(
-                self.parent(),
+                self,
                 "Backend Error",
                 f"Failed to stop backend-owned script.\n\nError: {exc}",
             )
             return
+
         self.stoppedSignal.emit()
 
-    def scriptPrint(self, message: Any):
+    def scriptPrint(self, message: Any) -> None:
         self.log.info("%s", message)
 
     def handle_script_status(self, payload: dict[str, object]) -> None:
         if not isinstance(payload, dict):
             return
+
         status = str(payload.get("status") or "").strip().lower()
         if status in {"started", "running", "hold_requested", "held", "continued"}:
             if not self.running.is_set():
                 self._mark_running(runtime_owner="backend")
             return
+
         if status in {"stopped", "finished", "completed", "exited", "idle", "not_running"}:
             if self.running.is_set() or self._active_runtime_owner != "idle":
-                self._done()
+                self.doneSignal.emit()
 
     def apply_backend_state_snapshot(self, snapshot: dict) -> None:
         if not isinstance(snapshot, dict):
@@ -298,7 +337,7 @@ class ScriptView(QWidget):
                 self._mark_running(runtime_owner="backend")
             else:
                 if self.running.is_set() or self._active_runtime_owner != "idle":
-                    self._done()
+                    self.doneSignal.emit()
             return
 
         status = section.get("status")
