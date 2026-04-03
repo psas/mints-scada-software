@@ -753,12 +753,14 @@ class BackendService:
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 reason = self._get_optional_string(payload, "reason") or "operator_stop"
+                log.info("IPC stop_script: client_id=%s, reason=%r", client_id, reason)
 
                 stop_result = self.script_runner.stop_script(reason=reason)
                 self.state_store.mark_script_finished(
                     finished_wall_time=isoformat_z(),
                     return_code=stop_result.get("returncode"),
                     reason=reason,
+                    exit_status="stopped",
                 )
                 self.state_store.clear_script_running_state()
 
@@ -1762,8 +1764,16 @@ class BackendService:
 
     def _reset_runtime_after_clear_abort_latch(self, dispatch_info: Mapping[str, Any]) -> None:
         if self.script_runner.is_running:
+            log.warning("clear_abort_latch: stopping running script (reason=clear_abort_latch)")
             try:
-                self.script_runner.stop_script(reason="clear_abort_latch", timeout_s=1.0)
+                stop_result = self.script_runner.stop_script(reason="clear_abort_latch", timeout_s=1.0)
+                self.state_store.mark_script_finished(
+                    finished_wall_time=isoformat_z(),
+                    return_code=stop_result.get("returncode"),
+                    reason="clear_abort_latch",
+                    exit_status="stopped",
+                )
+                self.state_store.clear_script_running_state()
             except Exception:
                 log.exception("Failed to stop script runner while clearing abort latch")
         self.health.record_system_event(
@@ -1782,6 +1792,7 @@ class BackendService:
         output_text = info.get("output_text")
         if not isinstance(output_text, str) or not output_text.strip():
             return
+        self.state_store.append_script_output(output_text.strip())
         self.health.record_system_event(
             "script_output",
             severity="info",
@@ -1942,16 +1953,30 @@ class BackendService:
 
     def _handle_script_exit(self, info: Mapping[str, Any]) -> None:
         returncode = info.get("returncode")
+        failure_message = info.get("failure_message") if isinstance(info.get("failure_message"), str) else None
+
+        if returncode == 0 and not failure_message:
+            exit_status = "completed"
+        elif failure_message or (isinstance(returncode, int) and returncode != 0):
+            exit_status = "failed"
+        else:
+            exit_status = "exited"
+
+        if failure_message:
+            self.state_store.append_script_output(f"[error] {failure_message}")
+
         self.state_store.mark_script_finished(
             finished_wall_time=isoformat_z(),
             return_code=returncode if isinstance(returncode, int) else None,
             reason="process_exit",
+            failure_message=failure_message,
+            exit_status=exit_status,
         )
         self.state_store.clear_script_running_state()
 
         self.health.record_system_event(
             "script_exited",
-            severity="info" if returncode == 0 else "warning",
+            severity="info" if exit_status == "completed" else "warning",
             script_id=info.get("script_id"),
             name=info.get("name"),
             pid=info.get("pid"),
@@ -1959,12 +1984,13 @@ class BackendService:
             command=list(info.get("command", [])),
             cwd=info.get("cwd"),
             returncode=returncode,
+            exit_status=exit_status,
             current_step_index=info.get("current_step_index"),
             total_steps=info.get("total_steps"),
             current_step_name=info.get("current_step_name"),
             current_step_type=info.get("current_step_type"),
             current_step_status=info.get("current_step_status"),
-            failure_message=info.get("failure_message"),
+            failure_message=failure_message,
             is_held=info.get("is_held"),
             hold_requested=info.get("hold_requested"),
         )

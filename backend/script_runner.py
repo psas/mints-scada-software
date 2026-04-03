@@ -149,6 +149,7 @@ class ScriptRunner:
             )
 
     def stop_script(self, *, reason: str = "operator_stop", timeout_s: float = 3.0) -> dict[str, Any]:
+        log.info("stop_script requested: reason=%r, timeout_s=%s", reason, timeout_s)
         with self._lock:
             launch_mode = self._launch_mode
             if launch_mode == "plan":
@@ -158,6 +159,7 @@ class ScriptRunner:
                 script_id = self._script_id
                 script_name = self._script_name
                 pid = os.getpid()
+                log.info("Stopping plan-mode script %r (id=%s, reason=%r)", script_name, script_id, reason)
                 self._stop_watcher.set()
                 self._plan_stop.set()
                 self._plan_resume.set()
@@ -170,6 +172,7 @@ class ScriptRunner:
                 script_id = self._script_id
                 script_name = self._script_name
                 pid = process.pid
+                log.info("Stopping subprocess script %r (id=%s, pid=%s, reason=%r)", script_name, script_id, pid, reason)
 
         if launch_mode == "plan":
             assert plan_thread is not None
@@ -202,6 +205,7 @@ class ScriptRunner:
             return_code = process.wait(timeout=timeout_s)
             stopped_via = "sigterm"
         except subprocess.TimeoutExpired:
+            log.warning("Script pid=%s did not exit after SIGTERM (%.1fs); escalating to SIGKILL", process.pid, timeout_s)
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -209,6 +213,7 @@ class ScriptRunner:
             return_code = process.wait(timeout=1.0)
             stopped_via = "sigkill"
 
+        log.info("Script stopped: pid=%s, stopped_via=%s, returncode=%s, reason=%r", process.pid, stopped_via, return_code, reason)
         self._stop_watcher.set()
         host_proxy = None
         with self._lock:
@@ -270,10 +275,11 @@ class ScriptRunner:
         with self._lock:
             running = self.is_running
         if running:
+            log.info("ScriptRunner.shutdown(): stopping running script (reason=backend_shutdown)")
             try:
                 self.stop_script(reason="backend_shutdown")
             except Exception:
-                pass
+                log.exception("ScriptRunner.shutdown(): stop_script failed")
 
     def _start_legacy_host_script(
         self,

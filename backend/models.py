@@ -184,6 +184,9 @@ class ScriptRunnerState:
     finished_wall_time: str | None = None
     last_exit_code: int | None = None
     last_stop_reason: str | None = None
+    last_failure_message: str | None = None
+    last_exit_status: str | None = None  # "completed" | "failed" | "stopped" | "exited"
+    output_lines: list[str] = field(default_factory=list)
     current_step_index: int | None = None
     total_steps: int | None = None
     current_step_name: str | None = None

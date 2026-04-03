@@ -37,6 +37,8 @@ class ScriptView(QWidget):
         self.mints = mintsapi
         self.runner = None
         self._active_runtime_owner = "idle"
+        self._pending_exit_info: dict | None = None
+        self._seen_output_count: int = 0
         self.filename = ""
 
         self.doneSignal.connect(self._done)
@@ -181,7 +183,26 @@ class ScriptView(QWidget):
         self._refresh_ui()
 
         if was_active:
-            self.log.info("Script done running")
+            exit_info = getattr(self, "_pending_exit_info", None) or {}
+            self._pending_exit_info = None
+            exit_status = exit_info.get("exit_status") or ""
+            failure_message = exit_info.get("failure_message") or ""
+            reason = exit_info.get("reason") or ""
+
+            if exit_status == "completed":
+                self.log.info("Script completed successfully.")
+            elif exit_status == "failed":
+                if failure_message:
+                    self.log.error("Script failed: %s", failure_message)
+                else:
+                    self.log.error("Script failed (exit code %s).", exit_info.get("returncode", "unknown"))
+            elif exit_status == "stopped":
+                if reason == "operator_stop":
+                    self.log.warning("Script stopped by operator.")
+                else:
+                    self.log.warning("Script stopped (reason: %s).", reason or "unknown")
+            else:
+                self.log.warning("Script exited (status=%s, reason=%s).", exit_status or "unknown", reason or "unknown")
 
     def _backend_window(self):
         window = self.window()
@@ -202,8 +223,12 @@ class ScriptView(QWidget):
         return base or "script.py"
 
     def _mark_running(self, *, runtime_owner: str) -> None:
+        is_new_run = not self.running.is_set()
         self.running.set()
         self._active_runtime_owner = runtime_owner
+        if is_new_run:
+            self._pending_exit_info = None
+            self._seen_output_count = 0
         self._refresh_ui()
 
     def _run(self) -> None:
@@ -316,6 +341,13 @@ class ScriptView(QWidget):
 
         if status in {"stopped", "finished", "completed", "exited", "idle", "not_running"}:
             if self.running.is_set() or self._active_runtime_owner != "idle":
+                exit_info = {
+                    "exit_status": payload.get("exit_status") or ("stopped" if status == "stopped" else None),
+                    "failure_message": payload.get("failure_message"),
+                    "reason": payload.get("reason"),
+                    "returncode": payload.get("returncode"),
+                }
+                self._pending_exit_info = exit_info
                 self.doneSignal.emit()
 
     def apply_backend_state_snapshot(self, snapshot: dict) -> None:
@@ -332,11 +364,25 @@ class ScriptView(QWidget):
         if section is None:
             return
 
+        output_lines = section.get("output_lines")
+        if isinstance(output_lines, list):
+            already_seen = getattr(self, "_seen_output_count", 0)
+            for line in output_lines[already_seen:]:
+                if isinstance(line, str) and line.strip():
+                    self.log.info("[script] %s", line)
+            self._seen_output_count = len(output_lines)
+
         if isinstance(section.get("is_running"), bool):
             if section.get("is_running"):
                 self._mark_running(runtime_owner="backend")
             else:
                 if self.running.is_set() or self._active_runtime_owner != "idle":
+                    self._pending_exit_info = {
+                        "exit_status": section.get("last_exit_status"),
+                        "failure_message": section.get("last_failure_message"),
+                        "reason": section.get("last_stop_reason"),
+                        "returncode": section.get("last_exit_code"),
+                    }
                     self.doneSignal.emit()
             return
 

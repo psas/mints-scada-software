@@ -380,6 +380,9 @@ class StateStore:
             self._state.script_runner.finished_wall_time = None
             self._state.script_runner.last_exit_code = None
             self._state.script_runner.last_stop_reason = None
+            self._state.script_runner.last_failure_message = None
+            self._state.script_runner.last_exit_status = None
+            self._state.script_runner.output_lines = []
             self._state.script_runner.current_step_index = current_step_index
             self._state.script_runner.total_steps = total_steps
             self._state.script_runner.current_step_name = current_step_name
@@ -398,12 +401,22 @@ class StateStore:
         finished_wall_time: str,
         return_code: int | None,
         reason: str,
+        failure_message: str | None = None,
+        exit_status: str | None = None,
     ) -> None:
         with self._lock:
             self._state.script_runner.is_running = False
             self._state.script_runner.finished_wall_time = finished_wall_time
             self._state.script_runner.last_exit_code = return_code
             self._state.script_runner.last_stop_reason = reason
+            self._state.script_runner.last_failure_message = failure_message
+            self._state.script_runner.last_exit_status = exit_status
+
+    def append_script_output(self, text: str, *, max_lines: int = 500) -> None:
+        with self._lock:
+            self._state.script_runner.output_lines.append(text)
+            if len(self._state.script_runner.output_lines) > max_lines:
+                self._state.script_runner.output_lines = self._state.script_runner.output_lines[-max_lines:]
 
     def update_script_progress(
         self,
