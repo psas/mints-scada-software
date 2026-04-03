@@ -489,14 +489,14 @@ devices = (
 
     {
         'id': 'igniter',
-        'name': 'igniter',
-        'deviceType': 'Unknown',
-        'deviceGroup': 'Unknown',
-        'deviceSystems': [],
+        'name': 'Igniter',
+        'deviceType': 'GenericActuator',
+        'deviceGroup': 'IGN',
+        'deviceSystems': ['IG'],
         'address': 0x74,
         'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'machanical',
+        'isControllable': True,
+        'widgetType': 'solenoid',
         'isActive': True,
     },
 

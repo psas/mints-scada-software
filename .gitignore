@@ -28,3 +28,7 @@ ignitionhistory/
 # ignore cache
 docs/
 /.*/
+
+
+# ignore .guiworkspace.json
+.guiworkspace.json
