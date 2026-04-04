@@ -449,6 +449,7 @@ devices = (
         'isControllable': True,
         'widgetType': 'solenoid',
         'isActive': True,
+        "config": {"inverted": True}
     },
     {
         'id': 'ipa-xv-23',

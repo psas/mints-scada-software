@@ -36,8 +36,8 @@ print("Opening XV-27...")
 mints.devices["ig-xv-27"].open()
 print("XV-27 opened.")
 
-print("Waiting 1 minute for N2 purge...")
-wait(60.0)
+print("Waiting 15 seconds for N2 purge...")
+wait(15.0)
 print("N2 purge complete.")
 
 print("Closing XV-27...")
