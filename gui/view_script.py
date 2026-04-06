@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import MintsScriptAPI
-from scripts.script_runtime.script_contract import DEFAULT_SCRIPT_FILENAME
 
 
 class ScriptView(QWidget):
@@ -74,20 +73,7 @@ class ScriptView(QWidget):
         self.selectedScriptLabel.setStyleSheet("font-weight: 600;")
         self.layout.addWidget(self.selectedScriptLabel)
 
-        self._select_default_script_if_available()
         self._refresh_ui()
-
-    def _select_default_script_if_available(self) -> None:
-        default_script = os.path.abspath(DEFAULT_SCRIPT_FILENAME)
-        if os.path.isfile(default_script):
-            self.filename = default_script
-            self.log.info("Selected default script %s", self.filename)
-        else:
-            self.filename = ""
-            self.log.info(
-                "Default script file %s is unavailable; waiting for operator selection",
-                DEFAULT_SCRIPT_FILENAME,
-            )
 
     def _dialog_start_dir(self) -> str:
         if self.filename and os.path.exists(self.filename):
@@ -191,6 +177,8 @@ class ScriptView(QWidget):
 
             if exit_status == "completed":
                 self.log.info("Script completed successfully.")
+                self.filename = ""
+                self._refresh_ui()
             elif exit_status == "failed":
                 if failure_message:
                     self.log.error("Script failed: %s", failure_message)
