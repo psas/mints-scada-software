@@ -422,7 +422,6 @@ class GuiBackendBridge:
         self.window_kind = str(window_kind)
         self.initialize_live_hardware_on_connect = initialize_live_hardware_on_connect
         self.pending_start_run_payload = dict(pending_start_run_payload or {}) or None
-        self._start_run_requested = False
         self.device_catalog = BackendDeviceCatalog()
         self._last_disconnect_reason: dict[str, Any] | None = None
         self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
@@ -459,6 +458,7 @@ class GuiBackendBridge:
             setattr(target, "continue_backend_script", self.continue_backend_script)
             setattr(target, "request_backend_status_now", self.request_backend_status_now)
             setattr(target, "request_full_backend_state", self.request_full_backend_state)
+            setattr(target, "start_backend_run", self.start_backend_run)
             setattr(target, "finish_backend_run", self.finish_backend_run)
             setattr(target, "backend_runtime_owner", "backend_service")
             setattr(target, "backend_control_mode", "backend_first")
@@ -507,6 +507,14 @@ class GuiBackendBridge:
 
     def request_full_backend_state(self) -> None:
         self.gui_action_api.request_full_state()
+
+    def start_backend_run(self) -> None:
+        payload = self.pending_start_run_payload
+        if payload is None:
+            log.warning("start_backend_run called but no checklist metadata is cached")
+            return
+        self.gui_action_api.start_run(payload)
+        log.info("Requested backend start_run with checklist metadata: %s", payload)
 
     def finish_backend_run(self, *, reason: str = "operator_stop") -> None:
         self.gui_action_api.finish_run(reason=reason)
@@ -628,19 +636,8 @@ class GuiBackendBridge:
         except Exception as exc:
             log.debug("Failed to refresh backend state after hello_ack: %s", exc)
 
-        if self.pending_start_run_payload is not None and not self._start_run_requested:
-            try:
-                self.gui_action_api.start_run(self.pending_start_run_payload)
-                self._start_run_requested = True
-                log.info("Requested backend start_run with checklist metadata: %s", self.pending_start_run_payload)
-            except Exception as exc:
-                log.error("Failed to request backend start_run: %s", exc)
-                QMessageBox.warning(
-                    None,
-                    "Backend Error",
-                    "Failed to request backend start_run.\n\n"
-                    f"Error: {exc}",
-                )
+        if self.pending_start_run_payload is not None:
+            log.info("Checklist metadata cached for manual Start Recording: %s", self.pending_start_run_payload)
 
     def on_backend_status(self, payload: dict[str, Any]) -> None:
         setattr(self.window, "backend_status", dict(payload))

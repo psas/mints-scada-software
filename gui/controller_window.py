@@ -2712,9 +2712,30 @@ class ControllerWindow(QMainWindow):
         self.btn_manual_auto.clicked.connect(self._on_manual_auto_clicked)
         blay.addWidget(self.btn_manual_auto)
 
-        self.btn_finish_run = QPushButton("Finish Run")
-        self.btn_finish_run.setMinimumHeight(76)
-        self.btn_finish_run.setStyleSheet(
+        self.btn_start_recording = QPushButton("Start Recording")
+        self.btn_start_recording.setMinimumHeight(76)
+        self.btn_start_recording.setStyleSheet(
+            """
+            QPushButton{
+                background:#2e7d32;
+                color:white;
+                border:none;
+                border-radius:10px;
+                font-size:16px;
+                font-weight:800;
+            }
+            QPushButton:hover{ background:#1b5e20; }
+            QPushButton:pressed{ background:#174f1a; }
+            QPushButton:disabled{ background:#555; color:#bbb; }
+            """
+        )
+        self.btn_start_recording.setToolTip("Start a new recording run")
+        self.btn_start_recording.clicked.connect(self._on_start_recording_clicked)
+        blay.addWidget(self.btn_start_recording)
+
+        self.btn_stop_recording = QPushButton("Stop Recording")
+        self.btn_stop_recording.setMinimumHeight(76)
+        self.btn_stop_recording.setStyleSheet(
             """
             QPushButton{
                 background:#c62828;
@@ -2725,12 +2746,13 @@ class ControllerWindow(QMainWindow):
                 font-weight:800;
             }
             QPushButton:hover{ background:#b71c1c; }
+            QPushButton:disabled{ background:#555; color:#bbb; }
             """
         )
-        self.btn_finish_run.setToolTip("Stop the active recording and finish the run")
-        self.btn_finish_run.clicked.connect(self._on_finish_run_clicked)
-        self.btn_finish_run.setVisible(False)
-        blay.addWidget(self.btn_finish_run)
+        self.btn_stop_recording.setToolTip("Stop the active recording and finish the run")
+        self.btn_stop_recording.clicked.connect(self._on_stop_recording_clicked)
+        self.btn_stop_recording.setEnabled(False)
+        blay.addWidget(self.btn_stop_recording)
 
         blay.addStretch(1)
         return btn_col
@@ -2973,7 +2995,7 @@ class ControllerWindow(QMainWindow):
         self._update_time_displays()
         if self.playback_mode:
             self._sync_playback_graph_provider_window()
-        self._sync_finish_run_button(snapshot)
+        self._sync_recording_buttons(snapshot)
 
         scripter = getattr(self, "scripter", None)
         script_snapshot_handler = getattr(scripter, "apply_backend_state_snapshot", None)
@@ -3267,26 +3289,46 @@ class ControllerWindow(QMainWindow):
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 
-    def _on_finish_run_clicked(self):
+    def _on_start_recording_clicked(self):
+        if self.playback_mode:
+            return
+        start = getattr(self, "start_backend_run", None)
+        if callable(start):
+            self.log.info("Operator requested start recording via controller button")
+            self.btn_start_recording.setEnabled(False)
+            try:
+                start()
+            except Exception:
+                self.log.exception("Failed to request backend start_run")
+                self.btn_start_recording.setEnabled(True)
+        else:
+            self.log.warning("start_backend_run not available - backend bridge may not be attached")
+
+    def _on_stop_recording_clicked(self):
         if self.playback_mode:
             return
         finish = getattr(self, "finish_backend_run", None)
         if callable(finish):
-            self.log.info("Operator requested finish run via controller button")
-            finish(reason="operator_stop")
+            self.log.info("Operator requested stop recording via controller button")
+            self.btn_stop_recording.setEnabled(False)
+            try:
+                finish(reason="operator_stop")
+            except Exception:
+                self.log.exception("Failed to request backend finish_run")
+                self.btn_stop_recording.setEnabled(True)
         else:
-            self.log.warning("finish_backend_run not available — backend bridge may not be attached")
+            self.log.warning("finish_backend_run not available - backend bridge may not be attached")
 
-    def _sync_finish_run_button(self, snapshot: dict) -> None:
-        """Show or hide the Finish Run button based on backend run state."""
-        btn = getattr(self, "btn_finish_run", None)
-        if btn is None:
+    def _sync_recording_buttons(self, snapshot: dict) -> None:
+        """Update Start/Stop Recording button states from backend run state."""
+        btn_start = getattr(self, "btn_start_recording", None)
+        btn_stop = getattr(self, "btn_stop_recording", None)
+        if btn_start is None or btn_stop is None:
             return
         run = snapshot.get("run")
-        if isinstance(run, dict) and run.get("is_running"):
-            btn.setVisible(True)
-        else:
-            btn.setVisible(False)
+        is_running = isinstance(run, dict) and run.get("is_running")
+        btn_start.setEnabled(not is_running)
+        btn_stop.setEnabled(is_running)
 
     @staticmethod
     def _parse_recording_start_time(recording_clock) -> datetime | None:
