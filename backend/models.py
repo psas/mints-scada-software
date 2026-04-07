@@ -8,6 +8,7 @@ from typing import Any
 class RunRuntimeState:
     active_run_id: str | None = None
     is_running: bool = False
+    recording_session_consumed: bool = False
     mode: str | None = None
     status: str = "idle"
     test_name: str | None = None

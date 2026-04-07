@@ -3327,8 +3327,15 @@ class ControllerWindow(QMainWindow):
             return
         run = snapshot.get("run")
         is_running = isinstance(run, dict) and run.get("is_running")
-        btn_start.setEnabled(not is_running)
+        consumed = isinstance(run, dict) and run.get("recording_session_consumed")
+        btn_start.setEnabled(not is_running and not consumed)
         btn_stop.setEnabled(is_running)
+        if consumed and not is_running:
+            btn_start.setText("Recording Done")
+            btn_start.setToolTip("Recording session complete - restart for a new run")
+        else:
+            btn_start.setText("Start Recording")
+            btn_start.setToolTip("Start a new recording run")
 
     @staticmethod
     def _parse_recording_start_time(recording_clock) -> datetime | None:

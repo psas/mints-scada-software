@@ -83,6 +83,11 @@ class StateStore:
             self._state.gui.last_event_wall_time = event_wall_time
             self._refresh_gui_presence_locked()
 
+    @property
+    def recording_session_consumed(self) -> bool:
+        with self._lock:
+            return self._state.run.recording_session_consumed
+
     def mark_run_started(
         self,
         *,
@@ -98,6 +103,7 @@ class StateStore:
         with self._lock:
             self._state.run.active_run_id = run_id
             self._state.run.is_running = True
+            self._state.run.recording_session_consumed = True
             self._state.run.mode = mode
             self._state.run.status = "running"
             self._state.run.test_name = test_name

@@ -511,8 +511,7 @@ class GuiBackendBridge:
     def start_backend_run(self) -> None:
         payload = self.pending_start_run_payload
         if payload is None:
-            log.warning("start_backend_run called but no checklist metadata is cached")
-            return
+            raise RuntimeError("No checklist metadata available for start_run")
         self.gui_action_api.start_run(payload)
         log.info("Requested backend start_run with checklist metadata: %s", payload)
 

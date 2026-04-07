@@ -52,6 +52,11 @@ class RunController:
         clock_info: Mapping[str, Any] | None = None,
         extra_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.state_store.recording_session_consumed:
+            raise RuntimeError(
+                "Recording session already consumed - restart the application for a new run"
+            )
+
         run_id_value = self.history_manager.start_run(
             test_name=test_name,
             mode=mode,
