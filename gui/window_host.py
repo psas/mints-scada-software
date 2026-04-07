@@ -5,6 +5,8 @@ import hashlib
 import base64
 import json
 import logging
+from copy import deepcopy
+from functools import lru_cache
 import os
 import socket
 import sys
@@ -936,8 +938,13 @@ def _build_playback_snapshot_index(
     return index_entries
 
 
-def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
+@lru_cache(maxsize=16)
+def _load_playback_snapshot_payload_cached(snapshot_path: str) -> dict[str, Any]:
     return _load_json_file(Path(snapshot_path))
+
+
+def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
+    return deepcopy(_load_playback_snapshot_payload_cached(snapshot_path))
 
 
 def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
