@@ -3257,16 +3257,16 @@ class ControllerWindow(QMainWindow):
             self._playback_running = False
             self._playback_advance_timer.stop()
 
+        advance_handler = getattr(self.manager, "playback_advance_handler", None)
+        if callable(advance_handler):
+            advance_handler(previous_time, new_time)
+            return
+
         self.playback_time = new_time
         self.timeline.set_current_time(new_time)
         self._update_mission_time_label(new_time)
         self.console.set_playback_time(new_time)
         self._refresh_aux_clock_display()
-
-        advance_handler = getattr(self.manager, "playback_advance_handler", None)
-        if callable(advance_handler):
-            advance_handler(previous_time, new_time)
-            return
 
         handler = getattr(self.manager, "playback_seek_handler", None)
         if callable(handler):
@@ -3278,15 +3278,16 @@ class ControllerWindow(QMainWindow):
             self._playback_running = False
             self._playback_advance_timer.stop()
 
+        handler = getattr(self.manager, "playback_seek_handler", None)
+        if callable(handler):
+            handler(seek_time)
+            return
+
         self.playback_time = seek_time
         self.timeline.set_current_time(seek_time)
         self._update_mission_time_label(seek_time)
         self.console.set_playback_time(seek_time)
         self._refresh_aux_clock_display()
-
-        handler = getattr(self.manager, "playback_seek_handler", None)
-        if callable(handler):
-            handler(seek_time)
 
     def set_playback_time(self, seek_time: float):
         self.playback_time = max(0.0, float(seek_time))
