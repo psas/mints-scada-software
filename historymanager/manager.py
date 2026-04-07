@@ -33,6 +33,7 @@ SHARED_EVENT_IDENTITY_FIELDS = (
     "recorded_at",
     "event_uid",
     "stream_seq",
+    "global_seq",
     "canonical_hash",
 )
 
@@ -426,6 +427,17 @@ class HistoryManager:
             payload["stream_seq"] = int(stream_seq)
             self._ensure_stream_counter_floor(run, stream_name, payload["stream_seq"])
 
+        global_seq = payload.get("global_seq")
+        if global_seq is None:
+            payload["global_seq"] = self._next_global_seq(run)
+        else:
+            if not isinstance(global_seq, int) or global_seq < 1:
+                raise ValueError(
+                    f"Event field 'global_seq' must be a positive integer when provided; got {global_seq!r}"
+                )
+            payload["global_seq"] = int(global_seq)
+            self._ensure_global_sequence_floor(run, payload["global_seq"])
+
         event_uid = payload.get("event_uid")
         if not isinstance(event_uid, str) or not event_uid.strip():
             payload["event_uid"] = self._build_event_uid(
@@ -450,6 +462,14 @@ class HistoryManager:
 
         run.stream_sequence_counters[stream_name] += 1
         return run.stream_sequence_counters[stream_name]
+
+    def _next_global_seq(self, run: ActiveRun) -> int:
+        run.global_sequence_counter += 1
+        return run.global_sequence_counter
+
+    def _ensure_global_sequence_floor(self, run: ActiveRun, seq_value: int) -> None:
+        if seq_value > run.global_sequence_counter:
+            run.global_sequence_counter = seq_value
 
     def _ensure_stream_counter_floor(
         self, run: ActiveRun, stream_name: str, seq_value: int

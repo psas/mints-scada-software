@@ -186,3 +186,4 @@ class ActiveRun:
     rawbak_stats: WriterStatsState
     history_stats: WriterStatsState
     stream_sequence_counters: dict[str, int] = field(default_factory=dict)
+    global_sequence_counter: int = 0

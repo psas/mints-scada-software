@@ -516,17 +516,20 @@ def _copy_if_exists(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def _event_sort_key(payload: dict[str, Any]) -> tuple[str, int, str]:
+def _event_sort_key(payload: dict[str, Any]) -> tuple[str, int, int, str]:
     recorded_at = payload.get("recorded_at")
     if not isinstance(recorded_at, str):
         recorded_at = ""
+    global_seq = payload.get("global_seq")
+    if not isinstance(global_seq, int):
+        global_seq = 0
     stream_seq = payload.get("stream_seq")
     if not isinstance(stream_seq, int):
         stream_seq = 0
     event_uid = payload.get("event_uid")
     if not isinstance(event_uid, str):
         event_uid = ""
-    return (recorded_at, stream_seq, event_uid)
+    return (recorded_at, global_seq, stream_seq, event_uid)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
