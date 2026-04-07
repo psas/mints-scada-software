@@ -114,7 +114,12 @@ class RunController:
             started_wall_time=current_run.started_wall_time,
             metadata=state_metadata,
         )
-        initial_snapshot_path = self._write_snapshot(self.state_store.get_snapshot())
+        # Anchor the initial snapshot's recorded_at to the run start wall time
+        # so that the snapshot file and the periodic-snapshot timer share the
+        # same reference point.
+        initial_snapshot = dict(self.state_store.get_snapshot())
+        initial_snapshot["recorded_at"] = current_run.started_wall_time
+        initial_snapshot_path = self._write_snapshot(initial_snapshot)
         self._last_periodic_snapshot_recorded_at = current_run.started_wall_time
 
         return {
@@ -265,7 +270,12 @@ class RunController:
             try:
                 last_dt = _parse_iso_utc(last_recorded_at)
                 delta_seconds = (target_dt - last_dt).total_seconds()
+                if delta_seconds < 0:
+                    # Out-of-order or older event - do not write a snapshot
+                    # from a timestamp that predates the last one.
+                    return None
                 if delta_seconds < float(self._periodic_snapshot_interval_seconds):
+                    # Not enough time has passed since last snapshot.
                     return None
             except ValueError:
                 pass

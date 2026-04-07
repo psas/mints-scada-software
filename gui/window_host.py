@@ -1007,6 +1007,13 @@ def _slice_playback_tail_events(
     seek_dt: datetime | None,
     event_time_keys: list[float] | None = None,
 ) -> list[dict[str, Any]]:
+    """Return events strictly after replay_start_dt and up to (inclusive) seek_dt.
+
+    Boundary semantics: a snapshot represents state that already includes all
+    effects up to and including its recorded_at.  Tail replay therefore starts
+    *strictly after* the snapshot boundary to avoid double-applying events that
+    were already captured by the snapshot.
+    """
     if replay_start_dt is None or seek_dt is None:
         return []
 
@@ -1014,16 +1021,23 @@ def _slice_playback_tail_events(
         start_key = _datetime_to_seek_key(replay_start_dt)
         end_key = _datetime_to_seek_key(seek_dt)
         if start_key is not None and end_key is not None:
-            start_index = bisect_left(event_time_keys, start_key)
+            # bisect_right for start to first index strictly after snapshot boundary
+            # bisect_right for end   to includes events at exactly seek target
+            start_index = bisect_right(event_time_keys, start_key)
             end_index = bisect_right(event_time_keys, end_key)
             return list(merged_events[start_index:end_index])
 
+    # Fallback linear scan - same boundary semantics as the bisect path.
+    # Untimestamped events (event_dt is None) are skipped here; they are
+    # handled via timestamp approximation in the seek-index build step
+    # (_load_ignitionhistory_playback) so they appear in the fast bisect
+    # path with their best-effort timestamp.
     tail_events: list[dict[str, Any]] = []
     for event in merged_events:
         event_dt = _extract_event_wall_time(event)
         if event_dt is None:
             continue
-        if event_dt < replay_start_dt:
+        if event_dt <= replay_start_dt:
             continue
         if event_dt > seek_dt:
             continue
@@ -1309,10 +1323,23 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     merged_events = _load_jsonl_file(merged_path) if merged_path.exists() else []
     snapshot_files = sorted(snapshots_dir.glob("*.json")) if snapshots_dir.is_dir() else []
 
+    # Build the seek index.  Events with a parseable wall-time get their
+    # true timestamp; events WITHOUT a parseable timestamp are assigned the
+    # timestamp of the nearest preceding timestamped event (or the run start
+    # time if none precedes them).  This keeps untimestamped events in the
+    # bisect-based seek path with their best-effort temporal position rather
+    # than silently dropping them from playback.
+    run_start_key = _datetime_to_seek_key(_parse_iso_wall_time(metadata.get("start_wall_time")))
     seek_entries: list[tuple[float, int, dict[str, Any]]] = []
+    last_known_key: float | None = run_start_key
     for original_index, event in enumerate(merged_events):
         event_dt = _extract_event_wall_time(event)
         event_key = _datetime_to_seek_key(event_dt)
+        if event_key is not None:
+            last_known_key = event_key
+        else:
+            # Approximate: use nearest preceding timestamp or run start.
+            event_key = last_known_key
         if event_key is None:
             continue
         seek_entries.append((event_key, original_index, event))

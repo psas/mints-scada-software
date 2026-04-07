@@ -3210,18 +3210,13 @@ class ControllerWindow(QMainWindow):
         )
 
     def _on_playback_shortcut(self):
-        print("SHORTCUT FIRED", type(QApplication.focusWidget()), "readOnly?", getattr(QApplication.focusWidget(), 'isReadOnly', lambda: 'N/A')(), QApplication.activeWindow() is self)
         if not self.playback_mode:
-            print("BLOCKED: not playback_mode")
             return
         focus = QApplication.focusWidget()
         if isinstance(focus, (QSpinBox, QDoubleSpinBox)):
-            print("BLOCKED BY SPINBOX GUARD")
             return
         if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)) and not focus.isReadOnly():
-            print("BLOCKED BY EDITABLE TEXT GUARD")
             return
-        print("GUARD PASSED, calling _toggle_playback")
         self._toggle_playback()
 
     def _step_playback_speed(self, direction: int) -> None:
@@ -3235,7 +3230,6 @@ class ControllerWindow(QMainWindow):
         self.log.info("Playback speed set to %.2fx", self._playback_speed)
 
     def _toggle_playback(self):
-        print("TOGGLE PLAYBACK", self._playback_running, self.playback_time, self.playback_duration_seconds)
         if not self.playback_mode:
             return
         if self._playback_running:
@@ -3263,7 +3257,6 @@ class ControllerWindow(QMainWindow):
             self._playback_advance_timer.start()
 
     def _on_playback_advance(self):
-        print("ADVANCE TICK", self._playback_running)
         if not self._playback_running:
             self._playback_advance_timer.stop()
             return
