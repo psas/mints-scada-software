@@ -5,6 +5,7 @@ import hashlib
 import base64
 import json
 import logging
+from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from functools import lru_cache
 import os
@@ -947,6 +948,12 @@ def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
     return deepcopy(_load_playback_snapshot_payload_cached(snapshot_path))
 
 
+def _datetime_to_seek_key(value: datetime | None) -> float | None:
+    if not isinstance(value, datetime):
+        return None
+    return value.timestamp()
+
+
 def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
     snapshot_state = snapshot_payload.get("state")
     if not isinstance(snapshot_state, dict):
@@ -985,9 +992,18 @@ def _slice_playback_tail_events(
     *,
     replay_start_dt: datetime | None,
     seek_dt: datetime | None,
+    event_time_keys: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     if replay_start_dt is None or seek_dt is None:
         return []
+
+    if event_time_keys and len(event_time_keys) == len(merged_events):
+        start_key = _datetime_to_seek_key(replay_start_dt)
+        end_key = _datetime_to_seek_key(seek_dt)
+        if start_key is not None and end_key is not None:
+            start_index = bisect_left(event_time_keys, start_key)
+            end_index = bisect_right(event_time_keys, end_key)
+            return list(merged_events[start_index:end_index])
 
     tail_events: list[dict[str, Any]] = []
     for event in merged_events:
@@ -1020,7 +1036,8 @@ def _find_nearest_snapshot_entry(snapshot_index: list[dict[str, Any]], seek_time
 
 def _handle_playback_seek(window: Any, seek_time: float) -> None:
     snapshot_index = getattr(window, "playback_snapshot_index", [])
-    merged_events = getattr(window, "playback_merged_events", [])
+    merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+    event_time_keys = getattr(window, "playback_event_time_keys", None)
     start_dt = getattr(window, "playback_start_dt", None)
 
     seek_time = max(0.0, float(seek_time))
@@ -1073,6 +1090,7 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         merged_events,
         replay_start_dt=replay_start_dt,
         seek_dt=seek_dt,
+        event_time_keys=event_time_keys,
     )
 
     payload = {
@@ -1224,11 +1242,24 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     merged_events = _load_jsonl_file(merged_path) if merged_path.exists() else []
     snapshot_files = sorted(snapshots_dir.glob("*.json")) if snapshots_dir.is_dir() else []
 
+    seek_entries: list[tuple[float, int, dict[str, Any]]] = []
+    for original_index, event in enumerate(merged_events):
+        event_dt = _extract_event_wall_time(event)
+        event_key = _datetime_to_seek_key(event_dt)
+        if event_key is None:
+            continue
+        seek_entries.append((event_key, original_index, event))
+    seek_entries.sort(key=lambda entry: (entry[0], entry[1]))
+    playback_seek_events = [event for _, _, event in seek_entries]
+    playback_event_time_keys = [event_key for event_key, _, _ in seek_entries]
+
     setattr(window, "playback_history_dir", str(run_dir))
     setattr(window, "playback_run_id", metadata.get("run_id", run_dir.name))
     setattr(window, "playback_metadata", metadata)
     setattr(window, "playback_source", playback_source)
     setattr(window, "playback_merged_events", merged_events)
+    setattr(window, "playback_seek_events", playback_seek_events)
+    setattr(window, "playback_event_time_keys", playback_event_time_keys)
     setattr(window, "playback_snapshot_files", [str(path) for path in snapshot_files])
 
     start_dt = _parse_iso_wall_time(metadata.get("start_wall_time"))
