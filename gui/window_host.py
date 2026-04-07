@@ -422,6 +422,11 @@ class GuiBackendBridge:
         self.window_kind = str(window_kind)
         self.initialize_live_hardware_on_connect = initialize_live_hardware_on_connect
         self.pending_start_run_payload = dict(pending_start_run_payload or {}) or None
+        log.info(
+            "GuiBackendBridge init: window_kind=%s pending_start_run_payload=%s",
+            self.window_kind,
+            "present" if self.pending_start_run_payload else "None",
+        )
         self.device_catalog = BackendDeviceCatalog()
         self._last_disconnect_reason: dict[str, Any] | None = None
         self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
@@ -1810,7 +1815,9 @@ def _run_live_window(args: argparse.Namespace) -> int:
         mode="live",
         window_kind=args.window_kind,
         initialize_live_hardware_on_connect=(args.window_kind == "controller"),
-        pending_start_run_payload=_decode_json_arg(args.start_run_payload_b64) if args.window_kind == "controller" else None,
+        pending_start_run_payload=_decode_json_arg(
+            args.start_run_payload_b64 or os.environ.get("MINTS_PENDING_START_RUN_B64")
+        ) if args.window_kind == "controller" else None,
     )
 
     heartbeat_client = None
