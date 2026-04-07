@@ -2216,6 +2216,8 @@ class ControllerWindow(QMainWindow):
         self.playback_time = 0.0
         self.playback_duration_seconds = None
         self._playback_running = False
+        self._playback_speed = 1.0
+        self._playback_speed_steps = (0.25, 0.5, 1.0, 2.0, 4.0)
         self._playback_anchor = 0.0       # playback_time when play started/resumed
         self._playback_mono_start = 0.0   # time.monotonic() when play started/resumed
 
@@ -2349,6 +2351,16 @@ class ControllerWindow(QMainWindow):
             sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(self._on_playback_shortcut)
             self._playback_shortcut = sc  # prevent GC
+
+            slower = QShortcut(QKeySequence("["), self)
+            slower.setContext(Qt.WindowShortcut)
+            slower.activated.connect(lambda: self._step_playback_speed(-1))
+            self._playback_slower_shortcut = slower
+
+            faster = QShortcut(QKeySequence("]"), self)
+            faster.setContext(Qt.WindowShortcut)
+            faster.activated.connect(lambda: self._step_playback_speed(1))
+            self._playback_faster_shortcut = faster
 
     def _set_initial_state(self):
         self.set_status("idle" if not self.playback_mode else "hold")
@@ -3212,6 +3224,16 @@ class ControllerWindow(QMainWindow):
         print("GUARD PASSED, calling _toggle_playback")
         self._toggle_playback()
 
+    def _step_playback_speed(self, direction: int) -> None:
+        steps = list(self._playback_speed_steps)
+        try:
+            current_index = steps.index(self._playback_speed)
+        except ValueError:
+            current_index = steps.index(1.0)
+        next_index = min(max(current_index + int(direction), 0), len(steps) - 1)
+        self._playback_speed = float(steps[next_index])
+        self.log.info("Playback speed set to %.2fx", self._playback_speed)
+
     def _toggle_playback(self):
         print("TOGGLE PLAYBACK", self._playback_running, self.playback_time, self.playback_duration_seconds)
         if not self.playback_mode:
@@ -3248,7 +3270,7 @@ class ControllerWindow(QMainWindow):
 
         previous_time = float(self.playback_time)
         elapsed = time.monotonic() - self._playback_mono_start
-        new_time = self._playback_anchor + elapsed
+        new_time = self._playback_anchor + (elapsed * float(self._playback_speed))
         duration = self.playback_duration_seconds
 
         # Clamp to end and stop
