@@ -2055,6 +2055,13 @@ class BackendService:
                 "telemetry_in",
                 structured_event,
             )
+            try:
+                self.run_controller.maybe_write_periodic_snapshot(
+                    snapshot=self.state_store.get_snapshot(),
+                    event_recorded_at=structured_event.get("recorded_at"),
+                )
+            except Exception:
+                log.exception("Failed to write periodic playback snapshot")
 
         return structured_event
 

@@ -34,6 +34,8 @@ class RunController:
         self.history_manager = history_manager
         self.state_store = state_store
         self._next_snapshot_index = 0
+        self._periodic_snapshot_interval_seconds = 5.0
+        self._last_periodic_snapshot_recorded_at: str | None = None
 
     def start_run(
         self,
@@ -99,6 +101,7 @@ class RunController:
         )
 
         self._next_snapshot_index = 0
+        self._last_periodic_snapshot_recorded_at = None
         self._record_archive_lifecycle_event(
             event_type="run_archive_initialized",
             severity="info",
@@ -112,6 +115,7 @@ class RunController:
             metadata=state_metadata,
         )
         initial_snapshot_path = self._write_snapshot(self.state_store.get_snapshot())
+        self._last_periodic_snapshot_recorded_at = current_run.started_wall_time
 
         return {
             "run_id": run_id_value,
@@ -232,6 +236,38 @@ class RunController:
         path = self.history_manager.write_snapshot(self._next_snapshot_index, snapshot)
         self._next_snapshot_index += 1
         return path
+
+    def maybe_write_periodic_snapshot(
+        self,
+        *,
+        snapshot: Mapping[str, Any],
+        event_recorded_at: str | None = None,
+    ) -> str | None:
+        if not self.history_manager.is_running:
+            return None
+
+        target_recorded_at = event_recorded_at or isoformat_z()
+        try:
+            target_dt = _parse_iso_utc(target_recorded_at)
+        except ValueError:
+            target_recorded_at = isoformat_z()
+            target_dt = _parse_iso_utc(target_recorded_at)
+
+        last_recorded_at = self._last_periodic_snapshot_recorded_at
+        if isinstance(last_recorded_at, str):
+            try:
+                last_dt = _parse_iso_utc(last_recorded_at)
+                delta_seconds = (target_dt - last_dt).total_seconds()
+                if delta_seconds < float(self._periodic_snapshot_interval_seconds):
+                    return None
+            except ValueError:
+                pass
+
+        snapshot_payload = dict(snapshot)
+        snapshot_payload["recorded_at"] = target_recorded_at
+        snapshot_path = self._write_snapshot(snapshot_payload)
+        self._last_periodic_snapshot_recorded_at = target_recorded_at
+        return str(snapshot_path)
 
     def _build_final_snapshot_preview(
         self,
