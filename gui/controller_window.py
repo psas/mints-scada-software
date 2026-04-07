@@ -3246,6 +3246,7 @@ class ControllerWindow(QMainWindow):
             self._playback_advance_timer.stop()
             return
 
+        previous_time = float(self.playback_time)
         elapsed = time.monotonic() - self._playback_mono_start
         new_time = self._playback_anchor + elapsed
         duration = self.playback_duration_seconds
@@ -3261,6 +3262,11 @@ class ControllerWindow(QMainWindow):
         self._update_mission_time_label(new_time)
         self.console.set_playback_time(new_time)
         self._refresh_aux_clock_display()
+
+        advance_handler = getattr(self.manager, "playback_advance_handler", None)
+        if callable(advance_handler):
+            advance_handler(previous_time, new_time)
+            return
 
         handler = getattr(self.manager, "playback_seek_handler", None)
         if callable(handler):

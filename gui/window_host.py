@@ -954,6 +954,19 @@ def _datetime_to_seek_key(value: datetime | None) -> float | None:
     return value.timestamp()
 
 
+def _playback_event_end_index(
+    *,
+    event_time_keys: list[float] | None,
+    seek_dt: datetime | None,
+) -> int:
+    if not event_time_keys:
+        return 0
+    seek_key = _datetime_to_seek_key(seek_dt)
+    if seek_key is None:
+        return 0
+    return bisect_right(event_time_keys, seek_key)
+
+
 def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
     snapshot_state = snapshot_payload.get("state")
     if not isinstance(snapshot_state, dict):
@@ -1092,6 +1105,10 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         seek_dt=seek_dt,
         event_time_keys=event_time_keys,
     )
+    end_event_index = _playback_event_end_index(
+        event_time_keys=event_time_keys,
+        seek_dt=seek_dt,
+    )
 
     payload = {
         "seek_time_seconds": seek_time,
@@ -1102,6 +1119,8 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         "seek_recorded_at": seek_dt.isoformat() if isinstance(seek_dt, datetime) else None,
     }
     setattr(window, "playback_seek_tail_events", tail_events)
+    setattr(window, "playback_last_applied_time", seek_time)
+    setattr(window, "playback_last_event_index", end_event_index)
     _dispatch_playback_seek_bootstrap(window, payload)
 
     for event in tail_events:
@@ -1170,6 +1189,54 @@ def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
     _retime_target(window)
     for child_name in ("controller", "scada", "script"):
         _retime_target(getattr(window, child_name, None))
+
+
+
+def _handle_playback_advance(window: Any, previous_time: float, new_time: float) -> None:
+    previous_time = max(0.0, float(previous_time))
+    new_time = max(0.0, float(new_time))
+    if new_time < previous_time:
+        _handle_playback_seek(window, new_time)
+        return
+
+    if (new_time - previous_time) > 2.0:
+        _handle_playback_seek(window, new_time)
+        return
+
+    merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+    event_time_keys = getattr(window, "playback_event_time_keys", None)
+    start_dt = getattr(window, "playback_start_dt", None)
+    if not isinstance(start_dt, datetime):
+        _handle_playback_seek(window, new_time)
+        return
+
+    previous_dt = start_dt + timedelta(seconds=previous_time)
+    new_dt = start_dt + timedelta(seconds=new_time)
+
+    last_event_index = getattr(window, "playback_last_event_index", None)
+    if not isinstance(last_event_index, int) or last_event_index < 0:
+        last_event_index = _playback_event_end_index(
+            event_time_keys=event_time_keys,
+            seek_dt=previous_dt,
+        )
+
+    new_event_index = _playback_event_end_index(
+        event_time_keys=event_time_keys,
+        seek_dt=new_dt,
+    )
+
+    if new_event_index < last_event_index:
+        _handle_playback_seek(window, new_time)
+        return
+
+    for event in merged_events[last_event_index:new_event_index]:
+        handler = getattr(window, "handle_structured_event", None)
+        if callable(handler):
+            handler(dict(event))
+
+    setattr(window, "playback_last_applied_time", new_time)
+    setattr(window, "playback_last_event_index", new_event_index)
+    _apply_exact_playback_seek_state(window, new_time)
 
 
 def _playback_sync_path(selected_test: str) -> Path:
@@ -1291,7 +1358,13 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         if sync_write and sync_path is not None:
             _write_playback_seek_sync(sync_path, seek_time)
 
+    def _bound_advance_handler(previous_time: float, seek_time: float) -> None:
+        _handle_playback_advance(window, previous_time, seek_time)
+        if sync_write and sync_path is not None:
+            _write_playback_seek_sync(sync_path, seek_time)
+
     setattr(window, "playback_seek_handler", _bound_seek_handler)
+    setattr(window, "playback_advance_handler", _bound_advance_handler)
 
     if snapshot_files:
         try:
@@ -1320,6 +1393,8 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
 
     try:
         setattr(window, "playback_time", 0.0)
+        setattr(window, "playback_last_applied_time", 0.0)
+        setattr(window, "playback_last_event_index", 0)
     except Exception:
         pass
 
