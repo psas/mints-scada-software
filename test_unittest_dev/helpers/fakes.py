@@ -85,6 +85,10 @@ class FakeHistoryManager:
         self.snapshots.append((index, dict(snapshot), path))
         return path
 
+    def sort_merged_history_for_run(self, run_id: str) -> str | None:
+        """No-op stub — real sorting is tested via HistoryManager directly."""
+        return None
+
 
 class FakeRuntime:
     def __init__(self, *, live_registered: bool = True):
