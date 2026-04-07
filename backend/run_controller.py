@@ -163,6 +163,12 @@ class RunController:
 
         finished_run_id = self.history_manager.finish_run(reason=reason)
 
+        merged_history_sort_error: str | None = None
+        try:
+            self.history_manager.sort_merged_history_for_run(finished_run_id)
+        except Exception as exc:
+            merged_history_sort_error = str(exc)
+
         self.state_store.mark_run_finished(
             run_id=finished_run_id,
             finished_wall_time=preview_finished_wall_time,
@@ -204,6 +210,7 @@ class RunController:
             "integrity_summary_message": integrity_summary_message,
             "integrity_report_path": integrity_report_path,
             "integrity_scan_error": integrity_scan_error,
+            "merged_history_sort_error": merged_history_sort_error,
         }
 
     def _record_archive_lifecycle_event(

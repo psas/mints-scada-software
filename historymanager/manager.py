@@ -399,6 +399,39 @@ class HistoryManager:
 
             return path
 
+    def sort_merged_history_for_run(self, run_id: str) -> str | None:
+        run_paths = build_run_paths(run_id, self.base_dirs.project_root)
+        merged_path = run_paths.merged_path
+        if not merged_path.is_file():
+            return None
+
+        events: list[dict[str, Any]] = []
+        with merged_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                events.append(json.loads(line))
+
+        events.sort(
+            key=lambda payload: (
+                str(payload.get("recorded_at") or ""),
+                int(payload.get("global_seq")) if isinstance(payload.get("global_seq"), int) else 0,
+                int(payload.get("stream_seq")) if isinstance(payload.get("stream_seq"), int) else 0,
+                str(payload.get("event_uid") or ""),
+            )
+        )
+
+        temp_path = merged_path.with_name(f".{merged_path.name}.tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            for payload in events:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=False))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, merged_path)
+        return str(merged_path)
+
     def _materialize_first_order_event_payload(
         self,
         run: ActiveRun,
