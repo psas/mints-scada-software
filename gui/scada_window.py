@@ -203,6 +203,12 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         logger.info("[SCADA] SVG web view finished loading")
         if self.playback_mode:
             self._apply_playback_lock_to_svg()
+        # Re-apply device states from any snapshot that arrived before the SVG
+        # was ready (those pushes were silently dropped).
+        if self.backend_state_snapshot:
+            states = self._extract_device_states(self.backend_state_snapshot)
+            if states:
+                self._apply_device_states(states)
         self._sync_all_states_to_svg()
         if not self.playback_mode:
             request = getattr(self, "request_full_backend_state", None)
@@ -272,7 +278,7 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         if self.backend_state_snapshot:
             states = self._extract_device_states(self.backend_state_snapshot)
             if valve_id in states:
-                self._normalize_state(states[valve_id])
+                return self._normalize_state(states[valve_id])
         startup = LIVE_STARTUP_STATE.get(valve_id)
         if startup is not None:
             return self._normalize_state(startup)

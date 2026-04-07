@@ -386,7 +386,6 @@ class BackendService:
             return
 
         if message.type == "start_run":
-            run_result = None
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 test_name = self._require_non_empty_string(payload, "test_name")
@@ -431,22 +430,20 @@ class BackendService:
                     ),
                 )
 
+            except Exception as exc:
+                yield error_message("start_run_failed", str(exc))
+                return
+
+            try:
                 self._start_gateway_raw_run(
                     run_result=run_result,
                     original_payload=payload,
                 )
-
             except Exception as exc:
-                if run_result is not None and self.history_manager.is_running:
-                    try:
-                        self.run_controller.finish_run(reason="gateway_start_failed")
-                    except Exception:
-                        log.exception(
-                            "Backend failed to roll back structured run after gateway "
-                            "start failure"
-                        )
-                yield error_message("start_run_failed", str(exc))
-                return
+                log.warning(
+                    "Gateway raw run start failed (non-fatal, structured run continues): %s",
+                    exc,
+                )
 
             self.health.record_system_event(
                 "run_started",

@@ -47,14 +47,17 @@ class HealthPublisher:
         }
 
         if self.history_manager.is_running:
-            event_for_structured = dict(event)
+            # Record to the history manager's raw writer first so identity
+            # fields (stream_seq, event_uid, canonical_hash) are materialized
+            # from the single authoritative counter.  The raw event dict is
+            # mutated in-place, so the structured copy inherits the same IDs.
+            raw_event = dict(event)
+            self.history_manager.record_raw_event("system_event", raw_event)
 
             raw_mirror = self._raw_mirror_callback
             if raw_mirror is not None:
                 try:
-                    mirrored = raw_mirror("system_event", dict(event))
-                    if isinstance(mirrored, Mapping):
-                        event_for_structured = dict(mirrored)
+                    raw_mirror("system_event", dict(raw_event))
                 except Exception:
                     log.exception(
                         "Failed to mirror raw system_event to gateway: %s",
@@ -64,11 +67,11 @@ class HealthPublisher:
             self.history_manager.record_structured_event(
                 "system_event",
                 {
-                    **event_for_structured,
+                    **raw_event,
                     "structured_at": isoformat_z(),
                 },
             )
-            return event_for_structured
+            return dict(raw_event)
 
         return event
 
@@ -183,7 +186,10 @@ class BackendHealthMonitor:
             active_warnings.append("bus disconnected")
         elif bus_health["status"] == "warning":
             overall_rank = max(overall_rank, 1)
-            active_warnings.append("bus reconnecting")
+            if bus_health.get("reconnecting"):
+                active_warnings.append("bus reconnecting")
+            else:
+                active_warnings.append("bus not connected")
 
         script_health = self._normalize_script_health(script_state)
         if script_health["status"] == "warning":
@@ -270,7 +276,7 @@ class BackendHealthMonitor:
         elif connected:
             status = "ok"
         elif run_is_active:
-            status = "error"
+            status = "warning"
         else:
             status = "idle"
         return {

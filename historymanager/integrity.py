@@ -22,10 +22,13 @@ STRUCTURED_STREAM_FILES: dict[str, str] = {
 
 # Streams present in both raw and structured with the same name, suitable for
 # cross-archive identity/hash comparison.  wire_command_out (raw) and
-# command_out (structured) are intentionally separate.
+# command_out (structured) are intentionally separate.  system_event is also
+# excluded because raw system_events are written by the gateway process while
+# structured system_events are written by the backend -- they use independent
+# sequence counters and carry different event subsets.
 SHARED_STREAM_NAMES: frozenset[str] = frozenset(
     RAW_STREAM_FILES.keys() & STRUCTURED_STREAM_FILES.keys()
-)
+) - frozenset({"system_event"})
 
 INTEGRITY_REPORT_FILENAME = "integrity_report.json"
 _SAMPLE_LIMIT = 25

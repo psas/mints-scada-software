@@ -676,11 +676,28 @@ class ChecklistWindow(QDialog):
 
         return " | ".join(parts)
 
-    def _playback_badge_text(self, badge: str) -> str:
+    def _playback_badge_text(self, badge: str, report: dict | None = None) -> str:
         if badge == "green":
             return "Ready for playback"
         if badge == "yellow":
-            return "Check archive"
+            summary_msg = ""
+            if isinstance(report, dict):
+                summary_msg = str(report.get("summary_message") or "").strip()
+            return f"Check archive: {summary_msg}" if summary_msg else "Check archive"
+
+        # Red badge — identify which streams have issues.
+        if isinstance(report, dict):
+            stream_reports = report.get("stream_reports")
+            if isinstance(stream_reports, dict):
+                bad_streams = sorted(
+                    name for name, sr in stream_reports.items()
+                    if isinstance(sr, dict) and sr.get("status") in ("mismatch", "missing")
+                )
+                if bad_streams:
+                    return f"Archive mismatch: {', '.join(bad_streams)}"
+            summary_msg = str(report.get("summary_message") or "").strip()
+            if summary_msg:
+                return f"Archive mismatch: {summary_msg}"
         return "Archive mismatch"
 
     def _maybe_refresh_checks(self) -> None:
@@ -1131,7 +1148,7 @@ class ChecklistWindow(QDialog):
             )
 
         badge = str(report.get("badge") or "red")
-        badge_text = self._playback_badge_text(badge)
+        badge_text = self._playback_badge_text(badge, report)
 
         if badge == "green":
             fg, bg = "#4CAF50", "#16301b"
