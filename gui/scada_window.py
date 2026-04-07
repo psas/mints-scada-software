@@ -657,6 +657,12 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
 
     def closeEvent(self, event) -> None:
         logger.info("[SCADA] ScadaWindow closing")
+
+        if getattr(self, "_finalization_bypass", False):
+            self._trigger_application_shutdown()
+            event.accept()
+            return
+
         if self.playback_mode:
             self._trigger_application_shutdown()
             event.accept()
@@ -688,21 +694,21 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             event.accept()
             return
 
-        box = QMessageBox(self)
-        box.setWindowTitle("Saving In Progress")
-        box.setIcon(QMessageBox.Warning)
-        box.setText(
-            "Saving is in progress. Please wait patiently.\n\n"
-            "If you click Terminate Anyway, it will terminate the saving process and crash the test."
+        from gui.finalization_guard import (
+            FinalizationWaitDialog,
+            RESULT_COMPLETED,
+            RESULT_FORCE_CLOSE,
+            start_finalization_auto_close_timer,
         )
-        wait_btn = box.addButton("Wait", QMessageBox.RejectRole)
-        terminate_btn = box.addButton("Terminate Anyway", QMessageBox.DestructiveRole)
-        box.setDefaultButton(wait_btn)
-        box.exec_()
-        if box.clickedButton() is terminate_btn:
+
+        dialog = FinalizationWaitDialog(self, self._complete_json_exists)
+        dialog.exec_()
+
+        if dialog.result_code in (RESULT_COMPLETED, RESULT_FORCE_CLOSE):
             self._trigger_application_shutdown()
             event.accept()
         else:
+            start_finalization_auto_close_timer(self, self._complete_json_exists)
             event.ignore()
 
     def _trigger_application_shutdown(self) -> None:

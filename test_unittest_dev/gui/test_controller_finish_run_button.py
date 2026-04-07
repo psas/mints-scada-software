@@ -24,13 +24,16 @@ controller_module = import_module_or_skip("gui.controller_window")
 ControllerWindow = controller_module.ControllerWindow
 
 
-def _make_snapshot(*, is_running: bool, consumed: bool = False) -> dict:
+def _make_snapshot(*, is_running: bool, consumed: bool = False, archive_complete: bool | None = None) -> dict:
     """Minimal backend state snapshot with the given run state."""
+    if archive_complete is None:
+        archive_complete = consumed and not is_running
     return {
         "run": {
             "active_run_id": "run_001" if is_running else None,
             "is_running": is_running,
             "recording_session_consumed": consumed,
+            "archive_complete": archive_complete,
             "status": "running" if is_running else ("completed" if consumed else "idle"),
         },
         "recording_clock": {

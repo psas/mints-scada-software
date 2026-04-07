@@ -2358,6 +2358,34 @@ class ControllerWindow(QMainWindow):
         self.set_stages("Prev", "Current", "Next")
 
     def closeEvent(self, event):
+        if not self.playback_mode and not getattr(self, "_finalization_bypass", False):
+            snapshot = getattr(self, "_last_backend_snapshot", None)
+            run = snapshot.get("run", {}) if isinstance(snapshot, dict) else {}
+            consumed = run.get("recording_session_consumed", False)
+            archive_complete = run.get("archive_complete", False)
+            is_running = run.get("is_running", False)
+
+            if consumed and not archive_complete and not is_running:
+                from gui.finalization_guard import (
+                    FinalizationWaitDialog,
+                    RESULT_COMPLETED,
+                    RESULT_FORCE_CLOSE,
+                    start_finalization_auto_close_timer,
+                )
+
+                def _check() -> bool:
+                    s = getattr(self, "_last_backend_snapshot", None)
+                    r = s.get("run", {}) if isinstance(s, dict) else {}
+                    return bool(r.get("archive_complete"))
+
+                dialog = FinalizationWaitDialog(self, _check)
+                dialog.exec_()
+
+                if dialog.result_code not in (RESULT_COMPLETED, RESULT_FORCE_CLOSE):
+                    start_finalization_auto_close_timer(self, _check)
+                    event.ignore()
+                    return
+
         poller = getattr(self, "live_telemetry_poller", None)
         if poller is not None:
             poller.close()
@@ -2964,6 +2992,7 @@ class ControllerWindow(QMainWindow):
     def apply_backend_state_snapshot(self, snapshot: dict):
         if not isinstance(snapshot, dict):
             return
+        self._last_backend_snapshot = dict(snapshot)
 
         provider = getattr(self, "graph_provider", None)
         if provider is not None and not self.playback_mode:

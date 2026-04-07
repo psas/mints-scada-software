@@ -154,6 +154,7 @@ class StateStore:
             self._state.run.active_run_id = run_id
             self._state.run.is_running = False
             self._state.run.status = "completed"
+            self._state.run.archive_complete = True
             self._state.run.last_finished_wall_time = finished_wall_time
             self._state.run.last_finish_reason = reason
 
