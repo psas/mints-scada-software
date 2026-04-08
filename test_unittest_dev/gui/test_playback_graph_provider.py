@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from gui.graph_data import GraphChannelDescriptor, GraphSample
 from gui.playback_graph_provider import PlaybackGraphDataProvider
 
 
@@ -84,3 +85,104 @@ def test_playback_provider_reads_rebuild_artifacts(tmp_path: Path):
     samples = provider.get_samples(channel_keys=["valve-1"], start_ts=0.0, end_ts=10.0)
     assert len(samples) == 1
     assert samples[0].value == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Playback cursor tests
+# ---------------------------------------------------------------------------
+
+def _make_provider_with_samples() -> PlaybackGraphDataProvider:
+    """Build a provider with samples at t=1, 3, 5, 7, 9 for channel 'ch'."""
+    provider = PlaybackGraphDataProvider()
+    provider.register_channel(GraphChannelDescriptor(
+        channel_key="ch", display_name="Channel", unit="V", source="test",
+    ))
+    provider.ingest_samples([
+        GraphSample(timestamp=float(t), channel_key="ch", value=float(t * 10), source="test")
+        for t in (1, 3, 5, 7, 9)
+    ])
+    return provider
+
+
+def test_cursor_default_is_none():
+    provider = PlaybackGraphDataProvider()
+    assert provider.playback_cursor is None
+
+
+def test_cursor_clips_get_samples():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(5.0)
+
+    samples = provider.get_samples(channel_keys=["ch"])
+    timestamps = [s.timestamp for s in samples]
+    assert timestamps == [1.0, 3.0, 5.0]
+
+
+def test_cursor_clips_even_when_end_ts_is_larger():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(5.0)
+
+    samples = provider.get_samples(channel_keys=["ch"], start_ts=0.0, end_ts=100.0)
+    timestamps = [s.timestamp for s in samples]
+    assert timestamps == [1.0, 3.0, 5.0]
+
+
+def test_cursor_none_returns_all():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(None)
+
+    samples = provider.get_samples(channel_keys=["ch"])
+    assert len(samples) == 5
+
+
+def test_cursor_advance_reveals_more_data():
+    provider = _make_provider_with_samples()
+
+    provider.set_playback_cursor(3.0)
+    assert len(provider.get_samples(channel_keys=["ch"])) == 2
+
+    provider.set_playback_cursor(7.0)
+    assert len(provider.get_samples(channel_keys=["ch"])) == 4
+
+
+def test_cursor_seek_backward_hides_future_data():
+    provider = _make_provider_with_samples()
+
+    provider.set_playback_cursor(9.0)
+    assert len(provider.get_samples(channel_keys=["ch"])) == 5
+
+    provider.set_playback_cursor(3.0)
+    samples = provider.get_samples(channel_keys=["ch"])
+    timestamps = [s.timestamp for s in samples]
+    assert timestamps == [1.0, 3.0]
+
+
+def test_cursor_zero_returns_no_samples():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(0.0)
+
+    samples = provider.get_samples(channel_keys=["ch"])
+    assert samples == []
+
+
+def test_cursor_does_not_affect_explicit_end_ts_when_smaller():
+    """If caller passes end_ts < cursor, the caller's bound wins."""
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(9.0)
+
+    samples = provider.get_samples(channel_keys=["ch"], end_ts=3.0)
+    timestamps = [s.timestamp for s in samples]
+    assert timestamps == [1.0, 3.0]
+
+
+def test_cursor_reset_on_reset_run():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(5.0)
+    provider.reset_run()
+    assert provider.playback_cursor is None
+
+
+def test_cursor_clamps_negative_to_zero():
+    provider = _make_provider_with_samples()
+    provider.set_playback_cursor(-10.0)
+    assert provider.playback_cursor == 0.0

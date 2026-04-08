@@ -3217,6 +3217,9 @@ class ControllerWindow(QMainWindow):
             return
         start_ts, end_ts = self._playback_graph_window_bounds()
         setter(start_ts=start_ts, end_ts=end_ts)
+        cursor_setter = getattr(provider, "set_playback_cursor", None)
+        if callable(cursor_setter):
+            cursor_setter(end_ts)
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])

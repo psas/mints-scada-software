@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from .graph_data import GraphChannelDescriptor, GraphSample
 from .graph_provider import InMemoryGraphDataProvider
@@ -43,6 +43,7 @@ class PlaybackGraphDataProvider(InMemoryGraphDataProvider):
         self._run_id: str | None = None
         self._playback_source: str = "native"
         self._loaded = False
+        self._playback_cursor: float | None = None
 
     @property
     def loaded(self) -> bool:
@@ -77,6 +78,42 @@ class PlaybackGraphDataProvider(InMemoryGraphDataProvider):
         self._loaded = True
         return self.ingest_samples(samples)
 
+    @property
+    def playback_cursor(self) -> float | None:
+        """Current playback position in run-relative seconds.
+
+        When set, ``get_samples`` will never return samples with a
+        timestamp beyond this value, regardless of the caller-supplied
+        ``end_ts``.  This ensures the graph cannot show data from
+        "the future" relative to the current playback position.
+        """
+        return self._playback_cursor
+
+    def set_playback_cursor(self, seconds: float | None) -> None:
+        """Set the playback cursor (run-relative seconds).
+
+        Pass *None* to remove the ceiling (e.g. when leaving playback).
+        """
+        self._playback_cursor = None if seconds is None else max(0.0, float(seconds))
+
+    def get_samples(
+        self,
+        *,
+        channel_keys: Sequence[str] | None = None,
+        start_ts: float | None = None,
+        end_ts: float | None = None,
+    ) -> list[GraphSample]:
+        if self._playback_cursor is not None:
+            if end_ts is None:
+                end_ts = self._playback_cursor
+            else:
+                end_ts = min(float(end_ts), self._playback_cursor)
+        return super().get_samples(
+            channel_keys=channel_keys,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+
     def get_channel_descriptors(self) -> list[GraphChannelDescriptor]:
         return super().get_channel_descriptors()
 
@@ -87,6 +124,7 @@ class PlaybackGraphDataProvider(InMemoryGraphDataProvider):
         self._run_id = None
         self._playback_source = "native"
         self._loaded = False
+        self._playback_cursor = None
 
     def _register_snapshot_channels(self, snapshots_dir: Path) -> None:
         if not snapshots_dir.is_dir():
