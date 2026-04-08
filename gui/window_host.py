@@ -1082,10 +1082,15 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         start_dt = getattr(window, "playback_start_dt", None)
 
     seek_time = max(0.0, float(seek_time))
-    try:
-        setattr(window, "playback_time", seek_time)
-    except Exception:
-        pass
+
+    # Legacy mode: set position early so intermediate reads get the target value.
+    # With a manager, psm.update_after_seek() handles this authoritatively later
+    # and _apply_exact_playback_seek_state fans out to UI consumers.
+    if psm is None:
+        try:
+            setattr(window, "playback_time", seek_time)
+        except Exception:
+            pass
 
     seek_dt = None
     if isinstance(start_dt, datetime):
@@ -1184,10 +1189,6 @@ def _safe_get_timeline(window: Any):
 
 def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
     seek_time = max(0.0, float(seek_time))
-    try:
-        setattr(window, "playback_time", seek_time)
-    except Exception:
-        pass
 
     def _retime_target(target: Any) -> None:
         if target is None:
@@ -1202,20 +1203,25 @@ def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
         except Exception:
             pass
 
-        timeline = _safe_get_timeline(target)
-        if timeline is not None:
-            setter = getattr(timeline, "set_current_time", None)
-            if callable(setter):
-                setter(seek_time)
-
-        console = getattr(target, "console", None)
-        setter = getattr(console, "set_playback_time", None)
-        if callable(setter):
-            setter(seek_time)
-
+        # Prefer set_playback_time as the single coordinated update point.
+        # It handles timeline, console, mission_time, aux_clock, and graph sync
+        # in one call — calling those individually here would duplicate the work.
         setter = getattr(target, "set_playback_time", None)
         if callable(setter):
             setter(seek_time)
+            return
+
+        # Fallback for targets without set_playback_time (e.g. ScadaWindow).
+        timeline = _safe_get_timeline(target)
+        if timeline is not None:
+            time_setter = getattr(timeline, "set_current_time", None)
+            if callable(time_setter):
+                time_setter(seek_time)
+
+        console = getattr(target, "console", None)
+        console_setter = getattr(console, "set_playback_time", None)
+        if callable(console_setter):
+            console_setter(seek_time)
 
     _retime_target(window)
     for child_name in ("controller", "scada", "script"):

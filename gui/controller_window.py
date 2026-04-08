@@ -3045,13 +3045,23 @@ class ControllerWindow(QMainWindow):
                 self.playback_duration_seconds = max(0.0, float(total_duration_seconds))
                 self.timeline.set_total_duration(self.playback_duration_seconds)
 
-            position_seconds = playback_clock.get("position_seconds")
-            if isinstance(position_seconds, (int, float)):
-                self.playback_time = max(0.0, float(position_seconds))
+            # Skip position write when manager is active — the seek handler
+            # sets position authoritatively via psm.update_after_seek() and
+            # _apply_exact_playback_seek_state runs right after this method.
+            if self._playback_state_manager is None:
+                position_seconds = playback_clock.get("position_seconds")
+                if isinstance(position_seconds, (int, float)):
+                    self.playback_time = max(0.0, float(position_seconds))
 
-        self._update_time_displays()
-        if self.playback_mode:
-            self._sync_playback_graph_provider_window()
+        # With the manager, seek/advance handlers drive UI sync through
+        # _apply_exact_playback_seek_state → set_playback_time.  Calling
+        # _update_time_displays and graph sync here would duplicate that work.
+        if self._playback_state_manager is not None and self.playback_mode:
+            pass
+        else:
+            self._update_time_displays()
+            if self.playback_mode:
+                self._sync_playback_graph_provider_window()
         self._sync_recording_buttons(snapshot)
 
         scripter = getattr(self, "scripter", None)
@@ -3176,22 +3186,32 @@ class ControllerWindow(QMainWindow):
                 mission_seconds = float(backend_seconds)
 
         if self.playback_mode:
-            playback_seconds = self.playback_time
-            if isinstance(self._backend_playback_clock, dict):
-                backend_position = self._backend_playback_clock.get("position_seconds")
-                if isinstance(backend_position, (int, float)):
-                    playback_seconds = max(0.0, float(backend_position))
-                    self.playback_time = playback_seconds
+            if self._playback_state_manager is not None:
+                # Manager-driven playback: seek/advance handlers push all UI
+                # updates via set_playback_time.  The display timer only needs
+                # to keep the wall clock and aux clock fresh — touching
+                # timeline/console/graph here would duplicate that work and
+                # risk overwriting the manager's authoritative position from
+                # stale _backend_playback_clock data.
+                pass
+            else:
+                # Legacy path (no manager): display timer drives all updates.
+                playback_seconds = self.playback_time
+                if isinstance(self._backend_playback_clock, dict):
+                    backend_position = self._backend_playback_clock.get("position_seconds")
+                    if isinstance(backend_position, (int, float)):
+                        playback_seconds = max(0.0, float(backend_position))
+                        self.playback_time = playback_seconds
 
-                backend_total = self._backend_playback_clock.get("total_duration_seconds")
-                if isinstance(backend_total, (int, float)):
-                    self.playback_duration_seconds = max(0.0, float(backend_total))
-                    self.timeline.set_total_duration(self.playback_duration_seconds)
+                    backend_total = self._backend_playback_clock.get("total_duration_seconds")
+                    if isinstance(backend_total, (int, float)):
+                        self.playback_duration_seconds = max(0.0, float(backend_total))
+                        self.timeline.set_total_duration(self.playback_duration_seconds)
 
-            self._update_mission_time_label(playback_seconds)
-            self.timeline.set_current_time(playback_seconds)
-            self.console.set_playback_time(playback_seconds)
-            self._sync_playback_graph_provider_window()
+                self._update_mission_time_label(playback_seconds)
+                self.timeline.set_current_time(playback_seconds)
+                self.console.set_playback_time(playback_seconds)
+                self._sync_playback_graph_provider_window()
         elif mission_seconds is not None:
             self._update_mission_time_label(mission_seconds)
             self.timeline.set_current_time(max(0.0, mission_seconds))
@@ -3309,15 +3329,15 @@ class ControllerWindow(QMainWindow):
                 advance_handler(previous_time, new_time)
                 return
 
+            # No advance handler — fall back to seek handler (full state
+            # reconstruction) or set_playback_time (UI-only).  Only one
+            # path runs to avoid duplicate widget updates.
             psm.set_position(new_time)
-            self.timeline.set_current_time(new_time)
-            self._update_mission_time_label(new_time)
-            self.console.set_playback_time(new_time)
-            self._refresh_aux_clock_display()
-
             handler = getattr(self.manager, "playback_seek_handler", None)
             if callable(handler):
                 handler(new_time)
+            else:
+                self.set_playback_time(new_time)
             return
 
         # Legacy fallback (no manager)

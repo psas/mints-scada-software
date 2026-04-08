@@ -1,18 +1,20 @@
 """Tests for PlaybackStateManager - the single authoritative playback state owner.
 
 Covers: context loading, position tracking, play/pause/toggle engine,
-speed control, advance time computation, wall-time utility, and edge cases.
+speed control, advance time computation, wall-time utility, edge cases,
+and single-update-path semantics for seek/advance fan-out.
 """
 from __future__ import annotations
 
 import time
 import unittest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock, call
 
 from test_unittest_dev.helpers.repo_test_tools import import_module_or_skip
 
 psm_mod = import_module_or_skip("gui.playback_state_manager")
+window_host = import_module_or_skip("gui.window_host")
 PlaybackRunContext = psm_mod.PlaybackRunContext
 PlaybackStateManager = psm_mod.PlaybackStateManager
 
@@ -338,3 +340,102 @@ class TestContextPropertyAccess(unittest.TestCase):
         self.assertEqual(len(mgr.event_time_keys), 5)
         self.assertEqual(len(mgr.merged_events), 5)
         self.assertEqual(mgr.run_id, "test-run-001")
+
+
+# ---------------------------------------------------------------------------
+# Single-update-path tests: verify _apply_exact_playback_seek_state uses
+# set_playback_time as the single coordinated update entry point and does
+# NOT separately call timeline/console on targets that have it.
+# ---------------------------------------------------------------------------
+
+_apply = window_host._apply_exact_playback_seek_state
+
+
+class _MockTarget:
+    """Simulates a window target with controllable presence of update methods."""
+
+    def __init__(self, *, has_set_playback_time=False):
+        self._backend_playback_clock = {"position_seconds": 0.0}
+        self._timeline_calls: list[float] = []
+        self._console_calls: list[float] = []
+        self._set_pt_calls: list[float] = []
+
+        class _Timeline:
+            def __init__(inner_self):
+                inner_self.calls = self._timeline_calls
+            def set_current_time(inner_self, t):
+                inner_self.calls.append(t)
+
+        class _Console:
+            def __init__(inner_self):
+                inner_self.calls = self._console_calls
+            def set_playback_time(inner_self, t):
+                inner_self.calls.append(t)
+
+        self.timeline = _Timeline()
+        self.console = _Console()
+
+        if has_set_playback_time:
+            def _spt(seek_time):
+                self._set_pt_calls.append(seek_time)
+            self.set_playback_time = _spt
+
+
+class TestApplyExactPlaybackSeekState(unittest.TestCase):
+    """Verify _apply_exact_playback_seek_state uses one update path per target."""
+
+    def test_target_with_set_playback_time_gets_single_call(self):
+        """When a target has set_playback_time, only that method should be
+        called — timeline and console should NOT be called separately."""
+        target = _MockTarget(has_set_playback_time=True)
+
+        # Build a minimal facade that exposes the target as its controller
+        facade = type("Facade", (), {
+            "controller": target,
+            "scada": None,
+            "script": None,
+            "_backend_playback_clock": None,
+        })()
+
+        _apply(facade, 42.5)
+
+        # set_playback_time should be called exactly once on the target
+        self.assertEqual(target._set_pt_calls, [42.5])
+        # timeline and console should NOT have been called directly by _retime_target
+        self.assertEqual(target._timeline_calls, [])
+        self.assertEqual(target._console_calls, [])
+
+    def test_target_without_set_playback_time_gets_individual_calls(self):
+        """When a target lacks set_playback_time (e.g. ScadaWindow), fall back
+        to individual timeline + console calls."""
+        target = _MockTarget(has_set_playback_time=False)
+
+        facade = type("Facade", (), {
+            "controller": None,
+            "scada": target,
+            "script": None,
+            "_backend_playback_clock": None,
+        })()
+
+        _apply(facade, 10.0)
+
+        self.assertEqual(target._set_pt_calls, [])
+        self.assertEqual(target._timeline_calls, [10.0])
+        self.assertEqual(target._console_calls, [10.0])
+
+    def test_backend_playback_clock_updated_on_target(self):
+        """_backend_playback_clock.position_seconds should be updated
+        regardless of which update path is used."""
+        target = _MockTarget(has_set_playback_time=True)
+        facade = type("Facade", (), {
+            "controller": target,
+            "scada": None,
+            "script": None,
+            "_backend_playback_clock": None,
+        })()
+
+        _apply(facade, 25.0)
+
+        self.assertEqual(
+            target._backend_playback_clock["position_seconds"], 25.0
+        )
