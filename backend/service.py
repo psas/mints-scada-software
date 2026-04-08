@@ -2055,15 +2055,25 @@ class BackendService:
                 "telemetry_in",
                 structured_event,
             )
-            try:
-                self.run_controller.maybe_write_periodic_snapshot(
-                    snapshot=self.state_store.get_snapshot(),
-                    event_recorded_at=structured_event.get("recorded_at"),
-                )
-            except Exception:
-                log.exception("Failed to write periodic playback snapshot")
+            self._maybe_write_periodic_snapshot(structured_event)
 
         return structured_event
+
+    def _maybe_write_periodic_snapshot(self, structured_event: Mapping[str, Any]) -> None:
+        """Attempt a periodic playback snapshot after recording a structured event.
+
+        Safe to call from any structured-event recording path (telemetry,
+        operator_action, command_out).  RunController.maybe_write_periodic_snapshot
+        enforces the 5-second minimum interval, so multiple call sites do not
+        cause snapshot spam.
+        """
+        try:
+            self.run_controller.maybe_write_periodic_snapshot(
+                snapshot=self.state_store.get_snapshot(),
+                event_recorded_at=structured_event.get("recorded_at"),
+            )
+        except Exception:
+            log.exception("Failed to write periodic playback snapshot")
 
     def _record_operator_action_if_running(self, action_event: Mapping[str, Any]) -> None:
         if self.history_manager.is_running:
@@ -2077,6 +2087,7 @@ class BackendService:
                 "operator_action",
                 structured_event,
             )
+            self._maybe_write_periodic_snapshot(structured_event)
 
     def _record_command_out_if_running(
         self,
@@ -2098,6 +2109,7 @@ class BackendService:
             "command_out",
             structured_command_event,
         )
+        self._maybe_write_periodic_snapshot(structured_command_event)
 
     def _build_operator_action_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         action = self._require_non_empty_string(payload, "action")
