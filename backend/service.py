@@ -157,6 +157,8 @@ class BackendService:
         self._lock = threading.RLock()
         self._connected_clients: set[str] = set()
         self._client_sessions_by_connection_id: dict[str, dict[str, Any]] = {}
+        self._client_hello_received: set[str] = set()
+        self._client_first_message_type: dict[str, str | None] = {}
         self._live_startup_state_applied = False
 
         self.supported_messages = [
@@ -234,6 +236,7 @@ class BackendService:
     def on_client_connected(self, client_id: str) -> None:
         with self._lock:
             self._connected_clients.add(client_id)
+            self._client_first_message_type[client_id] = None
             connected_count = len(self._connected_clients)
             self.state_store.set_connected_clients(connected_count)
 
@@ -249,9 +252,27 @@ class BackendService:
         with self._lock:
             self._connected_clients.discard(client_id)
             session = self._client_sessions_by_connection_id.pop(client_id, None)
+            had_hello = client_id in self._client_hello_received
+            self._client_hello_received.discard(client_id)
+            first_message = self._client_first_message_type.pop(client_id, None)
             connected_count = len(self._connected_clients)
             self.state_store.set_connected_clients(connected_count)
             self.state_store.remove_gui_client_session(connection_id=client_id)
+
+        if not had_hello:
+            # Connection disconnected without ever sending hello.
+            # This is typically a supervisor probe or other short-lived
+            # diagnostic connection — log it distinctly for debugging.
+            self.health.record_system_event(
+                "gui_client_disconnected_without_hello",
+                severity="debug",
+                connection_id=client_id,
+                connected_clients=connected_count,
+                first_message_type=first_message,
+                had_session=session is not None,
+            )
+            self.health_monitor.sample_once()
+            return
 
         disconnect_payload: dict[str, Any] = {
             "connection_id": client_id,
@@ -278,7 +299,13 @@ class BackendService:
         self.health_monitor.sample_once()
 
     def handle_message(self, client_id: str, message: IPCMessage) -> Iterable[IPCMessage]:
+        with self._lock:
+            if self._client_first_message_type.get(client_id) is None:
+                self._client_first_message_type[client_id] = message.type
+
         if message.type == "hello":
+            with self._lock:
+                self._client_hello_received.add(client_id)
             client_session = self._register_client_hello(client_id, message.payload)
 
             self.health.record_system_event(

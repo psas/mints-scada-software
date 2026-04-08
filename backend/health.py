@@ -354,7 +354,7 @@ class BackendHealthMonitor:
                 if item.get("window_role") not in (None, "")
             }
         )
-        expected_roles = ["left", "right"] if run_is_active and run_mode == "live" else []
+        expected_roles = ["live_controller", "live_scada"] if run_is_active and run_mode == "live" else []
         missing_roles = [role for role in expected_roles if role not in window_roles]
 
         warnings: list[str] = []

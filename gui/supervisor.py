@@ -157,37 +157,123 @@ def _spawn_window_process(
     return process
 
 
-def _request_backend_state_snapshot(backend_socket: str) -> dict[str, Any] | None:
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1.5)
-            sock.connect(backend_socket)
-            request = {"type": "request_full_state", "payload": {}}
-            wire = json.dumps(request, ensure_ascii=False, sort_keys=False) + "\n"
-            sock.sendall(wire.encode("utf-8"))
-            buffer = ""
-            deadline = time.monotonic() + 1.5
-            while time.monotonic() < deadline:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
+class _BackendProbe:
+    """Persistent socket probe for supervisor backend state polling.
+
+    Keeps a single long-lived connection to the backend so that repeated
+    state queries do not generate connect/disconnect noise in the event
+    stream.  Sends a hello on first connect so the backend can identify
+    this connection as a supervisor probe.
+    """
+
+    _DRAIN_TIMEOUT_S = 2.0
+    _READ_TIMEOUT_S = 3.0
+    _MAX_LINES = 20
+
+    def __init__(self) -> None:
+        self._sock: socket.socket | None = None
+        self._reader: Any = None
+        self._writer: Any = None
+
+    def query_state(self, backend_socket: str) -> dict[str, Any] | None:
+        try:
+            self._ensure_connected(backend_socket)
+            return self._send_state_request()
+        except Exception as exc:
+            log.debug("GuiSupervisor backend state query failed: %s", exc)
+            self.close()
+            return None
+
+    def close(self) -> None:
+        for obj in (self._writer, self._reader, self._sock):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
+        self._sock = None
+        self._reader = None
+        self._writer = None
+
+    def _read_until(self, target_type: str, *, timeout_s: float) -> dict[str, Any] | None:
+        """Read lines until a message of *target_type* arrives or timeout.
+
+        Other message types are silently skipped so the probe is not
+        sensitive to the number or order of non-target messages the
+        backend sends (hello_ack, backend_status, structured_event, etc.).
+        """
+        reader = self._reader
+        sock = self._sock
+        if reader is None or sock is None:
+            return None
+
+        prev_timeout = sock.gettimeout()
+        sock.settimeout(timeout_s)
+        try:
+            for _ in range(self._MAX_LINES):
+                line = reader.readline()
+                if not line:
+                    raise ConnectionError("Backend closed connection")
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     decoded = json.loads(line)
-                    if not isinstance(decoded, dict):
-                        continue
-                    message_type = decoded.get("type")
+                except Exception:
+                    continue
+                if isinstance(decoded, dict) and decoded.get("type") == target_type:
                     payload = decoded.get("payload", {})
-                    if message_type == "state_snapshot" and isinstance(payload, dict):
-                        return payload
-    except Exception as exc:
-        log.debug("GuiSupervisor backend state query failed: %s", exc)
+                    return payload if isinstance(payload, dict) else {}
+        except socket.timeout:
+            log.debug("GuiSupervisor _read_until(%s) timed out", target_type)
+            return None
+        finally:
+            sock.settimeout(prev_timeout)
         return None
-    return None
+
+    def _ensure_connected(self, backend_socket: str) -> None:
+        if self._sock is not None:
+            return
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self._READ_TIMEOUT_S)
+        sock.connect(backend_socket)
+        reader = sock.makefile("r", encoding="utf-8")
+        writer = sock.makefile("w", encoding="utf-8")
+
+        self._sock = sock
+        self._reader = reader
+        self._writer = writer
+
+        # Send hello so the backend registers this as a known client
+        # rather than an anonymous probe.
+        hello = {
+            "type": "hello",
+            "payload": {
+                "client_name": "supervisor-probe",
+                "logical_client_id": f"gui:supervisor:probe:{os.getpid()}",
+                "window_role": "supervisor_probe",
+                "mode": "live",
+                "window_kind": "supervisor",
+                "pid": os.getpid(),
+            },
+        }
+        writer.write(json.dumps(hello, ensure_ascii=False) + "\n")
+        writer.flush()
+
+        # Drain the hello handshake responses (hello_ack, backend_status,
+        # possibly others).  We don't need the content — just ensure the
+        # read buffer is empty before the first real query.
+        self._read_until("hello_ack", timeout_s=self._DRAIN_TIMEOUT_S)
+
+    def _send_state_request(self) -> dict[str, Any] | None:
+        writer = self._writer
+        if writer is None:
+            return None
+        request = json.dumps({"type": "request_full_state", "payload": {}}, ensure_ascii=False) + "\n"
+        writer.write(request)
+        writer.flush()
+        return self._read_until("state_snapshot", timeout_s=self._READ_TIMEOUT_S)
 
 
 def _extract_recording_active_from_snapshot(snapshot: dict[str, Any] | None) -> bool | None:
@@ -261,6 +347,7 @@ def _monitor_session(
 ) -> int:
     last_recording_state = False
     last_backend_poll_monotonic = 0.0
+    probe = _BackendProbe()
 
     def refresh_recording_state(force: bool = False) -> bool:
         nonlocal last_recording_state, last_backend_poll_monotonic
@@ -268,7 +355,7 @@ def _monitor_session(
         if not force and now - last_backend_poll_monotonic < _BACKEND_STATE_POLL_S:
             return last_recording_state
 
-        snapshot = _request_backend_state_snapshot(backend_socket)
+        snapshot = probe.query_state(backend_socket)
         extracted = _extract_recording_active_from_snapshot(snapshot)
         if extracted is not None and extracted != last_recording_state:
             log.info(
@@ -326,6 +413,8 @@ def _monitor_session(
         log.info("GuiSupervisor interrupted; terminating child GUI windows")
         _shutdown_remaining(child_map)
         return 130
+    finally:
+        probe.close()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
