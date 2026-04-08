@@ -1165,6 +1165,12 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
             handler(dict(event))
 
     _apply_exact_playback_seek_state(window, seek_time)
+    _update_reconstructed_playback_state(
+        window,
+        seek_time,
+        tail_event_count=len(tail_events),
+        restored_from_snapshot=restored_from_snapshot,
+    )
 
     if selected_snapshot is not None:
         log.info(
@@ -1179,6 +1185,140 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
             seek_time,
             len(tail_events),
         )
+
+
+def _resolve_applied_snapshot_state(window: Any) -> dict[str, Any]:
+    """Return the unwrapped state dict that was actually applied to the UI.
+
+    Prefers the controller's ``_last_backend_snapshot`` because that is the
+    unwrapped, clock-corrected dict that ``apply_backend_state_snapshot``
+    received and that the controller's display helpers read from.
+
+    Falls back to re-parsing ``playback_active_snapshot`` (the raw snapshot
+    payload on the facade) only when no controller is present (e.g. in a
+    standalone SCADA window process).
+    """
+    # Primary: controller's post-apply container
+    controller = getattr(window, "controller", None)
+    if controller is not None:
+        ctrl_snapshot = getattr(controller, "_last_backend_snapshot", None)
+        if isinstance(ctrl_snapshot, dict):
+            return ctrl_snapshot
+
+    # Fallback: facade's raw snapshot payload (needs state-key unwrapping)
+    snapshot_raw = getattr(window, "playback_active_snapshot", None) or {}
+    snapshot_state = snapshot_raw.get("state", snapshot_raw)
+    if isinstance(snapshot_state, dict):
+        return snapshot_state
+    return {}
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _build_reconstructed_playback_state(
+    window: Any,
+    seek_time: float,
+    *,
+    tail_event_count: int = 0,
+    restored_from_snapshot: bool = False,
+) -> dict[str, Any]:
+    """Build a single dict representing playback-visible state at *seek_time*.
+
+    Reads from the controller's post-apply state containers when available
+    (these are the unwrapped, clock-corrected values that the controller
+    actually uses for its displays).  Falls back to parsing the facade's
+    raw ``playback_active_snapshot`` for non-controller window processes.
+
+    This does NOT re-derive state -- it reads from sources that have already
+    been updated by the seek/advance handler.
+    """
+    psm = getattr(window, "playback_state", None)
+
+    # -- position / clock (PSM is always authoritative) --
+    position = max(0.0, float(seek_time))
+    duration = psm.duration_seconds if psm else 0.0
+    wall_dt = psm.wall_time_for_position(position) if psm else None
+    wall_iso = wall_dt.isoformat() if wall_dt is not None else None
+    run_id = psm.run_id if psm else None
+
+    # -- post-apply state sections --
+    # _resolve_applied_snapshot_state prefers the controller's
+    # _last_backend_snapshot (unwrapped, clock-corrected) over
+    # the facade's raw playback_active_snapshot.
+    applied = _resolve_applied_snapshot_state(window)
+
+    # Prefer controller's individually-processed clock containers when
+    # they exist -- these are extracted by apply_backend_state_snapshot
+    # and are what the controller's display timer actually reads.
+    controller = getattr(window, "controller", None)
+
+    ctrl_mission = getattr(controller, "_backend_mission_clock", None) if controller else None
+    ctrl_recording = getattr(controller, "_backend_recording_clock", None) if controller else None
+
+    run_section = _safe_dict(applied.get("run"))
+    script_section = _safe_dict(applied.get("script_runner"))
+    alarms_section = _safe_dict(applied.get("alarms"))
+    mission_clock = _safe_dict(ctrl_mission) if ctrl_mission is not None else _safe_dict(applied.get("mission_clock"))
+    recording_clock = _safe_dict(ctrl_recording) if ctrl_recording is not None else _safe_dict(applied.get("recording_clock"))
+
+    # -- device count from catalog (already updated by snapshot apply) --
+    catalog = getattr(window, "backend_device_catalog", None)
+    device_count = len(catalog) if catalog is not None else 0
+
+    return {
+        # Position
+        "position_seconds": position,
+        "duration_seconds": duration,
+        "wall_time_iso": wall_iso,
+        "run_id": run_id,
+        # Seek metadata
+        "tail_event_count": tail_event_count,
+        "restored_from_snapshot": restored_from_snapshot,
+        # Run
+        "run_status": str(run_section.get("status") or "unknown"),
+        "run_mode": str(run_section.get("mode") or ""),
+        "run_is_running": bool(run_section.get("is_running")),
+        "test_name": str(run_section.get("test_name") or ""),
+        "operator": str(run_section.get("operator") or ""),
+        # Mission clock
+        "mission_clock_seconds": float(mission_clock["seconds"]) if isinstance(mission_clock.get("seconds"), (int, float)) else None,
+        "mission_clock_state": str(mission_clock.get("state") or ""),
+        # Recording
+        "recording_active": bool(recording_clock.get("active")),
+        "recording_elapsed_seconds": float(recording_clock["elapsed_seconds"]) if isinstance(recording_clock.get("elapsed_seconds"), (int, float)) else None,
+        # Script
+        "script_running": bool(script_section.get("is_running")),
+        "script_name": str(script_section.get("name") or ""),
+        "script_step_name": str(script_section.get("current_step_name") or ""),
+        "script_is_held": bool(script_section.get("is_held")),
+        # Alarms
+        "active_alarm_count": int(alarms_section.get("active_alarm_count") or 0),
+        "active_fault_count": int(alarms_section.get("active_fault_count") or 0),
+        # Devices
+        "device_count": device_count,
+    }
+
+
+def _update_reconstructed_playback_state(
+    window: Any,
+    seek_time: float,
+    *,
+    tail_event_count: int = 0,
+    restored_from_snapshot: bool = False,
+) -> None:
+    """Build and store the reconstructed state on the PlaybackStateManager."""
+    psm = getattr(window, "playback_state", None)
+    if psm is None:
+        return
+    state = _build_reconstructed_playback_state(
+        window,
+        seek_time,
+        tail_event_count=tail_event_count,
+        restored_from_snapshot=restored_from_snapshot,
+    )
+    psm.update_reconstructed_state(state)
 
 
 def _safe_get_timeline(window: Any):
@@ -1285,6 +1425,11 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
     setattr(window, "playback_last_applied_time", new_time)
     setattr(window, "playback_last_event_index", new_event_index)
     _apply_exact_playback_seek_state(window, new_time)
+    _update_reconstructed_playback_state(
+        window,
+        new_time,
+        tail_event_count=new_event_index - last_event_index,
+    )
 
 
 def _playback_sync_path(selected_test: str) -> Path:

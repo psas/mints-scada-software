@@ -11,8 +11,8 @@ lightweight fake window target (no Qt required).
 """
 from __future__ import annotations
 
-import json
 import unittest
+from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -93,9 +93,19 @@ class _FakeTarget:
 
     def handle_structured_event(self, event: dict[str, Any]) -> None:
         self.delivered_events.append(dict(event))
+        # Forward to controller child, mirroring WindowHostFacade behavior
+        if self.controller is not None:
+            handler = getattr(self.controller, "handle_structured_event", None)
+            if callable(handler):
+                handler(dict(event))
 
     def apply_backend_state_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.snapshot_applies.append(dict(snapshot))
+        # Forward to controller child, mirroring _apply_playback_state_snapshot
+        if self.controller is not None:
+            handler = getattr(self.controller, "apply_backend_state_snapshot", None)
+            if callable(handler):
+                handler(dict(snapshot))
 
     def handle_playback_seek_bootstrap(self, payload: dict[str, Any]) -> None:
         pass
@@ -560,3 +570,511 @@ class TestMixedStreamEquivalence(unittest.TestCase):
                 timestamps.append(ts_str)
         self.assertEqual(timestamps, sorted(timestamps),
                          "Events must be delivered in chronological order")
+
+
+# ===================================================================
+# Test: Reconstructed playback state is populated after seek/advance
+# ===================================================================
+
+_build_rs = window_host._build_reconstructed_playback_state
+_resolve_applied = window_host._resolve_applied_snapshot_state
+
+
+class _FakeController:
+    """Simulates a controller window with _last_backend_snapshot and clock containers.
+
+    Also implements the playback event state tracking from
+    ControllerWindow._apply_playback_event_state so that tail events
+    update the same state containers during test replay.
+    """
+    playback_mode = True
+
+    _PLAYBACK_RUN_START_TYPES = frozenset({"run_started", "run_archive_initialized"})
+    _PLAYBACK_RUN_FINISH_TYPES = frozenset({"run_finish_requested", "run_archive_finalizing"})
+    _PLAYBACK_SCRIPT_START_TYPES = frozenset({"script_started"})
+    _PLAYBACK_SCRIPT_STOP_TYPES = frozenset({"script_stopped", "script_finished"})
+    _PLAYBACK_SCRIPT_HOLD_TYPES = frozenset({"script_held"})
+    _PLAYBACK_SCRIPT_CONTINUE_TYPES = frozenset({"script_continued"})
+
+    def __init__(self, snapshot_state: dict[str, Any] | None = None) -> None:
+        self._last_backend_snapshot = deepcopy(snapshot_state) if snapshot_state else None
+        self._backend_mission_clock = None
+        self._backend_recording_clock = None
+
+        if isinstance(snapshot_state, dict):
+            mc = snapshot_state.get("mission_clock")
+            if isinstance(mc, dict):
+                self._backend_mission_clock = dict(mc)
+            rc = snapshot_state.get("recording_clock")
+            if isinstance(rc, dict):
+                self._backend_recording_clock = dict(rc)
+
+    def apply_backend_state_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self._last_backend_snapshot = deepcopy(snapshot)
+        mc = snapshot.get("mission_clock")
+        if isinstance(mc, dict):
+            self._backend_mission_clock = dict(mc)
+        rc = snapshot.get("recording_clock")
+        if isinstance(rc, dict):
+            self._backend_recording_clock = dict(rc)
+
+    def handle_structured_event(self, event: dict[str, Any]) -> None:
+        self._apply_playback_event_state(event)
+
+    def _apply_playback_event_state(self, payload: dict) -> None:
+        stream = str(payload.get("stream") or payload.get("event_kind") or "")
+        if stream != "system_event":
+            return
+        event_type = str(payload.get("event_type") or "").strip().lower()
+        if not event_type:
+            return
+        snapshot = self._last_backend_snapshot
+        if not isinstance(snapshot, dict):
+            return
+        if event_type in self._PLAYBACK_RUN_START_TYPES:
+            run = snapshot.get("run")
+            if isinstance(run, dict):
+                run["is_running"] = True
+                run["status"] = "running"
+        elif event_type in self._PLAYBACK_RUN_FINISH_TYPES:
+            run = snapshot.get("run")
+            if isinstance(run, dict):
+                run["is_running"] = False
+                run["status"] = "completed"
+        elif event_type in self._PLAYBACK_SCRIPT_START_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_running"] = True
+                sr["is_held"] = False
+                name = payload.get("name")
+                if isinstance(name, str) and name.strip():
+                    sr["name"] = name.strip()
+        elif event_type in self._PLAYBACK_SCRIPT_STOP_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_running"] = False
+                sr["is_held"] = False
+        elif event_type in self._PLAYBACK_SCRIPT_HOLD_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_held"] = True
+        elif event_type in self._PLAYBACK_SCRIPT_CONTINUE_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_held"] = False
+
+
+class TestResolveAppliedSnapshotState(unittest.TestCase):
+    """Verify _resolve_applied_snapshot_state prefers controller's container."""
+
+    def test_prefers_controller_last_backend_snapshot(self):
+        ctrl_state = {
+            "run": {"status": "running", "mode": "live"},
+            "script_runner": {"is_running": True, "name": "fire-test"},
+            "alarms": {"active_alarm_count": 2},
+        }
+        target = _FakeTarget(PlaybackStateManager())
+        target.controller = _FakeController(ctrl_state)
+
+        result = _resolve_applied(target)
+
+        self.assertEqual(result["run"]["status"], "running")
+        self.assertEqual(result["script_runner"]["name"], "fire-test")
+        self.assertEqual(result["alarms"]["active_alarm_count"], 2)
+
+    def test_falls_back_to_playback_active_snapshot_when_no_controller(self):
+        target = _FakeTarget(PlaybackStateManager())
+        target.controller = None
+        target.playback_active_snapshot = {
+            "state": {
+                "run": {"status": "completed"},
+            }
+        }
+
+        result = _resolve_applied(target)
+        self.assertEqual(result["run"]["status"], "completed")
+
+    def test_unwraps_state_key_in_fallback(self):
+        target = _FakeTarget(PlaybackStateManager())
+        target.controller = None
+        # Snapshot with state wrapper
+        target.playback_active_snapshot = {
+            "state": {"run": {"status": "from_wrapper"}},
+            "recorded_at": "2026-01-01T00:00:00Z",
+        }
+
+        result = _resolve_applied(target)
+        self.assertEqual(result["run"]["status"], "from_wrapper")
+
+    def test_fallback_without_state_key_uses_payload_directly(self):
+        target = _FakeTarget(PlaybackStateManager())
+        target.controller = None
+        # Snapshot without state wrapper (old-format snapshots)
+        target.playback_active_snapshot = {
+            "run": {"status": "direct_payload"},
+            "mission_clock": {"seconds": 42.0},
+        }
+
+        result = _resolve_applied(target)
+        self.assertEqual(result["run"]["status"], "direct_payload")
+
+
+class TestReconstructedStateReadsControllerContainers(unittest.TestCase):
+    """Verify _build_reconstructed_playback_state reads from controller
+    post-apply containers, not just the raw snapshot payload."""
+
+    def test_reads_run_status_from_controller_snapshot(self):
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = _FakeController({
+            "run": {"status": "running", "mode": "live", "test_name": "valve-test", "operator": "Eric"},
+        })
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertEqual(rs["run_status"], "running")
+        self.assertEqual(rs["run_mode"], "live")
+        self.assertEqual(rs["test_name"], "valve-test")
+        self.assertEqual(rs["operator"], "Eric")
+
+    def test_reads_script_from_controller_snapshot(self):
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = _FakeController({
+            "script_runner": {
+                "is_running": True,
+                "name": "static_fire",
+                "current_step_name": "ignite",
+                "is_held": False,
+            },
+        })
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertTrue(rs["script_running"])
+        self.assertEqual(rs["script_name"], "static_fire")
+        self.assertEqual(rs["script_step_name"], "ignite")
+        self.assertFalse(rs["script_is_held"])
+
+    def test_reads_alarms_from_controller_snapshot(self):
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = _FakeController({
+            "alarms": {"active_alarm_count": 3, "active_fault_count": 1},
+        })
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertEqual(rs["active_alarm_count"], 3)
+        self.assertEqual(rs["active_fault_count"], 1)
+
+    def test_reads_mission_clock_from_controller_container(self):
+        """Controller's _backend_mission_clock is preferred over the
+        snapshot dict's mission_clock section."""
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = _FakeController({
+            "mission_clock": {"seconds": 45.5, "state": "running"},
+        })
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertAlmostEqual(rs["mission_clock_seconds"], 45.5)
+        self.assertEqual(rs["mission_clock_state"], "running")
+
+    def test_reads_recording_clock_from_controller_container(self):
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = _FakeController({
+            "recording_clock": {"active": True, "elapsed_seconds": 120.0},
+        })
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertTrue(rs["recording_active"])
+        self.assertAlmostEqual(rs["recording_elapsed_seconds"], 120.0)
+
+    def test_no_controller_falls_back_to_snapshot_payload(self):
+        """When controller is None, builder falls back to facade's
+        playback_active_snapshot with state-key unwrapping."""
+        psm = PlaybackStateManager()
+        psm.load_context(_make_context(_standard_events(), duration=7.0))
+        target = _FakeTarget(psm)
+        target.controller = None
+        target.playback_active_snapshot = {
+            "state": {
+                "run": {"status": "completed", "test_name": "fallback-test"},
+                "script_runner": {"is_running": False},
+                "alarms": {"active_alarm_count": 0, "active_fault_count": 0},
+            },
+        }
+
+        rs = _build_rs(target, 3.0)
+
+        self.assertEqual(rs["run_status"], "completed")
+        self.assertEqual(rs["test_name"], "fallback-test")
+        self.assertFalse(rs["script_running"])
+
+
+class TestReconstructedStateAfterSeek(unittest.TestCase):
+    """After seek, psm.reconstructed_state must be a non-None dict
+    with position and reconstruction metadata."""
+
+    def test_seek_populates_reconstructed_state(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        self.assertIsNone(psm.reconstructed_state)
+        _handle_seek(target, 5.0)
+
+        rs = psm.reconstructed_state
+        self.assertIsNotNone(rs)
+        self.assertAlmostEqual(rs["position_seconds"], 5.0)
+        self.assertEqual(rs["duration_seconds"], 7.0)
+        self.assertEqual(rs["run_id"], "test-run")
+
+    def test_advance_populates_reconstructed_state(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        _handle_seek(target, 1.0)
+        _handle_advance(target, 1.0, 3.0)
+
+        rs = psm.reconstructed_state
+        self.assertIsNotNone(rs)
+        self.assertAlmostEqual(rs["position_seconds"], 3.0)
+
+    def test_seek_records_tail_event_count(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        _handle_seek(target, 6.0)
+
+        rs = psm.reconstructed_state
+        self.assertEqual(rs["tail_event_count"], 6)
+
+    def test_advance_records_incremental_event_count(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        _handle_seek(target, 2.0)
+        _handle_advance(target, 2.0, 4.0)
+
+        rs = psm.reconstructed_state
+        # T=3 and T=4 are the new events delivered in the advance step
+        self.assertEqual(rs["tail_event_count"], 2)
+
+    def test_reconstructed_state_has_expected_fields(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        _handle_seek(target, 3.0)
+
+        rs = psm.reconstructed_state
+        expected_keys = {
+            "position_seconds", "duration_seconds", "wall_time_iso", "run_id",
+            "tail_event_count", "restored_from_snapshot",
+            "run_status", "run_mode", "run_is_running", "test_name", "operator",
+            "mission_clock_seconds", "mission_clock_state",
+            "recording_active", "recording_elapsed_seconds",
+            "script_running", "script_name", "script_step_name", "script_is_held",
+            "active_alarm_count", "active_fault_count",
+            "device_count",
+        }
+        self.assertTrue(expected_keys.issubset(set(rs.keys())),
+                        f"Missing keys: {expected_keys - set(rs.keys())}")
+
+    def test_seek_backward_updates_reconstructed_state(self):
+        events = _standard_events()
+        ctx = _make_context(events, duration=7.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _FakeTarget(psm)
+
+        _handle_seek(target, 6.0)
+        self.assertAlmostEqual(psm.reconstructed_state["position_seconds"], 6.0)
+
+        _handle_seek(target, 2.0)
+        self.assertAlmostEqual(psm.reconstructed_state["position_seconds"], 2.0)
+
+
+# ===================================================================
+# Test: Tail replay updates controller state for reconstructed state
+# ===================================================================
+
+def _make_target_with_controller(
+    psm: PlaybackStateManager,
+    snapshot_state: dict[str, Any],
+) -> _FakeTarget:
+    """Build a _FakeTarget with a _FakeController wired as the controller child.
+
+    The facade dispatches apply_backend_state_snapshot and
+    handle_structured_event to the controller, so tail events during
+    seek/advance will update the controller's _last_backend_snapshot.
+    """
+    target = _FakeTarget(psm)
+    ctrl = _FakeController(snapshot_state)
+    target.controller = ctrl
+    return target
+
+
+def _state_changing_events() -> list[dict[str, Any]]:
+    """Events that include a run_archive_finalizing and script transitions."""
+    return [
+        _ev(1, stream="telemetry_in", device_id="PT-001", label="telem-1"),
+        _ev(2, stream="system_event", event_type="script_started",
+            name="static_fire", label="script-start"),
+        _ev(3, stream="telemetry_in", device_id="PT-001", label="telem-3"),
+        _ev(4, stream="system_event", event_type="script_held",
+            label="script-held"),
+        _ev(5, stream="system_event", event_type="script_continued",
+            label="script-continued"),
+        _ev(6, stream="system_event", event_type="script_stopped",
+            name="static_fire", label="script-stopped"),
+        _ev(7, stream="system_event", event_type="run_archive_finalizing",
+            reason="operator_stop", label="run-finalizing"),
+    ]
+
+
+_BASELINE_SNAPSHOT_STATE: dict[str, Any] = {
+    "run": {"status": "running", "is_running": True, "mode": "live",
+            "test_name": "test", "operator": "eric"},
+    "script_runner": {"is_running": False, "name": "", "is_held": False,
+                      "current_step_name": ""},
+    "alarms": {"active_alarm_count": 0, "active_fault_count": 0},
+    "mission_clock": {"seconds": 0.0, "state": "idle"},
+    "recording_clock": {"active": True, "elapsed_seconds": 0.0},
+}
+
+
+class TestReconstructedStateReflectsReplay(unittest.TestCase):
+    """After seek with tail replay containing state-changing system events,
+    the reconstructed state must reflect the post-replay values, not just
+    the snapshot baseline."""
+
+    def test_run_status_changes_after_finalizing_event(self):
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+
+        # Seek to T=7.5 — tail replay includes run_archive_finalizing at T=7
+        _handle_seek(target, 7.5)
+
+        rs = psm.reconstructed_state
+        self.assertEqual(rs["run_status"], "completed",
+                         "run_status must reflect the finalizing event, not snapshot baseline")
+        self.assertFalse(rs["run_is_running"])
+
+    def test_script_started_then_stopped_reflected(self):
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+
+        # Seek to T=2.5 — after script_started at T=2
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+        _handle_seek(target, 2.5)
+        rs = psm.reconstructed_state
+        self.assertTrue(rs["script_running"],
+                        "script must be running after script_started event")
+        self.assertEqual(rs["script_name"], "static_fire")
+
+        # Seek to T=6.5 — after script_stopped at T=6
+        _handle_seek(target, 6.5)
+        rs = psm.reconstructed_state
+        self.assertFalse(rs["script_running"],
+                         "script must not be running after script_stopped event")
+
+    def test_script_held_then_continued_reflected(self):
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+
+        # Seek to T=4.5 — after script_held at T=4
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+        _handle_seek(target, 4.5)
+        rs = psm.reconstructed_state
+        self.assertTrue(rs["script_is_held"])
+
+        # Seek to T=5.5 — after script_continued at T=5
+        _handle_seek(target, 5.5)
+        rs = psm.reconstructed_state
+        self.assertFalse(rs["script_is_held"])
+
+    def test_incremental_advance_updates_state(self):
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+
+        # Seek to T=1.5 (before script_started)
+        _handle_seek(target, 1.5)
+        rs = psm.reconstructed_state
+        self.assertFalse(rs["script_running"])
+
+        # Advance from T=1.5 to T=2.5 (crosses script_started at T=2)
+        _handle_advance(target, 1.5, 2.5)
+        rs = psm.reconstructed_state
+        self.assertTrue(rs["script_running"],
+                        "advance must update script state from replayed events")
+
+    def test_seek_backward_resets_state_to_snapshot_baseline(self):
+        """Seeking backward re-applies the T=0 snapshot, resetting state
+        mutations from the previous forward seek's tail replay."""
+        tmpdir = TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        snap_dir = Path(tmpdir.name)
+
+        # Write a T=0 snapshot with baseline state
+        snap_path = snap_dir / "000000.json"
+        write_json(snap_path, {
+            "recorded_at": _iso(0),
+            "snapshot_index": 0,
+            "state": dict(_BASELINE_SNAPSHOT_STATE),
+        })
+        snap_entry = {
+            "path": str(snap_path),
+            "snapshot_index": 0,
+            "recorded_at": _iso(0),
+            "relative_seconds": 0.0,
+            "has_state": True,
+        }
+
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0, snapshot_index=[snap_entry])
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+
+        # Seek to T=7.5 — tail replay includes run_archive_finalizing at T=7
+        _handle_seek(target, 7.5)
+        self.assertEqual(psm.reconstructed_state["run_status"], "completed")
+
+        # Seek backward to T=0.5 — snapshot at T=0 is re-applied, resetting
+        # to baseline.  No state-changing events before T=1.
+        _handle_seek(target, 0.5)
+        self.assertEqual(psm.reconstructed_state["run_status"], "running")

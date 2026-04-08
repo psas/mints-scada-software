@@ -3186,15 +3186,98 @@ class ControllerWindow(QMainWindow):
             script_snapshot_handler(dict(snapshot))
 
     def handle_structured_event(self, payload: dict):
-        provider = getattr(self, "graph_provider", None)
-        if provider is None or not isinstance(payload, dict):
+        if not isinstance(payload, dict):
             return
         if self.playback_mode:
+            self._apply_playback_event_state(payload)
+            return
+        provider = getattr(self, "graph_provider", None)
+        if provider is None:
             return
         try:
             provider.ingest_structured_event(payload)
         except Exception:
             self.log.exception("Failed to ingest live graph structured event")
+
+    # -- Playback event state tracking --
+    # These event_type values are the only system_event transitions
+    # processed during playback replay.  They update the controller's
+    # _last_backend_snapshot sections so that _build_reconstructed_playback_state
+    # sees the true post-replay state rather than the snapshot baseline.
+    _PLAYBACK_RUN_START_TYPES = frozenset({
+        "run_started", "run_archive_initialized",
+    })
+    _PLAYBACK_RUN_FINISH_TYPES = frozenset({
+        "run_finish_requested", "run_archive_finalizing",
+    })
+    _PLAYBACK_SCRIPT_START_TYPES = frozenset({
+        "script_started",
+    })
+    _PLAYBACK_SCRIPT_STOP_TYPES = frozenset({
+        "script_stopped", "script_finished",
+    })
+    _PLAYBACK_SCRIPT_HOLD_TYPES = frozenset({
+        "script_held",
+    })
+    _PLAYBACK_SCRIPT_CONTINUE_TYPES = frozenset({
+        "script_continued",
+    })
+
+    def _apply_playback_event_state(self, payload: dict) -> None:
+        """Update controller state containers from a replayed structured event.
+
+        Only processes system_event transitions that change run, script, or
+        alarm state visible in the reconstructed playback state.  Does NOT
+        touch the live graph provider or trigger live-mode display updates.
+        """
+        stream = str(payload.get("stream") or payload.get("event_kind") or "")
+        if stream != "system_event":
+            return
+
+        event_type = str(payload.get("event_type") or "").strip().lower()
+        if not event_type:
+            return
+
+        snapshot = self._last_backend_snapshot
+        if not isinstance(snapshot, dict):
+            return
+
+        if event_type in self._PLAYBACK_RUN_START_TYPES:
+            run = snapshot.get("run")
+            if isinstance(run, dict):
+                run["is_running"] = True
+                run["status"] = "running"
+
+        elif event_type in self._PLAYBACK_RUN_FINISH_TYPES:
+            run = snapshot.get("run")
+            if isinstance(run, dict):
+                run["is_running"] = False
+                run["status"] = "completed"
+
+        elif event_type in self._PLAYBACK_SCRIPT_START_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_running"] = True
+                sr["is_held"] = False
+                name = payload.get("name")
+                if isinstance(name, str) and name.strip():
+                    sr["name"] = name.strip()
+
+        elif event_type in self._PLAYBACK_SCRIPT_STOP_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_running"] = False
+                sr["is_held"] = False
+
+        elif event_type in self._PLAYBACK_SCRIPT_HOLD_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_held"] = True
+
+        elif event_type in self._PLAYBACK_SCRIPT_CONTINUE_TYPES:
+            sr = snapshot.get("script_runner")
+            if isinstance(sr, dict):
+                sr["is_held"] = False
 
     def handle_playback_seek_bootstrap(self, payload: dict):
         if not self.playback_mode:
@@ -3220,6 +3303,49 @@ class ControllerWindow(QMainWindow):
         cursor_setter = getattr(provider, "set_playback_cursor", None)
         if callable(cursor_setter):
             cursor_setter(end_ts)
+
+    def _apply_reconstructed_playback_badges(self) -> None:
+        """Update controller badges from the reconstructed playback state.
+
+        This reads the single authoritative reconstructed state dict that
+        window_host builds after seek/advance completes.  Fields that are
+        not present (e.g. during initial load before the first seek) are
+        silently skipped so existing fallback behavior is preserved.
+        """
+        if not self.playback_mode:
+            return
+        psm = self._playback_state_manager
+        if psm is None:
+            return
+        rs = psm.reconstructed_state
+        if not isinstance(rs, dict):
+            return
+
+        run_status = rs.get("run_status")
+        if isinstance(run_status, str) and run_status:
+            status_key = run_status.strip().lower()
+            if status_key in self.STATUS_STYLE:
+                self.set_status(status_key)
+            elif status_key in ("running", "recording"):
+                self.set_status("normal")
+
+        script_running = rs.get("script_running")
+        script_held = rs.get("script_is_held")
+        if script_held:
+            self.set_script_state("pause")
+        elif script_running:
+            self.set_script_state("running")
+        elif script_running is not None:
+            self.set_script_state("idle")
+
+        alarm_count = rs.get("active_alarm_count")
+        fault_count = rs.get("active_fault_count")
+        if isinstance(alarm_count, int) or isinstance(fault_count, int):
+            total = (alarm_count or 0) + (fault_count or 0)
+            if total > 0:
+                self.set_health("alarm")
+            else:
+                self.set_health("ok")
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
@@ -3517,6 +3643,7 @@ class ControllerWindow(QMainWindow):
         self.console.set_playback_time(self.playback_time)
         self._refresh_aux_clock_display()
         self._sync_playback_graph_provider_window()
+        self._apply_reconstructed_playback_badges()
 
     # =========================================================
     # Buttons (placeholder behavior)

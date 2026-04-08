@@ -50,6 +50,7 @@ class PlaybackStateManager:
         self.speed: float = 1.0
         self._anchor: float = 0.0
         self._mono_start: float = 0.0
+        self.reconstructed_state: dict[str, Any] | None = None
 
     def load_context(self, context: PlaybackRunContext) -> None:
         """Load a run context and reset all runtime state to initial."""
@@ -61,6 +62,7 @@ class PlaybackStateManager:
         self.speed = 1.0
         self._anchor = 0.0
         self._mono_start = 0.0
+        self.reconstructed_state = None
 
     # -- Convenience properties for context access --
 
@@ -181,6 +183,17 @@ class PlaybackStateManager:
         next_index = min(max(current_index + int(direction), 0), len(steps) - 1)
         self.set_speed(steps[next_index])
         return self.speed
+
+    # -- Reconstructed state --
+
+    def update_reconstructed_state(self, state: dict[str, Any]) -> None:
+        """Store the reconstructed playback-visible state at the current position.
+
+        Called by the seek/advance handler in window_host after all
+        reconstruction (snapshot restore + tail replay) has completed.
+        The dict is intentionally untyped to keep it flexible across commits.
+        """
+        self.reconstructed_state = dict(state)
 
     # -- Utility --
 

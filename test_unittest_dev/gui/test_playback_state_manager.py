@@ -439,3 +439,47 @@ class TestApplyExactPlaybackSeekState(unittest.TestCase):
         self.assertEqual(
             target._backend_playback_clock["position_seconds"], 25.0
         )
+
+
+# ---------------------------------------------------------------------------
+# Reconstructed playback state tests
+# ---------------------------------------------------------------------------
+
+class TestReconstructedState(unittest.TestCase):
+    """Verify reconstructed_state field on PlaybackStateManager."""
+
+    def test_initial_reconstructed_state_is_none(self):
+        mgr = PlaybackStateManager()
+        self.assertIsNone(mgr.reconstructed_state)
+
+    def test_load_context_resets_reconstructed_state(self):
+        mgr = PlaybackStateManager()
+        mgr.reconstructed_state = {"position_seconds": 42.0}
+        mgr.load_context(_make_context())
+        self.assertIsNone(mgr.reconstructed_state)
+
+    def test_update_reconstructed_state_stores_dict(self):
+        mgr = PlaybackStateManager()
+        state = {
+            "position_seconds": 10.0,
+            "run_status": "running",
+            "script_running": False,
+        }
+        mgr.update_reconstructed_state(state)
+        self.assertIsNotNone(mgr.reconstructed_state)
+        self.assertEqual(mgr.reconstructed_state["position_seconds"], 10.0)
+        self.assertEqual(mgr.reconstructed_state["run_status"], "running")
+
+    def test_update_reconstructed_state_copies_input(self):
+        mgr = PlaybackStateManager()
+        state = {"position_seconds": 5.0}
+        mgr.update_reconstructed_state(state)
+        state["position_seconds"] = 999.0
+        self.assertEqual(mgr.reconstructed_state["position_seconds"], 5.0,
+                         "update_reconstructed_state must copy, not alias")
+
+    def test_successive_updates_replace(self):
+        mgr = PlaybackStateManager()
+        mgr.update_reconstructed_state({"position_seconds": 1.0})
+        mgr.update_reconstructed_state({"position_seconds": 2.0})
+        self.assertEqual(mgr.reconstructed_state["position_seconds"], 2.0)
