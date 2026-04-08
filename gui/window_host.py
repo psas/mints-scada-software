@@ -29,6 +29,7 @@ from gui.abort_relay import send_abort_request, send_clear_abort_latch_request  
 from gui.backend_client import BackendClient, GuiBackendActionAPI  # noqa: E402
 from gui.controller_window import ControllerWindow  # noqa: E402
 from gui.device_catalog import BackendDeviceCatalog  # noqa: E402
+from gui.playback_state_manager import PlaybackStateManager, PlaybackRunContext  # noqa: E402
 from gui.scada_window import ScadaWindow  # noqa: E402
 from gui.workspace_metadata import attach_workspace_persistence, prepare_workspace_window  # noqa: E402
 from historymanager.paths import HISTORY_ROOT_DIRNAME  # noqa: E402
@@ -343,6 +344,7 @@ class WindowHostFacade:
         self.controller = window if window_kind == "controller" else None
         self.scada = window if window_kind == "scada" else None
         self.health_banner_controller = WindowHealthBannerController(window=window)
+        self.playback_state: PlaybackStateManager | None = None
 
     @property
     def timeline(self):
@@ -352,12 +354,17 @@ class WindowHostFacade:
 
     @property
     def playback_time(self) -> float:
+        if self.playback_state is not None:
+            return self.playback_state.position_seconds
         if self.controller is None:
             return 0.0
         return getattr(self.controller, "playback_time", 0.0)
 
     @playback_time.setter
     def playback_time(self, value: float) -> None:
+        if self.playback_state is not None:
+            self.playback_state.set_position(float(value))
+            return
         if self.controller is not None:
             self.controller.playback_time = value
 
@@ -1062,10 +1069,17 @@ def _find_nearest_snapshot_entry(snapshot_index: list[dict[str, Any]], seek_time
 
 
 def _handle_playback_seek(window: Any, seek_time: float) -> None:
-    snapshot_index = getattr(window, "playback_snapshot_index", [])
-    merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
-    event_time_keys = getattr(window, "playback_event_time_keys", None)
-    start_dt = getattr(window, "playback_start_dt", None)
+    psm = getattr(window, "playback_state", None)
+    if psm is not None and psm.context is not None:
+        snapshot_index = psm.snapshot_index
+        merged_events = psm.seek_events
+        event_time_keys = psm.event_time_keys
+        start_dt = psm.start_dt
+    else:
+        snapshot_index = getattr(window, "playback_snapshot_index", [])
+        merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+        event_time_keys = getattr(window, "playback_event_time_keys", None)
+        start_dt = getattr(window, "playback_start_dt", None)
 
     seek_time = max(0.0, float(seek_time))
     try:
@@ -1097,7 +1111,7 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
                 else:
                     playback_clock = {}
                 playback_clock["position_seconds"] = seek_time
-                total_duration = getattr(window, "playback_duration_seconds", None)
+                total_duration = psm.duration_seconds if psm else getattr(window, "playback_duration_seconds", None)
                 if isinstance(total_duration, (int, float)):
                     playback_clock.setdefault("total_duration_seconds", float(total_duration))
                 updated_state["playback_clock"] = playback_clock
@@ -1123,6 +1137,9 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         event_time_keys=event_time_keys,
         seek_dt=seek_dt,
     )
+
+    if psm is not None:
+        psm.update_after_seek(position=seek_time, event_index=end_event_index)
 
     payload = {
         "seek_time_seconds": seek_time,
@@ -1217,9 +1234,18 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
         _handle_playback_seek(window, new_time)
         return
 
-    merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
-    event_time_keys = getattr(window, "playback_event_time_keys", None)
-    start_dt = getattr(window, "playback_start_dt", None)
+    psm = getattr(window, "playback_state", None)
+    if psm is not None and psm.context is not None:
+        merged_events = psm.seek_events
+        event_time_keys = psm.event_time_keys
+        start_dt = psm.start_dt
+        last_event_index = psm.last_event_index
+    else:
+        merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+        event_time_keys = getattr(window, "playback_event_time_keys", None)
+        start_dt = getattr(window, "playback_start_dt", None)
+        last_event_index = getattr(window, "playback_last_event_index", None)
+
     if not isinstance(start_dt, datetime):
         _handle_playback_seek(window, new_time)
         return
@@ -1227,7 +1253,6 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
     previous_dt = start_dt + timedelta(seconds=previous_time)
     new_dt = start_dt + timedelta(seconds=new_time)
 
-    last_event_index = getattr(window, "playback_last_event_index", None)
     if not isinstance(last_event_index, int) or last_event_index < 0:
         last_event_index = _playback_event_end_index(
             event_time_keys=event_time_keys,
@@ -1247,6 +1272,9 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
         handler = getattr(window, "handle_structured_event", None)
         if callable(handler):
             handler(dict(event))
+
+    if psm is not None:
+        psm.update_after_advance(position=new_time, event_index=new_event_index)
 
     setattr(window, "playback_last_applied_time", new_time)
     setattr(window, "playback_last_event_index", new_event_index)
@@ -1376,6 +1404,34 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     setattr(window, "playback_duration_seconds", duration_s)
     setattr(window, "playback_snapshot_index", playback_snapshot_index)
 
+    # Load initial snapshot early so it can be included in the context.
+    first_snapshot = None
+    if snapshot_files:
+        try:
+            first_snapshot = _load_playback_snapshot_payload(str(snapshot_files[0]))
+        except Exception as exc:
+            log.warning("Failed to load initial playback snapshot: %s", exc)
+
+    # Populate PlaybackStateManager if one is attached to this window.
+    psm = getattr(window, "playback_state", None)
+    if psm is not None:
+        context = PlaybackRunContext(
+            run_id=metadata.get("run_id", run_dir.name),
+            history_dir=str(run_dir),
+            playback_source=playback_source,
+            metadata=dict(metadata),
+            start_dt=start_dt,
+            end_dt=end_dt,
+            duration_seconds=duration_s,
+            snapshot_index=list(playback_snapshot_index),
+            snapshot_files=[str(path) for path in snapshot_files],
+            merged_events=merged_events,
+            seek_events=playback_seek_events,
+            event_time_keys=playback_event_time_keys,
+            initial_snapshot=first_snapshot,
+        )
+        psm.load_context(context)
+
     sync_path_value = getattr(window, "playback_seek_sync_path", None)
     sync_path = Path(sync_path_value) if isinstance(sync_path_value, str) and sync_path_value else None
     sync_write = bool(getattr(window, "playback_seek_sync_write", False))
@@ -1393,13 +1449,10 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     setattr(window, "playback_seek_handler", _bound_seek_handler)
     setattr(window, "playback_advance_handler", _bound_advance_handler)
 
-    if snapshot_files:
-        try:
-            first_snapshot = _load_playback_snapshot_payload(str(snapshot_files[0]))
-            setattr(window, "playback_initial_snapshot", first_snapshot)
-            _apply_playback_state_snapshot(window, first_snapshot)
-        except Exception as exc:
-            log.warning("Failed to load initial playback snapshot: %s", exc)
+    # Apply initial snapshot to device catalog and child windows.
+    if first_snapshot is not None:
+        setattr(window, "playback_initial_snapshot", first_snapshot)
+        _apply_playback_state_snapshot(window, first_snapshot)
 
     timeline = _safe_get_timeline(window)
     added_labels = 0
@@ -2020,6 +2073,10 @@ def _run_playback_window(args: argparse.Namespace) -> int:
     )
     facade = WindowHostFacade(window_kind=args.window_kind, window=actual_window)
     actual_window.manager = facade
+
+    psm = PlaybackStateManager()
+    facade.playback_state = psm
+    actual_window._playback_state_manager = psm
 
     sync_path = _playback_sync_path(args.selected_test)
     setattr(facade, "playback_seek_sync_path", str(sync_path))

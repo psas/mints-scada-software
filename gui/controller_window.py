@@ -2213,13 +2213,29 @@ class ControllerWindow(QMainWindow):
         self._backend_playback_clock = None
         self._recording_started_dt: datetime | None = None
 
-        self.playback_time = 0.0
+        self._playback_state_manager = None  # set by window_host after construction
+        self._playback_time_fallback = 0.0
         self.playback_duration_seconds = None
-        self._playback_running = False
-        self._playback_speed = 1.0
+        self._playback_running = False       # legacy fallback; manager is authority when set
+        self._playback_speed = 1.0           # legacy fallback
         self._playback_speed_steps = (0.25, 0.5, 1.0, 2.0, 4.0)
-        self._playback_anchor = 0.0       # playback_time when play started/resumed
-        self._playback_mono_start = 0.0   # time.monotonic() when play started/resumed
+        self._playback_anchor = 0.0          # legacy fallback
+        self._playback_mono_start = 0.0      # legacy fallback
+
+    @property
+    def playback_time(self) -> float:
+        psm = getattr(self, '_playback_state_manager', None)
+        if psm is not None:
+            return psm.position_seconds
+        return getattr(self, '_playback_time_fallback', 0.0)
+
+    @playback_time.setter
+    def playback_time(self, value: float) -> None:
+        value = max(0.0, float(value))
+        psm = getattr(self, '_playback_state_manager', None)
+        if psm is not None:
+            psm.set_position(value)
+        self._playback_time_fallback = value
 
     def _init_shared_runtime(self):
         self.setWindowTitle("minTS Controller - Left Screen")
@@ -3220,6 +3236,11 @@ class ControllerWindow(QMainWindow):
         self._toggle_playback()
 
     def _step_playback_speed(self, direction: int) -> None:
+        psm = self._playback_state_manager
+        if psm is not None:
+            new_speed = psm.step_speed(direction)
+            self.log.info("Playback speed set to %.2fx", new_speed)
+            return
         steps = list(self._playback_speed_steps)
         try:
             current_index = steps.index(self._playback_speed)
@@ -3232,8 +3253,22 @@ class ControllerWindow(QMainWindow):
     def _toggle_playback(self):
         if not self.playback_mode:
             return
+        psm = self._playback_state_manager
+        if psm is not None:
+            if psm.is_playing:
+                exact_time = psm.pause()
+                self.timeline.set_current_time(exact_time)
+                self._update_mission_time_label(exact_time)
+                self.console.set_playback_time(exact_time)
+                self._refresh_aux_clock_display()
+                self._playback_advance_timer.stop()
+            else:
+                if not psm.start_playing():
+                    return  # at end
+                self._playback_advance_timer.start()
+            return
+        # Legacy fallback (no manager)
         if self._playback_running:
-            # Pause: compute exact position right now, update UI, then stop
             exact_time = self._playback_anchor + (time.monotonic() - self._playback_mono_start)
             duration = self.playback_duration_seconds
             if isinstance(duration, (int, float)) and duration > 0:
@@ -3246,17 +3281,46 @@ class ControllerWindow(QMainWindow):
             self._playback_running = False
             self._playback_advance_timer.stop()
         else:
-            # Don't resume if already at end
             duration = self.playback_duration_seconds
             if isinstance(duration, (int, float)) and duration > 0 and self.playback_time >= duration:
                 return
-            # Record anchor so each tick computes: anchor + (now - mono_start)
             self._playback_anchor = self.playback_time
             self._playback_mono_start = time.monotonic()
             self._playback_running = True
             self._playback_advance_timer.start()
 
     def _on_playback_advance(self):
+        psm = self._playback_state_manager
+        if psm is not None:
+            if not psm.is_playing:
+                self._playback_advance_timer.stop()
+                return
+
+            previous_time = psm.position_seconds
+            new_time = psm.compute_advance_time()
+
+            if psm.duration_seconds > 0 and new_time >= psm.duration_seconds:
+                new_time = psm.duration_seconds
+                psm.is_playing = False
+                self._playback_advance_timer.stop()
+
+            advance_handler = getattr(self.manager, "playback_advance_handler", None)
+            if callable(advance_handler):
+                advance_handler(previous_time, new_time)
+                return
+
+            psm.set_position(new_time)
+            self.timeline.set_current_time(new_time)
+            self._update_mission_time_label(new_time)
+            self.console.set_playback_time(new_time)
+            self._refresh_aux_clock_display()
+
+            handler = getattr(self.manager, "playback_seek_handler", None)
+            if callable(handler):
+                handler(new_time)
+            return
+
+        # Legacy fallback (no manager)
         if not self._playback_running:
             self._playback_advance_timer.stop()
             return
@@ -3266,7 +3330,6 @@ class ControllerWindow(QMainWindow):
         new_time = self._playback_anchor + (elapsed * float(self._playback_speed))
         duration = self.playback_duration_seconds
 
-        # Clamp to end and stop
         if isinstance(duration, (int, float)) and duration > 0 and new_time >= duration:
             new_time = duration
             self._playback_running = False
@@ -3289,7 +3352,11 @@ class ControllerWindow(QMainWindow):
 
     def _on_timeline_seek(self, seek_time: float):
         # Manual scrub pauses playback so the timer doesn't fight the user
-        if self._playback_running:
+        psm = self._playback_state_manager
+        if psm is not None and psm.is_playing:
+            psm.pause()
+            self._playback_advance_timer.stop()
+        elif self._playback_running:
             self._playback_running = False
             self._playback_advance_timer.stop()
 
