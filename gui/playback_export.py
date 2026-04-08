@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,10 @@ def flatten_event_for_csv(event: dict[str, Any]) -> dict[str, Any]:
 
     return flattened
 
+
+# ---------------------------------------------------------------------------
+# Directory-based export (reads merged.jsonl from disk)
+# ---------------------------------------------------------------------------
 
 def export_run_jsonl(
     run_dir: str | Path,
@@ -97,3 +102,71 @@ def export_run_csv(
         for row in rows:
             writer.writerow(row)
     return str(destination)
+
+
+# ---------------------------------------------------------------------------
+# Event-list export (uses pre-sorted events from PlaybackStateManager)
+#
+# These functions export directly from the manager's seek_events list,
+# which is sorted by (timestamp_key, original_index) — the same order
+# that playback seek and advance use.  This guarantees export ordering
+# matches what the user sees during playback.
+# ---------------------------------------------------------------------------
+
+def export_events_jsonl(
+    events: list[dict[str, Any]],
+    output_path: str | Path,
+    *,
+    stream_filter: set[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    """Export pre-sorted events to JSONL.  Returns the number of events written."""
+    destination = Path(output_path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with destination.open("w", encoding="utf-8") as handle:
+        if metadata:
+            header = {
+                "_export_metadata": True,
+                "exported_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            }
+            header.update(metadata)
+            handle.write(json.dumps(header, ensure_ascii=False, sort_keys=False))
+            handle.write("\n")
+        for event in events:
+            if stream_filter and event.get("stream") not in stream_filter:
+                continue
+            handle.write(json.dumps(event, ensure_ascii=False, sort_keys=False))
+            handle.write("\n")
+            count += 1
+    return count
+
+
+def export_events_csv(
+    events: list[dict[str, Any]],
+    output_path: str | Path,
+    *,
+    stream_filter: set[str] | None = None,
+) -> int:
+    """Export pre-sorted events to flattened CSV.  Returns the number of rows written."""
+    rows: list[dict[str, Any]] = []
+    all_columns: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if stream_filter and event.get("stream") not in stream_filter:
+            continue
+        row = flatten_event_for_csv(event)
+        rows.append(row)
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                all_columns.append(key)
+
+    destination = Path(output_path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=all_columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return len(rows)

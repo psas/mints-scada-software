@@ -2826,8 +2826,124 @@ class ControllerWindow(QMainWindow):
         outer_layout.addWidget(btn_col, 0)
         return outer
 
+    def _create_playback_export_column(self) -> QFrame:
+        col = QFrame()
+        col.setFixedWidth(170)
+        col.setStyleSheet(
+            "QFrame{background:#1e1e1e; border-radius:10px; border:1px solid #444;}"
+        )
+        lay = QVBoxLayout(col)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(12)
+
+        title = QLabel("Export Run")
+        title.setStyleSheet(
+            "color:#ccc; font-size:14px; font-weight:bold; border:none; background:transparent;"
+        )
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+
+        btn_jsonl = QPushButton("Export JSONL")
+        btn_jsonl.setMinimumHeight(56)
+        btn_jsonl.setToolTip("Export all playback events to JSONL (one JSON object per line)")
+        btn_jsonl.setStyleSheet(self._btn_export_style())
+        btn_jsonl.clicked.connect(lambda: self._on_playback_export("jsonl"))
+        lay.addWidget(btn_jsonl)
+
+        btn_csv = QPushButton("Export CSV")
+        btn_csv.setMinimumHeight(56)
+        btn_csv.setToolTip("Export all playback events to a flattened CSV spreadsheet")
+        btn_csv.setStyleSheet(self._btn_export_style())
+        btn_csv.clicked.connect(lambda: self._on_playback_export("csv"))
+        lay.addWidget(btn_csv)
+
+        lay.addStretch(1)
+        return col
+
+    @staticmethod
+    def _btn_export_style() -> str:
+        return """
+            QPushButton{
+                background:#1565C0;
+                color:white;
+                border:none;
+                border-radius:10px;
+                font-size:14px;
+                font-weight:700;
+            }
+            QPushButton:hover{ background:#0d47a1; }
+            QPushButton:pressed{ background:#0a3d91; }
+            QPushButton:disabled{ background:#555; color:#bbb; }
+        """
+
+    def _on_playback_export(self, fmt: str) -> None:
+        if not self.playback_mode:
+            return
+
+        psm = self._playback_state_manager
+        run_id = "playback"
+        if psm and psm.context:
+            run_id = psm.context.run_id or "playback"
+
+        if fmt == "jsonl":
+            default_name = f"{run_id}_export.jsonl"
+            dialog_filter = "JSONL Files (*.jsonl);;All Files (*)"
+        else:
+            default_name = f"{run_id}_export.csv"
+            dialog_filter = "CSV Files (*.csv);;All Files (*)"
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export Playback Run", default_name, dialog_filter)
+        if not path:
+            return
+
+        try:
+            from gui.playback_export import export_events_jsonl, export_events_csv
+
+            if psm and psm.context:
+                events = psm.context.seek_events
+                metadata = dict(psm.context.metadata)
+            else:
+                events = getattr(self.manager, "playback_seek_events",
+                                 getattr(self.manager, "playback_merged_events", []))
+                metadata = getattr(self.manager, "playback_metadata", {})
+                if isinstance(metadata, dict):
+                    metadata = dict(metadata)
+                else:
+                    metadata = {}
+
+            metadata["export_format"] = fmt
+            metadata["export_event_count"] = len(events)
+
+            if fmt == "jsonl":
+                count = export_events_jsonl(events, path, metadata=metadata)
+            else:
+                count = export_events_csv(events, path)
+
+            self.log.info("Exported %d events (%s) to %s", count, fmt.upper(), path)
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Exported {count} events to:\n{path}",
+            )
+        except Exception as exc:
+            self.log.exception("Playback export failed")
+            QMessageBox.critical(
+                self, "Export Error",
+                f"Failed to export playback data:\n{exc}",
+            )
+
     def _create_playback_right_controller_area(self) -> QWidget:
-        return self._create_playback_right_content_stack()
+        outer = QWidget()
+        outer.setStyleSheet("background: transparent;")
+        outer_layout = QHBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(8)
+
+        main_stack = self._create_playback_right_content_stack()
+        export_col = self._create_playback_export_column()
+
+        outer_layout.addWidget(main_stack, 1)
+        outer_layout.addWidget(export_col, 0)
+        return outer
 
     def _panel(self, title: str, widget: QWidget) -> QWidget:
         panel = QFrame()
