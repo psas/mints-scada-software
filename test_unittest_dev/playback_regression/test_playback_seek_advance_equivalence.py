@@ -662,6 +662,16 @@ class _FakeController:
             sr = snapshot.get("script_runner")
             if isinstance(sr, dict):
                 sr["is_held"] = False
+        elif event_type == "backend_health_changed":
+            health = snapshot.get("health")
+            if isinstance(health, dict):
+                overall = payload.get("overall_status")
+                if isinstance(overall, str):
+                    health["overall_status"] = overall.strip()
+                warnings = payload.get("active_warnings")
+                if isinstance(warnings, list):
+                    health["active_warnings"] = list(warnings)
+                    health["active_warning_count"] = len(warnings)
 
 
 class TestResolveAppliedSnapshotState(unittest.TestCase):
@@ -895,10 +905,11 @@ class TestReconstructedStateAfterSeek(unittest.TestCase):
             "position_seconds", "duration_seconds", "wall_time_iso", "run_id",
             "tail_event_count", "restored_from_snapshot",
             "run_status", "run_mode", "run_is_running", "test_name", "operator",
+            "script_running", "script_name", "script_step_name", "script_is_held",
+            "overall_health_status", "active_warning_count",
+            "active_alarm_count", "active_fault_count",
             "mission_clock_seconds", "mission_clock_state",
             "recording_active", "recording_elapsed_seconds",
-            "script_running", "script_name", "script_step_name", "script_is_held",
-            "active_alarm_count", "active_fault_count",
             "device_count",
         }
         self.assertTrue(expected_keys.issubset(set(rs.keys())),
@@ -951,6 +962,9 @@ def _state_changing_events() -> list[dict[str, Any]]:
             label="script-continued"),
         _ev(6, stream="system_event", event_type="script_stopped",
             name="static_fire", label="script-stopped"),
+        _ev(6.5, stream="system_event", event_type="backend_health_changed",
+            overall_status="warning",
+            active_warnings=["bus: disconnected"], label="health-warn"),
         _ev(7, stream="system_event", event_type="run_archive_finalizing",
             reason="operator_stop", label="run-finalizing"),
     ]
@@ -962,6 +976,7 @@ _BASELINE_SNAPSHOT_STATE: dict[str, Any] = {
     "script_runner": {"is_running": False, "name": "", "is_held": False,
                       "current_step_name": ""},
     "alarms": {"active_alarm_count": 0, "active_fault_count": 0},
+    "health": {"overall_status": "ok", "active_warning_count": 0, "active_warnings": []},
     "mission_clock": {"seconds": 0.0, "state": "idle"},
     "recording_clock": {"active": True, "elapsed_seconds": 0.0},
 }
@@ -1078,3 +1093,23 @@ class TestReconstructedStateReflectsReplay(unittest.TestCase):
         # to baseline.  No state-changing events before T=1.
         _handle_seek(target, 0.5)
         self.assertEqual(psm.reconstructed_state["run_status"], "running")
+
+    def test_health_status_changes_after_health_event(self):
+        """backend_health_changed events update overall_health_status."""
+        events = _state_changing_events()
+        ctx = _make_context(events, duration=8.0)
+        psm = PlaybackStateManager()
+        psm.load_context(ctx)
+        target = _make_target_with_controller(psm, _BASELINE_SNAPSHOT_STATE)
+
+        # Seek to T=2.0 — before backend_health_changed at T=6.5
+        _handle_seek(target, 2.0)
+        rs = psm.reconstructed_state
+        self.assertEqual(rs["overall_health_status"], "ok")
+        self.assertEqual(rs["active_warning_count"], 0)
+
+        # Seek to T=6.8 — after backend_health_changed at T=6.5
+        _handle_seek(target, 6.8)
+        rs = psm.reconstructed_state
+        self.assertEqual(rs["overall_health_status"], "warning")
+        self.assertEqual(rs["active_warning_count"], 1)

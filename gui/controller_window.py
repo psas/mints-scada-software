@@ -3279,6 +3279,17 @@ class ControllerWindow(QMainWindow):
             if isinstance(sr, dict):
                 sr["is_held"] = False
 
+        elif event_type == "backend_health_changed":
+            health = snapshot.get("health")
+            if isinstance(health, dict):
+                overall = payload.get("overall_status")
+                if isinstance(overall, str):
+                    health["overall_status"] = overall.strip()
+                warnings = payload.get("active_warnings")
+                if isinstance(warnings, list):
+                    health["active_warnings"] = list(warnings)
+                    health["active_warning_count"] = len(warnings)
+
     def handle_playback_seek_bootstrap(self, payload: dict):
         if not self.playback_mode:
             return
@@ -3338,13 +3349,18 @@ class ControllerWindow(QMainWindow):
         elif script_running is not None:
             self.set_script_state("idle")
 
-        alarm_count = rs.get("active_alarm_count")
-        fault_count = rs.get("active_fault_count")
-        if isinstance(alarm_count, int) or isinstance(fault_count, int):
-            total = (alarm_count or 0) + (fault_count or 0)
-            if total > 0:
+        # Health badge: driven from replay-aware overall_health_status
+        # (updated by backend_health_changed system events during replay).
+        # NOT driven from active_alarm_count/active_fault_count which are
+        # snapshot-baseline-only and always 0 in practice.
+        health_status = rs.get("overall_health_status")
+        if isinstance(health_status, str) and health_status:
+            key = health_status.strip().lower()
+            if key in ("error", "failed", "critical"):
                 self.set_health("alarm")
-            else:
+            elif key in ("warning",):
+                self.set_health("attention")
+            elif key in ("ok", "healthy", "idle"):
                 self.set_health("ok")
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):

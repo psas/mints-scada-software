@@ -1260,6 +1260,7 @@ def _build_reconstructed_playback_state(
     run_section = _safe_dict(applied.get("run"))
     script_section = _safe_dict(applied.get("script_runner"))
     alarms_section = _safe_dict(applied.get("alarms"))
+    health_section = _safe_dict(applied.get("health"))
     mission_clock = _safe_dict(ctrl_mission) if ctrl_mission is not None else _safe_dict(applied.get("mission_clock"))
     recording_clock = _safe_dict(ctrl_recording) if ctrl_recording is not None else _safe_dict(applied.get("recording_clock"))
 
@@ -1268,35 +1269,38 @@ def _build_reconstructed_playback_state(
     device_count = len(catalog) if catalog is not None else 0
 
     return {
-        # Position
+        # -- Position (authoritative: PSM) --
         "position_seconds": position,
         "duration_seconds": duration,
         "wall_time_iso": wall_iso,
         "run_id": run_id,
-        # Seek metadata
+        # -- Seek metadata --
         "tail_event_count": tail_event_count,
         "restored_from_snapshot": restored_from_snapshot,
-        # Run
+        # -- Run (replay-aware: updated by run lifecycle system events) --
         "run_status": str(run_section.get("status") or "unknown"),
         "run_mode": str(run_section.get("mode") or ""),
         "run_is_running": bool(run_section.get("is_running")),
         "test_name": str(run_section.get("test_name") or ""),
         "operator": str(run_section.get("operator") or ""),
-        # Mission clock
-        "mission_clock_seconds": float(mission_clock["seconds"]) if isinstance(mission_clock.get("seconds"), (int, float)) else None,
-        "mission_clock_state": str(mission_clock.get("state") or ""),
-        # Recording
-        "recording_active": bool(recording_clock.get("active")),
-        "recording_elapsed_seconds": float(recording_clock["elapsed_seconds"]) if isinstance(recording_clock.get("elapsed_seconds"), (int, float)) else None,
-        # Script
+        # -- Script (replay-aware: updated by script lifecycle system events) --
         "script_running": bool(script_section.get("is_running")),
         "script_name": str(script_section.get("name") or ""),
         "script_step_name": str(script_section.get("current_step_name") or ""),
         "script_is_held": bool(script_section.get("is_held")),
-        # Alarms
+        # -- Health (replay-aware: updated by backend_health_changed events) --
+        "overall_health_status": str(health_section.get("overall_status") or "unknown"),
+        "active_warning_count": int(health_section.get("active_warning_count") or 0),
+        # -- Alarms (snapshot-baseline only: update_alarms is never called) --
         "active_alarm_count": int(alarms_section.get("active_alarm_count") or 0),
         "active_fault_count": int(alarms_section.get("active_fault_count") or 0),
-        # Devices
+        # -- Mission clock (snapshot-baseline only: live-computed, not event-driven) --
+        "mission_clock_seconds": float(mission_clock["seconds"]) if isinstance(mission_clock.get("seconds"), (int, float)) else None,
+        "mission_clock_state": str(mission_clock.get("state") or ""),
+        # -- Recording clock (snapshot-baseline only: live-computed, not event-driven) --
+        "recording_active": bool(recording_clock.get("active")),
+        "recording_elapsed_seconds": float(recording_clock["elapsed_seconds"]) if isinstance(recording_clock.get("elapsed_seconds"), (int, float)) else None,
+        # -- Devices (snapshot-baseline: catalog updated by snapshot apply) --
         "device_count": device_count,
     }
 
