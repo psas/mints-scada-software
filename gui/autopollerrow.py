@@ -1,3 +1,5 @@
+# gui/autopollerrow.py
+
 from PyQt5.QtWidgets import QPushButton, QLabel, QHBoxLayout
 from PyQt5.QtCore import QTimer, pyqtSignal
 from gui import AutoPoller, DecadeSpinBox

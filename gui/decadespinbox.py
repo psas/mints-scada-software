@@ -1,3 +1,5 @@
+# gui/decadespinbox.py
+
 import math
 from typing import Tuple
 from PyQt5.QtGui import QValidator

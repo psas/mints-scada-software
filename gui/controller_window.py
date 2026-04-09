@@ -1,4 +1,5 @@
-# controller_window.py
+# gui/controller_window.py
+
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QFont, QPainter, QPen, QColor, QDrag
 from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize

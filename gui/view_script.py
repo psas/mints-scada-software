@@ -1,3 +1,5 @@
+# gui/view_script.py
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,5 @@
+# backend/gateway_bus_proxy.py
+
 from __future__ import annotations
 
 import logging

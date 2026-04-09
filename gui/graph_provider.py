@@ -1,3 +1,5 @@
+# gui/graph_provider.py
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

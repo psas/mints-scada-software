@@ -1,3 +1,5 @@
+# gui/view_export.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFileDialog
 from nexus import GenericSensor
 import csv

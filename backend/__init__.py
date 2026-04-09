@@ -1,3 +1,5 @@
+# backend/__init__.py
+
 from .service import BackendService
 from .ipc_models import IPCMessage
 from .state_store import StateStore

@@ -1,3 +1,5 @@
+# historymanager/__init__.py
+
 from .manager import HistoryManager
 from .integrity import (
     INTEGRITY_REPORT_FILENAME,

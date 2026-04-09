@@ -1,3 +1,5 @@
+# nexus/__init__.py
+
 from .buscommands import BusCommands
 from .datapacket import DataPacket
 from .bus import Bus

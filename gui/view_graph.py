@@ -1,3 +1,5 @@
+# gui/view_graph.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
 import matplotlib
 import matplotlib.lines

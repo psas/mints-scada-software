@@ -1,3 +1,5 @@
+# gui/timelineview.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFrame, QShortcut
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QFont, QPen, QKeySequence

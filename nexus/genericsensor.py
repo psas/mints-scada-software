@@ -1,3 +1,5 @@
+# nexus/genericsensor.py
+
 from typing import Callable
 import struct
 import random

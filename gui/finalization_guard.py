@@ -1,3 +1,5 @@
+# gui/finalization_guard.py
+
 """Finalization guard: blocks app close while archive save is in progress.
 
 Provides a shared dialog and background auto-close timer used by both the

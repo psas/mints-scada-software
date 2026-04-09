@@ -1,3 +1,5 @@
+# gui/autopoller.py
+
 from nexus import Bus, dbgutils
 from threading import Event, Thread
 import time

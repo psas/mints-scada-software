@@ -1,3 +1,5 @@
+# gui/main.py
+
 """GUI-only entrypoint - delegates to the application launcher.
 
 This module exists so that ``python -m gui.main`` and ``make run-gui``

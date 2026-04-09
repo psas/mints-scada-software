@@ -1,3 +1,5 @@
+# gui/scada_webpage.py
+
 import logging
 
 from PyQt5.QtWebEngineWidgets import QWebEnginePage

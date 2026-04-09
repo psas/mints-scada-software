@@ -1,3 +1,5 @@
+# nexus/bus.py
+
 import can
 import threading
 from nexus import DataPacket

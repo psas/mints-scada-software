@@ -1,3 +1,5 @@
+# gui/checklist_window.py
+
 from pathlib import Path
 import json
 import os

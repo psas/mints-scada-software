@@ -1,3 +1,5 @@
+# nexus/buscommands.py
+
 class BusCommands():
     READ_ID_LOW  = 0x10
     READ_ID_HIGH = 0x11

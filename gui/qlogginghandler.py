@@ -1,3 +1,5 @@
+# gui/qlogginghandler.py
+
 import logging
 from PyQt5.QtWidgets import QPlainTextEdit
 

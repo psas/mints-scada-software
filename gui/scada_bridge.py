@@ -1,3 +1,5 @@
+# gui/scada_bridge.py
+
 import logging
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot

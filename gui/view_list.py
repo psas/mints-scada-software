@@ -1,3 +1,5 @@
+# gui/view_list.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
 from PyQt5.QtCore import Qt
 

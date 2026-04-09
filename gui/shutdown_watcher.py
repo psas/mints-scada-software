@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# gui/shutdown_watcher.py
+
 """Background process that watches for shutdown signal and kills all tracked processes."""
 
 import logging

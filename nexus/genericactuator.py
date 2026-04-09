@@ -1,3 +1,5 @@
+# nexus/genericactuator.py
+
 from nexus import DataPacket, BusCommands, GenericSensor
 import struct
 

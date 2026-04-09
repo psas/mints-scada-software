@@ -1,3 +1,5 @@
+# gui/live_telemetry_poller.py
+
 from __future__ import annotations
 
 import logging

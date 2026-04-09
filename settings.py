@@ -1,3 +1,5 @@
+# settings.py
+
 # # The serial port that the controller software is on
 # sender = "/dev/ttyACM0"
 # # The serial port the dummy sensor is on

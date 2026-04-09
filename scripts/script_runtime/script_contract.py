@@ -1,3 +1,5 @@
+# scripts/script_runtime/script_contract.py
+
 from __future__ import annotations
 
 """Shared contract for legacy script compatibility and unified abort plumbing.

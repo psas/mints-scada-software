@@ -1,3 +1,5 @@
+# scripts/script_runtime/script_protocol.py
+
 from __future__ import annotations
 
 import json

@@ -1,4 +1,5 @@
 # electricaldevices/sensors/thermocouple.py
+
 from collections.abc import Callable
 from nexus import GenericSensor
 

@@ -1,3 +1,5 @@
+# backend/structured_builder.py
+
 from __future__ import annotations
 
 from typing import Any, Mapping

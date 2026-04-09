@@ -1,4 +1,5 @@
 # gui/window_manager.py
+
 from PyQt5.QtCore import QObject
 from PyQt5.QtWidgets import QApplication
 

@@ -1,3 +1,5 @@
+# gui/live_graph_provider.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass

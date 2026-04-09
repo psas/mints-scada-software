@@ -1,3 +1,5 @@
+# gui/playback_catalog.py
+
 from __future__ import annotations
 
 import json
