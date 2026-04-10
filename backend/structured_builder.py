@@ -1,5 +1,12 @@
 # backend/structured_builder.py
 
+"""Build first-order and structured telemetry event payloads.
+
+This module converts normalized telemetry packets into the backend's raw
+first-order telemetry event shape and the replay-oriented structured telemetry
+shape used by downstream history, export, and playback paths.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -18,8 +25,19 @@ _SHARED_EVENT_IDENTITY_FIELDS = (
 )
 
 
+def _copy_shared_event_identity(
+    first_order_event: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy shared archive identity fields from a first-order event.
 
-def _copy_shared_event_identity(first_order_event: Mapping[str, Any] | None) -> dict[str, Any]:
+    Args:
+        first_order_event: First-order event whose shared identity fields should
+            be mirrored into a structured event.
+
+    Returns:
+        A dictionary containing only the shared identity fields that are present
+        and non-None in ``first_order_event``.
+    """
     if first_order_event is None:
         return {}
 
@@ -32,7 +50,13 @@ def _copy_shared_event_identity(first_order_event: Mapping[str, Any] | None) -> 
 
 
 class StructuredEventBuilder:
-    """Build raw first-order telemetry events and replay-oriented structured events."""
+    """Build raw telemetry events and replay-oriented structured telemetry events.
+
+    The builder accepts either a pre-normalized ``NormalizedTelemetryPacket`` or
+    the lower-level ``meta``/``runtime``/``packet`` inputs needed to construct
+    one. Structured events preserve shared archive identity from the matching
+    first-order event when that event is available.
+    """
 
     def build_raw_telemetry_event(
         self,
@@ -43,6 +67,26 @@ class StructuredEventBuilder:
         runtime: Any | None = None,
         source: str = "bus",
     ) -> dict[str, Any]:
+        """Build the raw first-order telemetry payload for a packet observation.
+
+        Args:
+            telemetry: Pre-normalized telemetry packet to serialize.
+            meta: Device metadata used to normalize the packet when ``telemetry``
+                is not provided.
+            packet: Raw packet object used to normalize the event when
+                ``telemetry`` is not provided.
+            runtime: Runtime decode associated with ``packet``.
+            source: Source label recorded on the normalized telemetry packet when
+                it must be constructed here.
+
+        Returns:
+            The raw telemetry event payload produced by
+            ``NormalizedTelemetryPacket.to_raw_event_payload()``.
+
+        Raises:
+            ValueError: If neither ``telemetry`` nor both ``meta`` and
+                ``packet`` are provided.
+        """
         if telemetry is None:
             if meta is None or packet is None:
                 raise ValueError("telemetry or meta+packet must be provided")
@@ -66,6 +110,37 @@ class StructuredEventBuilder:
         runtime: Any | None = None,
         source: str = "bus",
     ) -> dict[str, Any]:
+        """Build the structured telemetry payload used by replay-oriented history.
+
+        The structured payload carries normalized packet and runtime summaries,
+        reducer-provided semantic information, and selected convenience fields
+        for known semantic domains such as pressure, temperature, valve, flow,
+        and load. When a matching first-order event is provided, its shared
+        archive identity fields are copied into the structured payload.
+
+        Args:
+            telemetry: Pre-normalized telemetry packet to serialize.
+            reduction: Reducer output associated with the telemetry packet. The
+                builder reads its ``semantic`` mapping when present.
+            first_order_event: Matching first-order event whose shared identity
+                fields should be preserved on the structured event.
+            meta: Device metadata used to normalize the packet when ``telemetry``
+                is not provided.
+            packet: Raw packet object used to normalize the event when
+                ``telemetry`` is not provided.
+            runtime: Runtime decode associated with ``packet``.
+            source: Source label recorded on the normalized telemetry packet when
+                it must be constructed here.
+
+            Returns:
+                A structured telemetry payload containing shared archive identity,
+                normalized device and packet metadata, reducer semantic data, and
+                domain-specific convenience fields when available.
+
+        Raises:
+            ValueError: If neither ``telemetry`` nor both ``meta`` and
+                ``packet`` are provided.
+        """
         if telemetry is None:
             if meta is None or packet is None:
                 raise ValueError("telemetry or meta+packet must be provided")

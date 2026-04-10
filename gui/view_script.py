@@ -1,5 +1,13 @@
 # gui/view_script.py
 
+"""Script selection and backend runtime control widget.
+
+This module provides the script-control panel used by the controller window.
+The widget lets the operator choose a Python script, start it through the
+backend-owned subprocess runtime, stop it through the same backend control
+path, and mirror backend script status and output back into the GUI.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +30,14 @@ from gui import MintsScriptAPI
 
 
 class ScriptView(QWidget):
+    """Render script selection and backend script-control actions.
+
+    The widget owns the operator-facing script controls but does not execute
+    scripts locally. It reads the selected script file, requests backend-owned
+    script start and stop operations through the parent window, and updates its
+    UI from backend status messages and backend state snapshots.
+    """
+
     START_BUTTON_TEXT = "Run"
     STOP_BUTTON_TEXT = "Stop"
     STOPPING_BUTTON_TEXT = "Stopping..."
@@ -31,6 +47,14 @@ class ScriptView(QWidget):
     stoppedSignal = pyqtSignal()
 
     def __init__(self, mintsapi: MintsScriptAPI):
+        """Initialize the script control widget.
+
+        Args:
+            mintsapi: Legacy script API compatibility object retained by the GUI
+                layer. The current widget keeps a reference for surrounding
+                controller integration but starts scripts through backend-owned
+                runtime control.
+        """
         super().__init__()
 
         self.log = logging.getLogger("script")
@@ -78,11 +102,26 @@ class ScriptView(QWidget):
         self._refresh_ui()
 
     def _dialog_start_dir(self) -> str:
+        """Return the initial directory for the script picker dialog.
+
+        Returns:
+            The selected script's parent directory when the current selection
+            still exists, otherwise the current working directory.
+        """
         if self.filename and os.path.exists(self.filename):
             return os.path.dirname(self.filename) or os.getcwd()
         return os.getcwd()
 
     def _refresh_ui(self) -> None:
+        """Synchronize button state and labels with the current selection.
+
+        The widget shows the selected script basename when the file still
+        exists, disables loading while a script is active, and turns the main
+        action button into Stop while backend runtime state is active.
+
+        Returns:
+            None.
+        """
         has_script = bool(self.filename and os.path.isfile(self.filename))
         is_running = self.running.is_set()
 
@@ -95,13 +134,36 @@ class ScriptView(QWidget):
 
         self.openbutton.setEnabled(not is_running)
         self.runbutton.setEnabled(is_running or has_script)
-        self.runbutton.setText(self.STOP_BUTTON_TEXT if is_running else self.START_BUTTON_TEXT)
+        self.runbutton.setText(
+            self.STOP_BUTTON_TEXT if is_running else self.START_BUTTON_TEXT
+        )
 
     def _choose_script(self, checked: bool = False) -> None:
+        """Open the file picker for selecting a script file.
+
+        Args:
+            checked: Unused Qt clicked state passed by the button signal.
+
+        Returns:
+            None.
+        """
         del checked
         self._load()
 
     def _load(self, filename: str | None = None) -> None:
+        """Select a script file and update the widget selection state.
+
+        When no filename is supplied, this opens a file dialog restricted to
+        Python scripts by default. The method refuses to replace the selection
+        while a backend-owned script is still running.
+
+        Args:
+            filename: Optional absolute or relative script path to select
+                directly instead of opening the file dialog.
+
+        Returns:
+            None.
+        """
         if self.running.is_set():
             self.log.warning("Ignoring load request while script is running")
             return
@@ -135,8 +197,17 @@ class ScriptView(QWidget):
         self._refresh_ui()
 
     def _read_selected_script(self) -> str | None:
+        """Read the currently selected script file from disk.
+
+        Returns:
+            The full script text when the selection exists and can be read, or
+            None after presenting a warning dialog for missing or unreadable
+            files.
+        """
         if not self.filename:
-            QMessageBox.warning(self, "No script selected", "Please load a script first.")
+            QMessageBox.warning(
+                self, "No script selected", "Please load a script first."
+            )
             return None
 
         if not os.path.isfile(self.filename):
@@ -161,9 +232,22 @@ class ScriptView(QWidget):
             return None
 
     def _setStoppingText(self) -> None:
+        """Show the transient stopping label after a stop request is sent.
+
+        Returns:
+            None.
+        """
         self.runbutton.setText(self.STOPPING_BUTTON_TEXT)
 
     def _done(self) -> None:
+        """Reset local runtime state after backend script activity ends.
+
+        This clears the active runtime owner, refreshes the widget, and emits
+        completion log messages derived from the most recent exit metadata.
+
+        Returns:
+            None.
+        """
         was_active = self.running.is_set() or self._active_runtime_owner != "idle"
         self.runner = None
         self._active_runtime_owner = "idle"
@@ -185,22 +269,43 @@ class ScriptView(QWidget):
                 if failure_message:
                     self.log.error("Script failed: %s", failure_message)
                 else:
-                    self.log.error("Script failed (exit code %s).", exit_info.get("returncode", "unknown"))
+                    self.log.error(
+                        "Script failed (exit code %s).",
+                        exit_info.get("returncode", "unknown"),
+                    )
             elif exit_status == "stopped":
                 if reason == "operator_stop":
                     self.log.warning("Script stopped by operator.")
                 else:
-                    self.log.warning("Script stopped (reason: %s).", reason or "unknown")
+                    self.log.warning(
+                        "Script stopped (reason: %s).", reason or "unknown"
+                    )
             else:
-                self.log.warning("Script exited (status=%s, reason=%s).", exit_status or "unknown", reason or "unknown")
+                self.log.warning(
+                    "Script exited (status=%s, reason=%s).",
+                    exit_status or "unknown",
+                    reason or "unknown",
+                )
 
     def _backend_window(self):
+        """Return the parent window that owns backend script-control methods.
+
+        Returns:
+            The containing window when it is distinct from this widget, or None
+            when no usable backend control window is available.
+        """
         window = self.window()
         if window is self:
             return None
         return window
 
     def _backend_script_control_available(self) -> bool:
+        """Return whether the parent window exposes backend script controls.
+
+        Returns:
+            True when the containing window exposes callable
+            ``start_backend_script`` and ``stop_backend_script`` methods.
+        """
         window = self._backend_window()
         return bool(
             window is not None
@@ -209,10 +314,29 @@ class ScriptView(QWidget):
         )
 
     def _script_name_for_backend(self) -> str:
+        """Build the script name sent with backend start requests.
+
+        Returns:
+            The selected file basename, or ``"script.py"`` when no filename is
+            currently available.
+        """
         base = os.path.basename(self.filename or "")
         return base or "script.py"
 
     def _mark_running(self, *, runtime_owner: str) -> None:
+        """Mark the widget as actively controlled by a script runtime owner.
+
+        On transition from idle to active, this also clears pending exit
+        metadata and resets the count used to stream backend output lines into
+        the GUI log.
+
+        Args:
+            runtime_owner: Identifier for the runtime owner currently driving
+                the script session.
+
+        Returns:
+            None.
+        """
         is_new_run = not self.running.is_set()
         self.running.set()
         self._active_runtime_owner = runtime_owner
@@ -222,17 +346,31 @@ class ScriptView(QWidget):
         self._refresh_ui()
 
     def _run(self) -> None:
+        """Start the selected script or stop the active backend script.
+
+        When the widget is idle, this validates the selected file, reads the
+        script text, verifies backend control availability, and routes start
+        through the backend-owned subprocess runtime. When the widget is
+        already active, the same button acts as a stop request.
+
+        Returns:
+            None.
+        """
         if self.running.is_set():
             self.stop()
             return
 
         script = self._read_selected_script()
         if not isinstance(script, str) or not script.strip():
-            QMessageBox.warning(self, "Empty script", "The selected script file is empty.")
+            QMessageBox.warning(
+                self, "Empty script", "The selected script file is empty."
+            )
             return
 
         if not self._backend_script_control_available():
-            self.log.error("Backend script control is unavailable; refusing to start script")
+            self.log.error(
+                "Backend script control is unavailable; refusing to start script"
+            )
             QMessageBox.warning(
                 self,
                 "Backend Unavailable",
@@ -246,6 +384,18 @@ class ScriptView(QWidget):
         self._run_via_backend(script)
 
     def _run_via_backend(self, script_text: str) -> None:
+        """Request backend-owned script start for the selected script text.
+
+        Args:
+            script_text: Full inline Python source to hand to the backend
+                runtime.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: If no containing backend control window is available.
+        """
         window = self._backend_window()
         if window is None:
             raise RuntimeError("Backend script control window is unavailable")
@@ -275,6 +425,15 @@ class ScriptView(QWidget):
         self._mark_running(runtime_owner="backend")
 
     def stop(self) -> None:
+        """Request backend-owned stop for the active script session.
+
+        The widget only allows stop requests for backend-owned runtime sessions.
+        Unexpected runtime owners or missing backend control methods are treated
+        as GUI-side error conditions and surfaced to the operator.
+
+        Returns:
+            None.
+        """
         if not self.running.is_set():
             return
 
@@ -291,7 +450,9 @@ class ScriptView(QWidget):
             return
 
         if not self._backend_script_control_available():
-            self.log.error("Backend script control became unavailable while script was running")
+            self.log.error(
+                "Backend script control became unavailable while script was running"
+            )
             QMessageBox.warning(
                 self,
                 "Backend Unavailable",
@@ -317,9 +478,26 @@ class ScriptView(QWidget):
         self.stoppedSignal.emit()
 
     def scriptPrint(self, message: Any) -> None:
+        """Forward script output text into the GUI script logger.
+
+        Args:
+            message: Value to log on the script logger channel.
+
+        Returns:
+            None.
+        """
         self.log.info("%s", message)
 
     def handle_script_status(self, payload: dict[str, object]) -> None:
+        """Apply a backend script-status update to the widget runtime state.
+
+        Args:
+            payload: Backend status payload containing a normalized ``status``
+                field and optional exit metadata.
+
+        Returns:
+            None.
+        """
         if not isinstance(payload, dict):
             return
 
@@ -329,10 +507,18 @@ class ScriptView(QWidget):
                 self._mark_running(runtime_owner="backend")
             return
 
-        if status in {"stopped", "finished", "completed", "exited", "idle", "not_running"}:
+        if status in {
+            "stopped",
+            "finished",
+            "completed",
+            "exited",
+            "idle",
+            "not_running",
+        }:
             if self.running.is_set() or self._active_runtime_owner != "idle":
                 exit_info = {
-                    "exit_status": payload.get("exit_status") or ("stopped" if status == "stopped" else None),
+                    "exit_status": payload.get("exit_status")
+                    or ("stopped" if status == "stopped" else None),
                     "failure_message": payload.get("failure_message"),
                     "reason": payload.get("reason"),
                     "returncode": payload.get("returncode"),
@@ -341,6 +527,21 @@ class ScriptView(QWidget):
                 self.doneSignal.emit()
 
     def apply_backend_state_snapshot(self, snapshot: dict) -> None:
+        """Mirror backend script runtime state from a full backend snapshot.
+
+        The method looks for the script runtime section under the accepted
+        snapshot keys, streams any newly appended output lines into the GUI log,
+        and then applies either the explicit ``is_running`` flag or the
+        normalized status field to keep the widget synchronized with backend
+        truth.
+
+        Args:
+            snapshot: Full backend state snapshot received by the controller
+                window.
+
+        Returns:
+            None.
+        """
         if not isinstance(snapshot, dict):
             return
 

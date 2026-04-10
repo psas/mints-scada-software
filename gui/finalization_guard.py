@@ -1,10 +1,10 @@
 # gui/finalization_guard.py
 
-"""Finalization guard: blocks app close while archive save is in progress.
+"""Guard application shutdown while archive finalization is still running.
 
-Provides a shared dialog and background auto-close timer used by both the
-controller and scada windows to prevent shutdown before ``complete.json``
-has been written.
+This module provides the shared finalization-wait dialog and the background
+auto-close timer used by GUI windows that must stay open until archive
+finalization has written the completion marker.
 """
 from __future__ import annotations
 
@@ -23,12 +23,11 @@ RESULT_FORCE_CLOSE = 2
 
 
 class FinalizationWaitDialog(QDialog):
-    """Modal dialog shown while archive finalization is in progress.
+    """Wait for archive finalization or let the operator override shutdown.
 
-    Polls *check_complete_fn* on a timer.  When the callable returns ``True``
-    the dialog auto-accepts so the caller can proceed with shutdown.  The
-    operator may also choose *Keep Waiting* (dismiss dialog, app stays open)
-    or *Close Anyway* (force immediate shutdown).
+    The dialog polls a caller-provided completion check while the archive is
+    still being finalized. It auto-accepts when finalization completes, or the
+    operator can either keep the application open or force immediate shutdown.
     """
 
     def __init__(
@@ -38,6 +37,15 @@ class FinalizationWaitDialog(QDialog):
         *,
         poll_interval_ms: int = 500,
     ) -> None:
+        """Initialize the finalization-wait dialog.
+
+        Args:
+            parent: Parent widget that owns the dialog.
+            check_complete_fn: Callable that returns True once archive
+                finalization has completed.
+            poll_interval_ms: Poll interval, in milliseconds, for checking
+                archive completion.
+        """
         super().__init__(parent)
         self.setWindowTitle("Save in Progress")
         self.setModal(True)
@@ -80,11 +88,22 @@ class FinalizationWaitDialog(QDialog):
 
     @property
     def result_code(self) -> int:
+        """Return the dialog outcome code.
+
+        Returns:
+            One of RESULT_KEEP_WAITING, RESULT_COMPLETED, or
+            RESULT_FORCE_CLOSE.
+        """
         return self._result_code
 
     # -- internal -------------------------------------------------------------
 
     def _poll(self) -> None:
+        """Poll for archive completion and auto-accept when it finishes.
+
+        Returns:
+            None.
+        """
         try:
             if self._check_complete():
                 self._poll_timer.stop()
@@ -95,16 +114,34 @@ class FinalizationWaitDialog(QDialog):
             log.debug("Finalization poll check failed", exc_info=True)
 
     def _on_keep_waiting(self) -> None:
+        """Dismiss the dialog and leave the application open.
+
+        Returns:
+            None.
+        """
         self._poll_timer.stop()
         self._result_code = RESULT_KEEP_WAITING
         self.reject()
 
     def _on_force_close(self) -> None:
+        """Accept the dialog and allow immediate shutdown.
+
+        Returns:
+            None.
+        """
         self._poll_timer.stop()
         self._result_code = RESULT_FORCE_CLOSE
         self.accept()
 
     def closeEvent(self, event) -> None:
+        """Treat manual dialog close actions as a keep-waiting decision.
+
+        Args:
+            event: Qt close event for the dialog.
+
+        Returns:
+            None.
+        """
         # Dialog X-button or Escape treated as Keep Waiting.
         self._poll_timer.stop()
         self._result_code = RESULT_KEEP_WAITING
@@ -117,11 +154,22 @@ def start_finalization_auto_close_timer(
     *,
     interval_ms: int = 500,
 ) -> None:
-    """Start a background timer on *window* that auto-closes it when
-    *check_complete_fn* returns ``True``.
+    """Start a background watcher that closes a window after finalization.
 
-    Called after the operator chooses *Keep Waiting*.  Sets a bypass flag
-    so the subsequent ``closeEvent`` does not re-open the dialog.
+    This is used after the operator chooses Keep Waiting. When the completion
+    check begins returning True, the helper sets the window's
+    ``_finalization_bypass`` flag and closes the window so its later
+    ``closeEvent`` path does not reopen the guard dialog.
+
+    Args:
+        window: Window that should close automatically after archive
+            finalization completes.
+        check_complete_fn: Callable that returns True once archive
+            finalization has completed.
+        interval_ms: Poll interval, in milliseconds, for the background check.
+
+    Returns:
+        None.
     """
     timer_attr = "_finalization_auto_close_timer"
     existing = getattr(window, timer_attr, None)
@@ -132,6 +180,11 @@ def start_finalization_auto_close_timer(
     timer.setInterval(interval_ms)
 
     def _check() -> None:
+        """Close the window once archive finalization completes.
+
+        Returns:
+            None.
+        """
         try:
             if check_complete_fn():
                 timer.stop()

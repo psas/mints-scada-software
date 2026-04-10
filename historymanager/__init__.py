@@ -1,5 +1,7 @@
 # historymanager/__init__.py
 
+"""Public historymanager exports for run history, integrity, and rebuild helpers."""
+
 from .manager import HistoryManager
 from .integrity import (
     INTEGRITY_REPORT_FILENAME,
@@ -31,4 +33,3 @@ __all__ = [
     "get_rebuild_artifact_status",
     "discard_rebuild_workspace",
 ]
-

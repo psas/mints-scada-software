@@ -1,5 +1,12 @@
 # backend/abort_command.py
 
+"""Canonical abort command helpers for backend dispatch and event recording.
+
+This module normalizes accepted abort request payloads into the backend's
+canonical abort dispatch shape, builds the matching structured system event,
+and records the same event through the health publisher path.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -19,6 +26,16 @@ from scripts.script_runtime.script_contract import (
 
 
 def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
+    """Return a stripped string value from a mapping entry.
+
+    Args:
+        payload: Mapping to read from.
+        key: Mapping key to inspect.
+
+    Returns:
+        The stripped string value, or None when the key is missing, not a
+        string, or only contains whitespace.
+    """
     value = payload.get(key)
     if not isinstance(value, str):
         return None
@@ -27,6 +44,16 @@ def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
 
 
 def _optional_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
+    """Return a nested mapping value when present.
+
+    Args:
+        payload: Mapping to read from.
+        key: Mapping key to inspect.
+
+    Returns:
+        The nested mapping stored at ``key``, or None when the value is missing
+        or not a mapping.
+    """
     value = payload.get(key)
     if isinstance(value, Mapping):
         return value
@@ -34,12 +61,32 @@ def _optional_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]
 
 
 def is_abort_command_payload(payload: Mapping[str, Any]) -> bool:
-    """Return True when a command_request payload is the canonical abort request."""
+    """Return whether a command request payload targets the canonical abort command.
+
+    Args:
+        payload: Command request payload to inspect.
+
+    Returns:
+        True when ``command_name`` matches the canonical abort command name.
+    """
     command_name = _optional_string(payload, "command_name")
     return command_name == ABORT_COMMAND_NAME
 
 
 def _extract_abort_message(payload: Mapping[str, Any]) -> str | None:
+    """Extract the operator-facing abort message from an abort request payload.
+
+    The lookup first checks the top-level ``message`` field. If that is absent,
+    it falls back to ``command_kwargs`` and checks the canonical and legacy
+    message keys used by abort callers.
+
+    Args:
+        payload: Abort request payload to inspect.
+
+    Returns:
+        The first non-empty abort message found, or None when the payload does
+        not provide one.
+    """
     direct_message = _optional_string(payload, "message")
     if direct_message:
         return direct_message
@@ -60,7 +107,23 @@ def build_abort_dispatch_info(
     *,
     default_request_source: str = "gui",
 ) -> dict[str, Any]:
-    """Build canonical dispatch_info for the unified backend abort acceptance path."""
+    """Build the canonical dispatch metadata for an accepted abort request.
+
+    This normalizes request identity, request-source metadata, mode metadata,
+    and the optional abort message into the backend's unified abort
+    ``dispatch_info`` shape. The result is used by downstream logging,
+    structured event construction, and health/system-event publication.
+
+    Args:
+        payload: Abort request payload received by the backend acceptance path.
+        default_request_source: Fallback request source when the payload does
+            not declare one.
+
+    Returns:
+        A canonical abort ``dispatch_info`` dictionary populated with accepted
+        status, adapter metadata, request metadata, source window metadata, and
+        the derived legacy abort log message.
+    """
     request_id = _optional_string(payload, "request_id") or _optional_string(
         payload,
         "relay_request_id",
@@ -116,7 +179,17 @@ def build_abort_dispatch_info(
 
 
 def build_abort_structured_event(dispatch_info: Mapping[str, Any]) -> dict[str, Any]:
-    """Build a canonical structured/system event payload for an accepted abort."""
+    """Build the canonical structured system event for an accepted abort.
+
+    Args:
+        dispatch_info: Canonical abort dispatch metadata produced by
+            ``build_abort_dispatch_info``.
+
+    Returns:
+        A structured ``system_event`` payload that mirrors the accepted abort
+        metadata and preserves the legacy abort log message used elsewhere in
+        the backend.
+    """
     event = {
         "event_type": "system_event",
         "event_name": ABORT_SYSTEM_EVENT_NAME,
@@ -145,7 +218,18 @@ def record_abort_system_event(
     *,
     current_run_id: str | None = None,
 ) -> None:
-    """Record the canonical backend system event for the abort acceptance path."""
+    """Record the canonical abort system event through the health publisher.
+
+    Args:
+        health: Health publisher object that exposes ``record_system_event``.
+        dispatch_info: Canonical abort dispatch metadata produced by
+            ``build_abort_dispatch_info``.
+        current_run_id: Active run identifier to attach to the system event
+            when one exists.
+
+    Returns:
+        None.
+    """
     event_kwargs: dict[str, Any] = {
         "severity": "warning",
         "behavior": dispatch_info.get("behavior", ABORT_BEHAVIOR_LOG_ONLY),

@@ -1,16 +1,14 @@
 # scripts/script_runtime/script_contract.py
 
-from __future__ import annotations
-
 """Shared contract for legacy script compatibility and unified abort plumbing.
 
-This module is intentionally dependency-light so it can be imported from GUI,
-backend, and future subprocess script-host code without dragging in PyQt or
-other heavy runtime state.
-
-Commit 1 defines the contract, the default script layout, and the canonical
-abort payload builders. It does not yet switch any execution path.
+This module defines the dependency-light script contract shared by GUI,
+backend, and script-runtime code. It centralizes the legacy script surface,
+default script locations, canonical abort constants, and builders for the
+operator-action and command-request payloads used by the unified abort path.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -31,9 +29,7 @@ SUPPORTED_SCRIPT_GLOBALS: tuple[str, ...] = (
     "mints",
 )
 
-SUPPORTED_MINTS_MEMBERS: tuple[str, ...] = (
-    "devices",
-)
+SUPPORTED_MINTS_MEMBERS: tuple[str, ...] = ("devices",)
 
 DEPRECATED_MINTS_MEMBERS: tuple[str, ...] = (
     "graph",
@@ -65,7 +61,43 @@ ABORT_LEGACY_LOG_MESSAGE = (
 
 @dataclass(frozen=True)
 class LegacyScriptContract:
-    """Human-readable summary of the legacy surface we intend to preserve."""
+    """Describe the legacy script surface and canonical abort contract.
+
+    The dataclass packages the script-runtime compatibility surface into a
+    stable, import-friendly object that can be exposed to GUI, backend, and
+    future subprocess runtime code without pulling in heavier dependencies.
+
+    Attributes:
+        default_script_directory: Default directory searched for script files.
+        default_script_filename: Default script file path used by the runtime.
+        legacy_script_example_files: Example script paths preserved for legacy
+            workflows and operator expectations.
+        supported_globals: Global names intentionally exposed to legacy scripts.
+        supported_mints_members: Supported members on the ``mints`` object.
+        deprecated_mints_members: Legacy ``mints`` members preserved only as
+            deprecated surface markers.
+        supported_surface: Human-readable summary of the supported legacy
+            scripting surface.
+        abort_command_name: Canonical command name used for abort requests.
+        abort_operator_action: Canonical operator-action name emitted for abort
+            requests.
+        abort_requested_via: Canonical source marker for relay-originated abort
+            requests.
+        abort_relay_message_type: Canonical relay IPC message type for abort
+            requests.
+        abort_behavior: Current backend behavior label for accepted abort
+            requests.
+        abort_dispatched_via: Canonical dispatch path label for accepted abort
+            handling.
+        abort_adapter_name: Canonical adapter name reported for abort handling.
+        abort_status: Canonical handled status returned for accepted abort
+            requests.
+        abort_authority_level: Authority level associated with the abort path.
+        abort_system_event_name: Canonical structured/system event name emitted
+            for accepted abort requests.
+        abort_legacy_log_message: Base legacy log message currently emitted for
+            accepted abort requests.
+    """
 
     default_script_directory: str = DEFAULT_SCRIPT_DIRECTORY
     default_script_filename: str = DEFAULT_SCRIPT_FILENAME
@@ -91,7 +123,12 @@ LEGACY_SCRIPT_CONTRACT = LegacyScriptContract()
 
 
 def describe_legacy_script_contract() -> dict[str, Any]:
-    """Return a plain-JSON-friendly view of the contract."""
+    """Return a plain-JSON-friendly view of the legacy script contract.
+
+    Returns:
+        A dictionary representation of ``LEGACY_SCRIPT_CONTRACT`` with an
+        embedded ``abort`` section for the canonical abort-related fields.
+    """
     contract = LEGACY_SCRIPT_CONTRACT
     return {
         "default_script_directory": contract.default_script_directory,
@@ -118,15 +155,40 @@ def describe_legacy_script_contract() -> dict[str, Any]:
 
 
 def is_supported_mints_member(name: str) -> bool:
+    """Return whether a ``mints`` attribute is part of the supported surface.
+
+    Args:
+        name: Member name to check.
+
+    Returns:
+        True when ``name`` is a supported ``mints`` member exposed to legacy
+        scripts.
+    """
     return name in SUPPORTED_MINTS_MEMBERS
 
 
 def is_deprecated_mints_member(name: str) -> bool:
+    """Return whether a ``mints`` attribute is recognized as deprecated.
+
+    Args:
+        name: Member name to check.
+
+    Returns:
+        True when ``name`` is part of the deprecated legacy ``mints`` surface.
+    """
     return name in DEPRECATED_MINTS_MEMBERS
 
 
 def build_abort_legacy_log_message(message: str | None = None) -> str:
-    """Build the current legacy/log-only backend message for an abort request."""
+    """Build the current legacy log-only abort message.
+
+    Args:
+        message: Optional caller-supplied detail message to append.
+
+    Returns:
+        The base legacy abort message, optionally extended with a ``Detail:``
+        suffix when ``message`` is a non-empty string after stripping.
+    """
     if isinstance(message, str):
         stripped = message.strip()
         if stripped:
@@ -144,7 +206,21 @@ def build_abort_operator_action_payload(
     source_mode: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the canonical operator_action payload for an abort request."""
+    """Build the canonical operator_action payload for an abort request.
+
+    Args:
+        relay_request_id: Relay-generated request identifier for the abort.
+        relay_session_id: Relay session identifier associated with the request.
+        requested_at: Timestamp string for when the abort was requested.
+        source_window_role: Logical source window role, when known.
+        source_window_kind: Source window kind, when known.
+        source_mode: Source runtime mode, such as live or playback.
+        extra: Additional fields to merge into the payload.
+
+    Returns:
+        A canonical ``operator_action`` payload for the abort path. Values in
+        ``extra`` override previously populated keys when provided.
+    """
     payload: dict[str, Any] = {
         "action": ABORT_OPERATOR_ACTION,
         "requested_via": ABORT_REQUESTED_VIA,
@@ -169,7 +245,20 @@ def build_abort_command_payload(
     source_mode: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the canonical command_request payload for an abort request."""
+    """Build the canonical command_request payload for an abort request.
+
+    Args:
+        relay_request_id: Relay-generated request identifier for the abort.
+        relay_session_id: Relay session identifier associated with the request.
+        source_window_role: Logical source window role, when known.
+        source_window_kind: Source window kind, when known.
+        source_mode: Source runtime mode, such as live or playback.
+        extra: Additional fields to merge into the payload.
+
+    Returns:
+        A canonical ``command_request`` payload for the abort path. Values in
+        ``extra`` override previously populated keys when provided.
+    """
     payload: dict[str, Any] = {
         "command_name": ABORT_COMMAND_NAME,
         "device_id": None,

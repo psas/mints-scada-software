@@ -1,5 +1,11 @@
 # backend/__init__.py
 
+"""Public backend package exports for the backend-first runtime layer.
+
+This package surface re-exports the main backend coordination and state
+components used by callers that import from `backend` directly.
+"""
+
 from .service import BackendService
 from .ipc_models import IPCMessage
 from .state_store import StateStore

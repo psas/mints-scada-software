@@ -1,5 +1,12 @@
 # gui/abort_relay.py
 
+"""Local relay process for abort and clear-abort-latch gateway requests.
+
+This module exposes a small Unix-domain-socket server that accepts GUI-side
+abort relay messages, enriches them with relay session metadata, forwards them
+to the gateway service, and returns the gateway result to the caller.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -33,14 +40,35 @@ log = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
+    """Return the repository root used by the relay process.
+
+    Returns:
+        The project root directory derived from this module location.
+    """
     return PROJECT_ROOT
 
 
 def isoformat_z() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{int((time.time() % 1) * 1000):03d}Z"
+    """Return the current UTC time in millisecond ISO-8601 ``Z`` format.
+
+    Returns:
+        A UTC timestamp formatted as ``YYYY-MM-DDTHH:MM:SS.mmmZ``.
+    """
+    return (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        + f".{int((time.time() % 1) * 1000):03d}Z"
+    )
 
 
 def _configure_logging() -> None:
+    """Configure file and stream logging for the relay process.
+
+    The relay writes into the repository ``log/debug.log`` file and also emits
+    the same records through the standard stream handler.
+
+    Returns:
+        None.
+    """
     formatstr = "%(asctime)s [%(name)-16.16s] [%(levelname)-5.5s] %(message)s"
     log_dir = _project_root() / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -55,7 +83,17 @@ def _configure_logging() -> None:
 
 
 def _json_line(payload: Mapping[str, Any]) -> bytes:
-    return (json.dumps(dict(payload), ensure_ascii=False, sort_keys=False) + "\n").encode("utf-8")
+    """Encode a mapping as one UTF-8 JSONL record.
+
+    Args:
+        payload: Message payload to encode.
+
+    Returns:
+        The JSON-serialized payload followed by a newline as UTF-8 bytes.
+    """
+    return (
+        json.dumps(dict(payload), ensure_ascii=False, sort_keys=False) + "\n"
+    ).encode("utf-8")
 
 
 def send_abort_relay_message(
@@ -65,6 +103,22 @@ def send_abort_relay_message(
     payload: Mapping[str, Any] | None = None,
     timeout_s: float = 3.0,
 ) -> dict[str, Any]:
+    """Send a single request to a running abort relay and wait for one reply.
+
+    Args:
+        relay_socket: Unix-domain socket path exposed by the relay server.
+        message_type: Relay message type to send.
+        payload: Optional request payload object.
+        timeout_s: Socket and overall reply timeout in seconds.
+
+    Returns:
+        The first JSON object returned by the relay.
+
+    Raises:
+        TimeoutError: If the relay does not return a reply before the deadline.
+        OSError: If the client cannot connect to the relay socket.
+        json.JSONDecodeError: If the relay returns malformed JSON.
+    """
     socket_path = Path(relay_socket).expanduser().resolve()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout_s)
@@ -98,6 +152,20 @@ def send_abort_request(
     operator_action: Mapping[str, Any] | None = None,
     timeout_s: float = 4.0,
 ) -> dict[str, Any]:
+    """Send a canonical abort relay request to a running relay server.
+
+    Args:
+        relay_socket: Unix-domain socket path exposed by the relay server.
+        source_window_role: Optional logical role of the requesting GUI window.
+        source_window_kind: Optional GUI window kind for audit metadata.
+        source_mode: Optional mode string such as live or playback.
+        command_payload: Optional command payload overrides forwarded to the relay.
+        operator_action: Optional operator-action payload fields forwarded to the relay.
+        timeout_s: Socket and overall reply timeout in seconds.
+
+    Returns:
+        The relay response dictionary for the abort request.
+    """
     payload: dict[str, Any] = {}
     if source_window_role:
         payload["source_window_role"] = source_window_role
@@ -127,6 +195,20 @@ def send_clear_abort_latch_request(
     operator_action: Mapping[str, Any] | None = None,
     timeout_s: float = 4.0,
 ) -> dict[str, Any]:
+    """Send a clear-abort-latch relay request to a running relay server.
+
+    Args:
+        relay_socket: Unix-domain socket path exposed by the relay server.
+        source_window_role: Optional logical role of the requesting GUI window.
+        source_window_kind: Optional GUI window kind for audit metadata.
+        source_mode: Optional mode string such as live or playback.
+        command_payload: Optional command payload overrides forwarded to the relay.
+        operator_action: Optional operator-action payload fields forwarded to the relay.
+        timeout_s: Socket and overall reply timeout in seconds.
+
+    Returns:
+        The relay response dictionary for the clear-abort-latch request.
+    """
     payload: dict[str, Any] = {}
     if source_window_role:
         payload["source_window_role"] = source_window_role
@@ -147,7 +229,21 @@ def send_clear_abort_latch_request(
 
 
 class AbortRelayServer:
+    """Serve local abort relay requests and proxy them to the gateway.
+
+    The relay listens on a Unix-domain socket, accepts GUI-originated abort and
+    clear-abort-latch requests, adds relay session metadata, builds canonical
+    operator-action and command payloads, and forwards the request to the live
+    gateway socket.
+    """
+
     def __init__(self, *, relay_socket: str | Path, gateway_socket: str | Path) -> None:
+        """Initialize relay socket paths and session state.
+
+        Args:
+            relay_socket: Unix-domain socket path exposed to local relay clients.
+            gateway_socket: Unix-domain socket path for the gateway service.
+        """
         self.relay_socket = Path(relay_socket).expanduser().resolve()
         self.gateway_socket = Path(gateway_socket).expanduser().resolve()
         self.session_id = uuid4().hex
@@ -155,6 +251,15 @@ class AbortRelayServer:
         self._server_socket: socket.socket | None = None
 
     def serve_forever(self) -> None:
+        """Start the relay server loop and handle clients until stopped.
+
+        This method binds the relay socket, accepts client connections, and
+        dispatches each connection to a daemon thread that processes JSONL
+        requests until the server is asked to stop.
+
+        Returns:
+            None.
+        """
         self.relay_socket.parent.mkdir(parents=True, exist_ok=True)
         if self.relay_socket.exists():
             self.relay_socket.unlink()
@@ -163,7 +268,11 @@ class AbortRelayServer:
         server.bind(str(self.relay_socket))
         server.listen(16)
         server.settimeout(0.5)
-        log.info("AbortRelay listening on %s (gateway=%s)", self.relay_socket, self.gateway_socket)
+        log.info(
+            "AbortRelay listening on %s (gateway=%s)",
+            self.relay_socket,
+            self.gateway_socket,
+        )
         try:
             while not self._stop_event.is_set():
                 try:
@@ -174,12 +283,19 @@ class AbortRelayServer:
                     if self._stop_event.is_set():
                         break
                     raise
-                thread = threading.Thread(target=self._handle_client, args=(conn,), daemon=True)
+                thread = threading.Thread(
+                    target=self._handle_client, args=(conn,), daemon=True
+                )
                 thread.start()
         finally:
             self.stop()
 
     def stop(self) -> None:
+        """Stop the relay server and remove the relay socket path.
+
+        Returns:
+            None.
+        """
         self._stop_event.set()
         if self._server_socket is not None:
             try:
@@ -194,6 +310,14 @@ class AbortRelayServer:
             pass
 
     def _handle_client(self, conn: socket.socket) -> None:
+        """Process JSONL requests from one connected relay client.
+
+        Args:
+            conn: Accepted Unix-domain socket connection.
+
+        Returns:
+            None.
+        """
         with conn:
             conn.settimeout(2.0)
             buffer = ""
@@ -226,6 +350,19 @@ class AbortRelayServer:
                     conn.sendall(_json_line(response))
 
     def _process_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Route one decoded relay request to the appropriate handler.
+
+        Args:
+            request: Decoded JSON request object containing ``type`` and optional
+                ``payload`` fields.
+
+        Returns:
+            The response object that should be written back to the client.
+
+        Raises:
+            ValueError: If the payload is not an object or the message type is
+                unsupported.
+        """
         message_type = request.get("type")
         payload = request.get("payload", {})
         if payload is None:
@@ -253,13 +390,26 @@ class AbortRelayServer:
         raise ValueError(f"Unsupported AbortRelay message type: {message_type!r}")
 
     def _handle_abort_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Build and forward one abort request through the gateway.
+
+        Args:
+            payload: Relay request payload from a local client.
+
+        Returns:
+            A relay ``abort_result`` response containing the generated relay
+            request identifiers, the raw gateway response, and an ``ok`` flag.
+        """
         relay_request_id = uuid4().hex
         source_window_role = self._get_optional_string(payload, "source_window_role")
         source_window_kind = self._get_optional_string(payload, "source_window_kind")
         source_mode = self._get_optional_string(payload, "source_mode")
         requested_at = isoformat_z()
-        operator_action_extra = self._get_optional_mapping(payload, "operator_action") or {}
-        command_payload_override = self._get_optional_mapping(payload, "command_payload") or {}
+        operator_action_extra = (
+            self._get_optional_mapping(payload, "operator_action") or {}
+        )
+        command_payload_override = (
+            self._get_optional_mapping(payload, "command_payload") or {}
+        )
 
         operator_action_payload = build_abort_operator_action_payload(
             relay_request_id=relay_request_id,
@@ -294,7 +444,11 @@ class AbortRelayServer:
             },
             expected_response_types=("abort_result", "error"),
         )
-        payload_body = gateway_response.get("payload", {}) if isinstance(gateway_response, dict) else {}
+        payload_body = (
+            gateway_response.get("payload", {})
+            if isinstance(gateway_response, dict)
+            else {}
+        )
         ok = (
             gateway_response.get("type") == "abort_result"
             and isinstance(payload_body, Mapping)
@@ -311,15 +465,30 @@ class AbortRelayServer:
             },
         }
 
+    def _handle_clear_abort_latch_request(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Build and forward one clear-abort-latch request through the gateway.
 
-    def _handle_clear_abort_latch_request(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        Args:
+            payload: Relay request payload from a local client.
+
+        Returns:
+            A relay ``clear_abort_latch_result`` response containing the
+            generated relay request identifiers, the raw gateway response, and
+            an ``ok`` flag.
+        """
         relay_request_id = uuid4().hex
         source_window_role = self._get_optional_string(payload, "source_window_role")
         source_window_kind = self._get_optional_string(payload, "source_window_kind")
         source_mode = self._get_optional_string(payload, "source_mode")
         requested_at = isoformat_z()
-        operator_action_extra = self._get_optional_mapping(payload, "operator_action") or {}
-        command_payload_override = self._get_optional_mapping(payload, "command_payload") or {}
+        operator_action_extra = (
+            self._get_optional_mapping(payload, "operator_action") or {}
+        )
+        command_payload_override = (
+            self._get_optional_mapping(payload, "command_payload") or {}
+        )
 
         operator_action_payload = build_clear_abort_latch_operator_action_payload(
             relay_request_id=relay_request_id,
@@ -354,7 +523,11 @@ class AbortRelayServer:
             },
             expected_response_types=("clear_abort_latch_result", "error"),
         )
-        payload_body = gateway_response.get("payload", {}) if isinstance(gateway_response, dict) else {}
+        payload_body = (
+            gateway_response.get("payload", {})
+            if isinstance(gateway_response, dict)
+            else {}
+        )
         ok = (
             gateway_response.get("type") == "clear_abort_latch_result"
             and isinstance(payload_body, Mapping)
@@ -379,6 +552,28 @@ class AbortRelayServer:
         expected_response_types: tuple[str, ...],
         timeout_s: float = 3.0,
     ) -> dict[str, Any]:
+        """Send one request to the gateway and wait for an allowed response type.
+
+        The relay opens a fresh gateway connection for each forwarded request,
+        sends a ``hello`` handshake that identifies this process as the
+        abort-relay client, then sends the actual relay payload.
+
+        Args:
+            message_type: Gateway message type to send after the handshake.
+            payload: Gateway payload object to forward.
+            expected_response_types: Acceptable gateway response message types.
+            timeout_s: Socket and overall reply timeout in seconds.
+
+        Returns:
+            The first decoded gateway response whose ``type`` matches one of
+            ``expected_response_types``.
+
+        Raises:
+            TimeoutError: If the gateway does not return an expected response
+                before the deadline.
+            OSError: If the relay cannot connect to the gateway socket.
+            json.JSONDecodeError: If the gateway returns malformed JSON.
+        """
         hello_payload = {
             "client_name": "abort-relay",
             "logical_client_id": "gui:abort-relay",
@@ -417,15 +612,45 @@ class AbortRelayServer:
             f"AbortRelay timed out waiting for gateway response types {expected_response_types!r}"
         )
 
-    def _get_optional_mapping(self, payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    def _get_optional_mapping(
+        self, payload: Mapping[str, Any], key: str
+    ) -> dict[str, Any] | None:
+        """Return an optional nested object from a relay payload.
+
+        Args:
+            payload: Relay payload to inspect.
+            key: Field name to read.
+
+        Returns:
+            A shallow ``dict`` copy of the nested mapping, or None when the
+            field is absent.
+
+        Raises:
+            ValueError: If the field is present but is not an object.
+        """
         value = payload.get(key)
         if value is None:
             return None
         if not isinstance(value, Mapping):
-            raise ValueError(f"AbortRelay field {key!r} must be an object when provided")
+            raise ValueError(
+                f"AbortRelay field {key!r} must be an object when provided"
+            )
         return dict(value)
 
     def _get_optional_string(self, payload: Mapping[str, Any], key: str) -> str | None:
+        """Return an optional stripped string from a relay payload.
+
+        Args:
+            payload: Relay payload to inspect.
+            key: Field name to read.
+
+        Returns:
+            The stripped string value, or None when the field is absent or
+            contains only whitespace.
+
+        Raises:
+            ValueError: If the field is present but is not a string.
+        """
         value = payload.get(key)
         if value is None:
             return None
@@ -436,13 +661,26 @@ class AbortRelayServer:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the minTS local AbortRelay process")
+    """Build the CLI parser for the standalone abort relay process.
+
+    Returns:
+        The configured argument parser for relay startup.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run the minTS local AbortRelay process"
+    )
     parser.add_argument("--gateway-socket", required=True)
     parser.add_argument("--relay-socket", required=True)
     return parser
 
 
 def main() -> int:
+    """Run the standalone abort relay server process.
+
+    Returns:
+        ``0`` when the server exits normally, or ``130`` when interrupted by
+        the user.
+    """
     _configure_logging()
     parser = _build_arg_parser()
     args = parser.parse_args()

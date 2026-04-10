@@ -1,5 +1,16 @@
 # backend/service.py
 
+"""Backend runtime service and GUI-facing IPC coordinator.
+
+This module defines :class:`BackendService`, the backend-first system-of-record
+process for the teststand application. The service owns authoritative runtime
+state, run lifecycle coordination, structured history recording, command
+routing, script execution callbacks, and backend IPC handling. When live ingest
+is delegated to the gateway, it also adopts gateway hardware status and mirrors
+raw-side event identity while continuing to own backend snapshots and
+structured history.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -58,7 +69,14 @@ log = logging.getLogger(__name__)
 
 
 class BackendService:
-    """Backend service skeleton."""
+    """Own backend runtime state, IPC handling, and cross-subsystem orchestration.
+
+    The backend service is the authoritative coordination layer for the running
+    application. It composes the state store, run controller, reducer,
+    structured event builder, device registry, bus manager, gateway client,
+    command router, script runner, health monitor, and IPC server, then uses
+    those components to service GUI requests and record backend state changes.
+    """
 
     def __init__(
         self,
@@ -67,7 +85,19 @@ class BackendService:
         socket_path: str | Path | None = None,
         gateway_socket_path: str | Path | None = None,
     ) -> None:
-        self.project_root = Path(project_root).expanduser().resolve() if project_root else None
+        """Initialize backend-owned services, transports, and IPC state.
+
+        Args:
+            project_root: Project root used for history paths and socket
+                defaults.
+            socket_path: Backend IPC socket path. When omitted, a default path
+                under ``project_root`` or the current working directory is used.
+            gateway_socket_path: Gateway IPC socket path used when live ingest
+                is delegated to the gateway service.
+        """
+        self.project_root = (
+            Path(project_root).expanduser().resolve() if project_root else None
+        )
         self.started_at = isoformat_z()
         self.service_name = "teststand-backend"
 
@@ -113,9 +143,7 @@ class BackendService:
             status_callback=self._handle_bus_status_event,
             packet_callback=self._handle_bus_packet_hook,
             error_callback=self._handle_bus_error_event,
-
         )
-
 
         self.gateway_client = GatewayClient(
             project_root=self.project_root,
@@ -192,9 +220,17 @@ class BackendService:
         )
 
     def serve_forever(self) -> None:
+        """Run the backend IPC server until it is stopped."""
         self.server.serve_forever()
 
     def stop(self) -> None:
+        """Shut down backend-owned runtime services and release live resources.
+
+        This records a backend stopping system event when a run is active,
+        stops script execution, closes gateway IPC, tears down live bus access,
+        clears runtime registration state, stops the IPC server, and shuts down
+        health monitoring.
+        """
         if self.history_manager.is_running:
             self.health.record_system_event(
                 "backend_stopping",
@@ -236,6 +272,12 @@ class BackendService:
         self.health_monitor.stop()
 
     def on_client_connected(self, client_id: str) -> None:
+        """Track a newly connected backend IPC client.
+
+        Args:
+            client_id: Transport-level connection identifier assigned by the IPC
+                server.
+        """
         with self._lock:
             self._connected_clients.add(client_id)
             self._client_first_message_type[client_id] = None
@@ -251,6 +293,12 @@ class BackendService:
         self.health_monitor.sample_once()
 
     def on_client_disconnected(self, client_id: str) -> None:
+        """Remove a disconnected client from backend session tracking.
+
+        Args:
+            client_id: Transport-level connection identifier assigned by the IPC
+                server.
+        """
         with self._lock:
             self._connected_clients.discard(client_id)
             session = self._client_sessions_by_connection_id.pop(client_id, None)
@@ -264,7 +312,7 @@ class BackendService:
         if not had_hello:
             # Connection disconnected without ever sending hello.
             # This is typically a supervisor probe or other short-lived
-            # diagnostic connection — log it distinctly for debugging.
+            # diagnostic connection - log it distinctly for debugging.
             self.health.record_system_event(
                 "gui_client_disconnected_without_hello",
                 severity="debug",
@@ -300,7 +348,24 @@ class BackendService:
         )
         self.health_monitor.sample_once()
 
-    def handle_message(self, client_id: str, message: IPCMessage) -> Iterable[IPCMessage]:
+    def handle_message(
+        self, client_id: str, message: IPCMessage
+    ) -> Iterable[IPCMessage]:
+        """Handle a single backend IPC request and yield response messages.
+
+        The backend treats this method as the main GUI-facing IPC dispatcher. It
+        updates per-client session bookkeeping, routes supported message types
+        into the appropriate backend subsystems, records health/system events
+        around key state transitions, and yields zero or more response messages
+        for the caller.
+
+        Args:
+            client_id: Transport-level client connection identifier.
+            message: Decoded IPC message received from the client.
+
+        Yields:
+            IPC responses produced for the request.
+        """
         with self._lock:
             if self._client_first_message_type.get(client_id) is None:
                 self._client_first_message_type[client_id] = message.type
@@ -334,7 +399,9 @@ class BackendService:
             yield self._build_backend_status_message()
             return
 
-        self._touch_client_session(client_id, message.type, is_ping=message.type == "ping")
+        self._touch_client_session(
+            client_id, message.type, is_ping=message.type == "ping"
+        )
 
         if message.type == "ping":
             yield pong_message()
@@ -585,8 +652,8 @@ class BackendService:
                 payload = self._normalize_mapping_payload(message.payload)
                 action_event = self._build_operator_action_event(payload)
 
-                mirrored_action_event = self._mirror_operator_action_to_gateway_if_running(
-                    action_event
+                mirrored_action_event = (
+                    self._mirror_operator_action_to_gateway_if_running(action_event)
                 )
                 if mirrored_action_event is not None:
                     action_event = mirrored_action_event
@@ -627,7 +694,9 @@ class BackendService:
                         payload,
                         default_request_source="gui",
                     )
-                    clear_abort_latch_system_event = build_clear_abort_latch_structured_event(dispatch_info)
+                    clear_abort_latch_system_event = (
+                        build_clear_abort_latch_structured_event(dispatch_info)
+                    )
                     record_clear_abort_latch_system_event(
                         self.health,
                         dispatch_info,
@@ -659,14 +728,18 @@ class BackendService:
                     "command_dispatch_failed",
                     severity="error",
                     message=str(exc),
-                    command_name=command_name if isinstance(command_name, str) else None,
+                    command_name=(
+                        command_name if isinstance(command_name, str) else None
+                    ),
                     device_id=device_id if isinstance(device_id, str) else None,
                     request_id=request_id if isinstance(request_id, str) else None,
                 )
 
                 yield command_result_message(
                     success=False,
-                    command_name=command_name if isinstance(command_name, str) else "<unknown>",
+                    command_name=(
+                        command_name if isinstance(command_name, str) else "<unknown>"
+                    ),
                     device_id=device_id if isinstance(device_id, str) else None,
                     dispatched_via="none",
                     error=str(exc),
@@ -674,7 +747,7 @@ class BackendService:
                     adapter_name="service_guard",
                     request_id=request_id if isinstance(request_id, str) else None,
                 )
-                #yield state_snapshot_message(self.state_store.get_snapshot())
+                # yield state_snapshot_message(self.state_store.get_snapshot())
                 return
 
             if abort_system_event is not None:
@@ -686,23 +759,75 @@ class BackendService:
             yield command_result_message(
                 success=bool(dispatch_info.get("success")),
                 command_name=str(dispatch_info.get("command_name") or "<unknown>"),
-                device_id=dispatch_info.get("device_id") if isinstance(dispatch_info.get("device_id"), str) else None,
+                device_id=(
+                    dispatch_info.get("device_id")
+                    if isinstance(dispatch_info.get("device_id"), str)
+                    else None
+                ),
                 dispatched_via=str(dispatch_info.get("dispatched_via") or "none"),
                 result_summary=dispatch_info.get("result_summary"),
-                error=dispatch_info.get("error") if isinstance(dispatch_info.get("error"), str) else None,
-                status=dispatch_info.get("status") if isinstance(dispatch_info.get("status"), str) else None,
-                adapter_name=dispatch_info.get("adapter_name") if isinstance(dispatch_info.get("adapter_name"), str) else None,
-                rejection_reason=dispatch_info.get("rejection_reason") if isinstance(dispatch_info.get("rejection_reason"), str) else None,
-                interlock_reason=dispatch_info.get("interlock_reason") if isinstance(dispatch_info.get("interlock_reason"), str) else None,
-                validation_errors=list(dispatch_info.get("validation_errors", [])) if isinstance(dispatch_info.get("validation_errors"), list) else None,
-                state_reasons=list(dispatch_info.get("state_reasons", [])) if isinstance(dispatch_info.get("state_reasons"), list) else None,
-                request_id=dispatch_info.get("request_id") if isinstance(dispatch_info.get("request_id"), str) else None,
-                request_source=dispatch_info.get("request_source") if isinstance(dispatch_info.get("request_source"), str) else None,
-                authority_level=dispatch_info.get("authority_level") if isinstance(dispatch_info.get("authority_level"), str) else None,
-                run_mode=dispatch_info.get("run_mode") if isinstance(dispatch_info.get("run_mode"), str) else None,
-                requested_at=dispatch_info.get("requested_at") if isinstance(dispatch_info.get("requested_at"), str) else None,
+                error=(
+                    dispatch_info.get("error")
+                    if isinstance(dispatch_info.get("error"), str)
+                    else None
+                ),
+                status=(
+                    dispatch_info.get("status")
+                    if isinstance(dispatch_info.get("status"), str)
+                    else None
+                ),
+                adapter_name=(
+                    dispatch_info.get("adapter_name")
+                    if isinstance(dispatch_info.get("adapter_name"), str)
+                    else None
+                ),
+                rejection_reason=(
+                    dispatch_info.get("rejection_reason")
+                    if isinstance(dispatch_info.get("rejection_reason"), str)
+                    else None
+                ),
+                interlock_reason=(
+                    dispatch_info.get("interlock_reason")
+                    if isinstance(dispatch_info.get("interlock_reason"), str)
+                    else None
+                ),
+                validation_errors=(
+                    list(dispatch_info.get("validation_errors", []))
+                    if isinstance(dispatch_info.get("validation_errors"), list)
+                    else None
+                ),
+                state_reasons=(
+                    list(dispatch_info.get("state_reasons", []))
+                    if isinstance(dispatch_info.get("state_reasons"), list)
+                    else None
+                ),
+                request_id=(
+                    dispatch_info.get("request_id")
+                    if isinstance(dispatch_info.get("request_id"), str)
+                    else None
+                ),
+                request_source=(
+                    dispatch_info.get("request_source")
+                    if isinstance(dispatch_info.get("request_source"), str)
+                    else None
+                ),
+                authority_level=(
+                    dispatch_info.get("authority_level")
+                    if isinstance(dispatch_info.get("authority_level"), str)
+                    else None
+                ),
+                run_mode=(
+                    dispatch_info.get("run_mode")
+                    if isinstance(dispatch_info.get("run_mode"), str)
+                    else None
+                ),
+                requested_at=(
+                    dispatch_info.get("requested_at")
+                    if isinstance(dispatch_info.get("requested_at"), str)
+                    else None
+                ),
             )
-            #yield state_snapshot_message(self.state_store.get_snapshot())
+            # yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
         if message.type == "start_script":
@@ -902,7 +1027,9 @@ class BackendService:
         if message.type == "continue_script":
             try:
                 payload = self._normalize_mapping_payload(message.payload)
-                reason = self._get_optional_string(payload, "reason") or "operator_continue"
+                reason = (
+                    self._get_optional_string(payload, "reason") or "operator_continue"
+                )
                 continue_result = self.script_runner.continue_script(reason=reason)
                 wall_time = isoformat_z()
 
@@ -973,13 +1100,23 @@ class BackendService:
 
     @property
     def connected_client_count(self) -> int:
+        """Return the number of currently connected backend IPC clients."""
         with self._lock:
             return len(self._connected_clients)
 
     @property
     def connected_client_sessions(self) -> list[dict[str, Any]]:
+        """Return connected GUI client sessions sorted for stable presentation.
+
+        Returns:
+            GUI client session dictionaries ordered by window role, logical
+            client ID, and connection ID.
+        """
         with self._lock:
-            sessions = [dict(session) for session in self._client_sessions_by_connection_id.values()]
+            sessions = [
+                dict(session)
+                for session in self._client_sessions_by_connection_id.values()
+            ]
 
         sessions.sort(
             key=lambda session: (
@@ -994,6 +1131,15 @@ class BackendService:
         self,
         registered_ids: Iterable[str],
     ) -> list[dict[str, Any]]:
+        """Build GUI device inventory entries with live registration flags.
+
+        Args:
+            registered_ids: Device IDs currently registered on the live bus.
+
+        Returns:
+            GUI device presentation dictionaries with ``live_registered`` set
+            from the provided registration set.
+        """
         registered = {str(device_id) for device_id in registered_ids}
         devices = self.device_registry.get_gui_device_presentations()
         for device in devices:
@@ -1006,6 +1152,22 @@ class BackendService:
         *,
         record_health: bool,
     ) -> dict[str, Any]:
+        """Apply gateway-reported live hardware status to backend runtime state.
+
+        This updates runtime ``live_registered`` flags, attaches or detaches
+        gateway bus proxies, refreshes the state-store bus snapshot and device
+        inventory, and optionally records a health/system event describing the
+        gateway transition.
+
+        Args:
+            payload: Gateway hardware status payload.
+            record_health: Whether to emit a backend system event for the
+                applied status.
+
+        Returns:
+            The normalized hardware status fields that were applied to backend
+            state.
+        """
         normalized = self._normalize_mapping_payload(payload)
 
         connected = bool(normalized.get("connected", False))
@@ -1013,8 +1175,12 @@ class BackendService:
         status = self._get_optional_string(normalized, "status") or (
             "connected" if connected else "disconnected"
         )
-        sender = self._get_optional_string(normalized, "sender") or self.bus_manager.sender
-        bitrate = self._get_optional_int(normalized, "bitrate") or self.bus_manager.bitrate
+        sender = (
+            self._get_optional_string(normalized, "sender") or self.bus_manager.sender
+        )
+        bitrate = (
+            self._get_optional_int(normalized, "bitrate") or self.bus_manager.bitrate
+        )
         registered_ids = [str(x) for x in (normalized.get("registered_ids") or [])]
         skipped_ids = [str(x) for x in (normalized.get("skipped_ids") or [])]
         wall_time = self._get_optional_string(normalized, "wall_time") or isoformat_z()
@@ -1031,7 +1197,9 @@ class BackendService:
             if not device_id:
                 continue
             runtime = self.device_registry.get_runtime(device_id)
-            runtime.live_registered = connected and (not reconnecting) and (device_id in registered_set)
+            runtime.live_registered = (
+                connected and (not reconnecting) and (device_id in registered_set)
+            )
 
         if connected and not reconnecting:
             self._attach_gateway_bus_proxies(registered_ids)
@@ -1087,17 +1255,25 @@ class BackendService:
         }
 
     def _initialize_live_hardware_via_gateway(self) -> dict[str, Any]:
+        """Initialize live hardware through the gateway service.
+
+        Returns:
+            Normalized hardware status returned after the gateway acknowledges
+            initialization and the backend applies that status.
+
+        Raises:
+            RuntimeError: The gateway did not acknowledge initialization or
+                returned an error/unexpected response type.
+        """
         responses = self.gateway_client.initialize_live_hardware()
         if not responses:
-            raise RuntimeError(
-                "Gateway did not acknowledge initialize_live_hardware"
-            )
+            raise RuntimeError("Gateway did not acknowledge initialize_live_hardware")
 
         first = responses[0]
         if first.type == "error":
             message = str(
-                first.payload.get("message") or
-                "Gateway initialize_live_hardware failed"
+                first.payload.get("message")
+                or "Gateway initialize_live_hardware failed"
             )
             raise RuntimeError(message)
 
@@ -1114,17 +1290,24 @@ class BackendService:
         return payload
 
     def _shutdown_live_hardware_via_gateway(self) -> dict[str, Any]:
+        """Shut down live hardware through the gateway service.
+
+        Returns:
+            Normalized hardware status returned after the gateway acknowledges
+            shutdown and the backend applies that status.
+
+        Raises:
+            RuntimeError: The gateway did not acknowledge shutdown or returned
+                an error/unexpected response type.
+        """
         responses = self.gateway_client.shutdown_live_hardware()
         if not responses:
-            raise RuntimeError(
-                "Gateway did not acknowledge shutdown_live_hardware"
-            )
+            raise RuntimeError("Gateway did not acknowledge shutdown_live_hardware")
 
         first = responses[0]
         if first.type == "error":
             message = str(
-                first.payload.get("message") or
-                "Gateway shutdown_live_hardware failed"
+                first.payload.get("message") or "Gateway shutdown_live_hardware failed"
             )
             raise RuntimeError(message)
 
@@ -1140,6 +1323,12 @@ class BackendService:
         return payload
 
     def _initialize_live_hardware_locally(self) -> dict[str, Any]:
+        """Initialize live hardware through the local bus manager path.
+
+        Returns:
+            Normalized hardware status derived from the local bus-manager
+            initialization result.
+        """
         result = self.bus_manager.initialize_live_hardware(self.device_registry)
 
         self.state_store.set_bus_connection_state(
@@ -1189,6 +1378,11 @@ class BackendService:
         }
 
     def _shutdown_live_hardware_locally(self) -> dict[str, Any]:
+        """Shut down locally owned live hardware and clear backend bus state.
+
+        Returns:
+            Hardware status payload reflecting a disconnected local bus.
+        """
         self.bus_manager.shutdown_live_hardware()
         self.device_registry.clear_live_registration_flags()
         self.state_store.set_bus_connection_state(
@@ -1224,6 +1418,18 @@ class BackendService:
         run_result: Mapping[str, Any],
         original_payload: Mapping[str, Any],
     ) -> None:
+        """Start the gateway-owned raw run that mirrors a structured backend run.
+
+        Args:
+            run_result: Structured run metadata returned by
+                :meth:`RunController.start_run`.
+            original_payload: Original ``start_run`` request payload used to
+                forward optional metadata to the gateway.
+
+        Raises:
+            RuntimeError: The gateway did not acknowledge the raw-run start or
+                returned an error/unexpected response type.
+        """
         if not self.use_gateway_for_live_ingest:
             return
 
@@ -1264,6 +1470,16 @@ class BackendService:
         run_id: str,
         reason: str,
     ) -> None:
+        """Finish the gateway-owned raw run associated with a structured run.
+
+        Args:
+            run_id: Run identifier to finish on the gateway side.
+            reason: Finish reason recorded for the raw run.
+
+        Raises:
+            RuntimeError: The gateway did not acknowledge finish or returned an
+                error/unexpected response type.
+        """
         if not self.use_gateway_for_live_ingest:
             return
 
@@ -1272,9 +1488,7 @@ class BackendService:
             reason=reason,
         )
         if not responses:
-            raise RuntimeError(
-                f"Gateway did not acknowledge finish_run for {run_id}"
-            )
+            raise RuntimeError(f"Gateway did not acknowledge finish_run for {run_id}")
 
         first = responses[0]
         if first.type == "error":
@@ -1290,6 +1504,11 @@ class BackendService:
         self,
         payload: Mapping[str, Any],
     ) -> None:
+        """Store gateway raw-run metadata adopted without a backend structured run.
+
+        Args:
+            payload: Gateway status payload containing orphaned raw-run fields.
+        """
         self._orphaned_gateway_raw_run = {
             "raw_run_id": self._get_optional_string(payload, "raw_run_id"),
             "raw_mode": self._get_optional_string(payload, "raw_mode"),
@@ -1302,6 +1521,7 @@ class BackendService:
         }
 
     def _clear_orphaned_gateway_raw_run(self) -> None:
+        """Clear any adopted orphaned gateway raw-run metadata."""
         self._orphaned_gateway_raw_run = None
 
     def _finish_orphaned_gateway_raw_run(
@@ -1309,6 +1529,18 @@ class BackendService:
         *,
         reason: str,
     ) -> dict[str, Any]:
+        """Finish a gateway raw run that exists without a backend structured run.
+
+        Args:
+            reason: Finish reason to send to the gateway.
+
+        Returns:
+            A run-status payload describing the finished orphaned raw run.
+
+        Raises:
+            RuntimeError: No orphaned raw run is tracked, required identity is
+                missing, or the gateway rejects the finish request.
+        """
         orphaned = self._orphaned_gateway_raw_run
         if orphaned is None:
             raise RuntimeError("No orphaned gateway raw run is tracked")
@@ -1358,6 +1590,16 @@ class BackendService:
         }
 
     def adopt_gateway_runtime_status(self) -> dict[str, Any] | None:
+        """Adopt current gateway runtime status into backend-owned state.
+
+        This is used during backend startup to align backend snapshots with an
+        already running gateway bus connection and any gateway-owned raw run.
+
+        Returns:
+            The gateway status payload when one was successfully adopted, or
+            None when gateway ingest is disabled or the gateway did not return a
+            usable status response.
+        """
         if not self.use_gateway_for_live_ingest:
             return None
 
@@ -1386,9 +1628,11 @@ class BackendService:
             {
                 "connected": bool(payload.get("bus_connected", False)),
                 "reconnecting": False,
-                "status": "connected"
-                if bool(payload.get("bus_connected", False))
-                else "disconnected",
+                "status": (
+                    "connected"
+                    if bool(payload.get("bus_connected", False))
+                    else "disconnected"
+                ),
                 "sender": self._get_optional_string(payload, "sender"),
                 "bitrate": self._get_optional_int(payload, "bitrate"),
                 "registered_ids": list(payload.get("registered_ids") or []),
@@ -1426,6 +1670,17 @@ class BackendService:
         stream_name: str,
         event: Mapping[str, Any],
     ) -> dict[str, Any] | None:
+        """Mirror a raw-side event to the gateway when gateway raw writers are active.
+
+        Args:
+            stream_name: Raw stream name to mirror.
+            event: Event payload to send to the gateway.
+
+        Returns:
+            The gateway-materialized event payload when mirroring succeeded, or
+            None when mirroring is disabled, no run is active, or the gateway
+            did not return a usable event payload.
+        """
         if not self.use_gateway_for_live_ingest:
             return None
         if not self.history_manager.is_running:
@@ -1461,9 +1716,19 @@ class BackendService:
         self,
         action_event: Mapping[str, Any],
     ) -> dict[str, Any] | None:
+        """Mirror an operator-action raw event to the gateway raw stream.
+
+        Args:
+            action_event: Raw operator action event built by the backend.
+
+        Returns:
+            The gateway-materialized action event when mirroring succeeds, or
+            None when no mirrored raw-side event is available.
+        """
         return self._mirror_raw_event_to_gateway("operator_action", action_event)
 
     def _all_device_ids(self) -> list[str]:
+        """Return all non-empty device IDs currently exposed to the GUI."""
         device_ids: list[str] = []
         for device in self.device_registry.get_gui_device_presentations():
             device_id = str(device.get("id") or "").strip()
@@ -1472,6 +1737,12 @@ class BackendService:
         return device_ids
 
     def _detach_all_gateway_bus_proxies(self) -> None:
+        """Detach every gateway-backed bus proxy from device runtime objects.
+
+        This also clears runtime ``live_registered`` flags so command routing and
+        GUI inventory no longer treat the devices as actively registered through
+        the gateway.
+        """
         for device_id in self._all_device_ids():
             if device_id not in self.device_registry:
                 continue
@@ -1486,8 +1757,17 @@ class BackendService:
         self._gateway_bus_proxies_by_id.clear()
 
     def _attach_gateway_bus_proxies(self, registered_ids: Iterable[str]) -> None:
+        """Attach gateway bus proxies to currently registered live devices.
+
+        Args:
+            registered_ids: Device IDs reported as live-registered by the
+                gateway.
+        """
         registered = {str(device_id) for device_id in registered_ids}
-        log.info("[backend] _attach_gateway_bus_proxies registered_ids=%s", sorted(registered))
+        log.info(
+            "[backend] _attach_gateway_bus_proxies registered_ids=%s",
+            sorted(registered),
+        )
 
         self._detach_all_gateway_bus_proxies()
 
@@ -1507,13 +1787,30 @@ class BackendService:
 
             self._gateway_bus_proxies_by_id[device_id] = proxy
 
-
     def _dispatch_command_request(
         self,
         payload: Mapping[str, Any],
         *,
         default_request_source: str,
     ) -> dict[str, Any]:
+        """Validate, route, record, and summarize a command request.
+
+        This is the backend's canonical command path for both GUI-initiated and
+        script-initiated commands. It optionally records an embedded operator
+        action, routes the request through :class:`CommandRouter`, records
+        command-side history and health events, updates the state store with the
+        latest command result, and applies an optimistic XV runtime shadow for
+        accepted open/close commands.
+
+        Args:
+            payload: Command request payload.
+            default_request_source: Default request source applied when the
+                payload does not declare one.
+
+        Returns:
+            Canonical command result metadata suitable for
+            ``command_result_message``.
+        """
         normalized = self._normalize_mapping_payload(payload)
         normalized.setdefault("request_source", default_request_source)
 
@@ -1535,7 +1832,10 @@ class BackendService:
             self._record_operator_action_if_running(action_event)
 
         request_id = self._get_optional_string(normalized, "request_id")
-        request_source = self._get_optional_string(normalized, "request_source") or default_request_source
+        request_source = (
+            self._get_optional_string(normalized, "request_source")
+            or default_request_source
+        )
         authority_level = self._get_optional_string(normalized, "authority_level") or (
             "script" if request_source == "script" else "operator"
         )
@@ -1601,7 +1901,11 @@ class BackendService:
                 run_mode=dispatch_result.run_mode,
             )
 
-        result_summary_mapping = dispatch_result.result_summary if isinstance(dispatch_result.result_summary, Mapping) else None
+        result_summary_mapping = (
+            dispatch_result.result_summary
+            if isinstance(dispatch_result.result_summary, Mapping)
+            else None
+        )
         self.state_store.mark_command_result(
             request_id=dispatch_result.request_id,
             requested_at=dispatch_result.requested_at,
@@ -1653,6 +1957,16 @@ class BackendService:
         command_name: str | None,
         device_id: str | None,
     ) -> None:
+        """Seed an optimistic XV runtime shadow after an accepted command.
+
+        Only XV devices are updated, and only for recognized open/close command
+        names. The shadow is stored in :class:`StateStore` so the GUI can render
+        the commanded valve state before a later telemetry update confirms it.
+
+        Args:
+            command_name: Accepted command name.
+            device_id: Target device ID.
+        """
         if not isinstance(device_id, str) or not device_id:
             return
 
@@ -1686,7 +2000,11 @@ class BackendService:
         runtime_value = target_value
         runtime_aux = getattr(runtime, "aux", None) if runtime is not None else None
         runtime_time = getattr(runtime, "time", None) if runtime is not None else None
-        live_registered = bool(getattr(runtime, "live_registered", False)) if runtime is not None else False
+        live_registered = (
+            bool(getattr(runtime, "live_registered", False))
+            if runtime is not None
+            else False
+        )
 
         if runtime is not None:
             raw_value = getattr(runtime, "value", None)
@@ -1708,12 +2026,13 @@ class BackendService:
     _VALID_STARTUP_STATES = frozenset({"open", "closed"})
 
     def _apply_live_startup_state(self) -> None:
-        """Backend-process-lifetime bootstrap from settings.LIVE_STARTUP_STATE.
+        """Seed XV runtime state from ``settings.LIVE_STARTUP_STATE`` once.
 
-        Runs at most once per backend process.  For each XV in the config,
-        seeds runtime state only if that device does not already have a
-        stored ``runtime_state``.  Does NOT send hardware commands.  Later
-        command-driven state updates overwrite seeded entries normally.
+        This backend-process bootstrap runs at most once per backend lifetime.
+        For each configured controllable valve, it seeds the runtime shadow only
+        when that device does not already have a stored ``runtime_state``. The
+        method does not dispatch hardware commands; later command- or
+        telemetry-driven updates overwrite the seeded entries normally.
         """
         if self._live_startup_state_applied:
             return
@@ -1767,12 +2086,30 @@ class BackendService:
             )
 
     def _dispatch_script_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Dispatch a script-originated command through the canonical command path.
+
+        Args:
+            payload: Script-supplied command request payload.
+
+        Returns:
+            Canonical command result metadata.
+        """
         return self._dispatch_command_request(payload, default_request_source="script")
 
     def _dispatch_script_abort(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Dispatch a script-originated abort through the canonical abort path.
+
+        Args:
+            payload: Script-supplied abort request payload.
+
+        Returns:
+            Canonical abort dispatch metadata.
+        """
         from .abort_command import build_abort_dispatch_info, record_abort_system_event
 
-        dispatch_info = build_abort_dispatch_info(payload, default_request_source="script")
+        dispatch_info = build_abort_dispatch_info(
+            payload, default_request_source="script"
+        )
         record_abort_system_event(
             self.health,
             dispatch_info,
@@ -1788,11 +2125,26 @@ class BackendService:
         self.health_monitor.sample_once()
         return dispatch_info
 
-    def _reset_runtime_after_clear_abort_latch(self, dispatch_info: Mapping[str, Any]) -> None:
+    def _reset_runtime_after_clear_abort_latch(
+        self, dispatch_info: Mapping[str, Any]
+    ) -> None:
+        """Reinitialize script-side runtime state after clearing the abort latch.
+
+        The current implementation stops any running script, clears the backend
+        script-running state, and records the runtime reinitialization as a
+        system event tied to the clear-abort-latch request.
+
+        Args:
+            dispatch_info: Canonical clear-abort-latch dispatch metadata.
+        """
         if self.script_runner.is_running:
-            log.warning("clear_abort_latch: stopping running script (reason=clear_abort_latch)")
+            log.warning(
+                "clear_abort_latch: stopping running script (reason=clear_abort_latch)"
+            )
             try:
-                stop_result = self.script_runner.stop_script(reason="clear_abort_latch", timeout_s=1.0)
+                stop_result = self.script_runner.stop_script(
+                    reason="clear_abort_latch", timeout_s=1.0
+                )
                 self.state_store.mark_script_finished(
                     finished_wall_time=isoformat_z(),
                     return_code=stop_result.get("returncode"),
@@ -1815,6 +2167,11 @@ class BackendService:
         self.health_monitor.sample_once()
 
     def _handle_script_output(self, info: Mapping[str, Any]) -> None:
+        """Record script stdout/stderr text into backend state and health events.
+
+        Args:
+            info: Script output callback payload from :class:`ScriptRunner`.
+        """
         output_text = info.get("output_text")
         if not isinstance(output_text, str) or not output_text.strip():
             return
@@ -1832,24 +2189,68 @@ class BackendService:
         self.health_monitor.sample_once()
 
     def _handle_script_progress(self, info: Mapping[str, Any]) -> None:
+        """Update backend script progress state from a runner callback.
+
+        Args:
+            info: Script progress payload from :class:`ScriptRunner`.
+        """
         progress_wall_time = info.get("progress_wall_time")
         if not isinstance(progress_wall_time, str) or not progress_wall_time.strip():
             progress_wall_time = isoformat_z()
 
         self.state_store.update_script_progress(
-            current_step_index=info.get("current_step_index") if isinstance(info.get("current_step_index"), int) else None,
-            total_steps=info.get("total_steps") if isinstance(info.get("total_steps"), int) else None,
-            current_step_name=info.get("current_step_name") if isinstance(info.get("current_step_name"), str) else None,
-            current_step_type=info.get("current_step_type") if isinstance(info.get("current_step_type"), str) else None,
-            current_step_status=info.get("current_step_status") if isinstance(info.get("current_step_status"), str) else None,
+            current_step_index=(
+                info.get("current_step_index")
+                if isinstance(info.get("current_step_index"), int)
+                else None
+            ),
+            total_steps=(
+                info.get("total_steps")
+                if isinstance(info.get("total_steps"), int)
+                else None
+            ),
+            current_step_name=(
+                info.get("current_step_name")
+                if isinstance(info.get("current_step_name"), str)
+                else None
+            ),
+            current_step_type=(
+                info.get("current_step_type")
+                if isinstance(info.get("current_step_type"), str)
+                else None
+            ),
+            current_step_status=(
+                info.get("current_step_status")
+                if isinstance(info.get("current_step_status"), str)
+                else None
+            ),
             progress_wall_time=progress_wall_time,
-            plan_steps_summary=list(info.get("plan_steps_summary", [])) if isinstance(info.get("plan_steps_summary"), list) else None,
-            is_held=bool(info.get("is_held")) if info.get("is_held") is not None else None,
-            hold_requested=bool(info.get("hold_requested")) if info.get("hold_requested") is not None else None,
+            plan_steps_summary=(
+                list(info.get("plan_steps_summary", []))
+                if isinstance(info.get("plan_steps_summary"), list)
+                else None
+            ),
+            is_held=(
+                bool(info.get("is_held")) if info.get("is_held") is not None else None
+            ),
+            hold_requested=(
+                bool(info.get("hold_requested"))
+                if info.get("hold_requested") is not None
+                else None
+            ),
         )
         self.health_monitor.sample_once()
 
-    def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
+    def _handle_device_packet(
+        self, meta: dict[str, Any], runtime: Any, packet: Any
+    ) -> None:
+        """Process a telemetry packet emitted by a device runtime callback.
+
+        Args:
+            meta: Device metadata associated with the runtime callback.
+            runtime: Device runtime object containing the latest decoded state.
+            packet: Raw packet that triggered the callback.
+        """
         self._process_telemetry_packet(
             meta=meta,
             runtime=runtime,
@@ -1858,12 +2259,33 @@ class BackendService:
         )
 
     def _handle_bus_status_event(self, event: Mapping[str, Any]) -> None:
+        """Translate bus-manager status callbacks into backend state and health.
+
+        Args:
+            event: Bus-manager status event payload.
+        """
         event_name = str(event.get("event") or "unknown")
         reason = event.get("reason")
-        sender = event.get("sender") if isinstance(event.get("sender"), str) else self.bus_manager.sender
-        bitrate = event.get("bitrate") if isinstance(event.get("bitrate"), int) else self.bus_manager.bitrate
-        registered_ids = list(event.get("registered_ids", [])) if isinstance(event.get("registered_ids"), list) else None
-        skipped_ids = list(event.get("skipped_ids", [])) if isinstance(event.get("skipped_ids"), list) else None
+        sender = (
+            event.get("sender")
+            if isinstance(event.get("sender"), str)
+            else self.bus_manager.sender
+        )
+        bitrate = (
+            event.get("bitrate")
+            if isinstance(event.get("bitrate"), int)
+            else self.bus_manager.bitrate
+        )
+        registered_ids = (
+            list(event.get("registered_ids", []))
+            if isinstance(event.get("registered_ids"), list)
+            else None
+        )
+        skipped_ids = (
+            list(event.get("skipped_ids", []))
+            if isinstance(event.get("skipped_ids"), list)
+            else None
+        )
         wall_time = isoformat_z()
 
         if event_name == "connected":
@@ -1933,7 +2355,11 @@ class BackendService:
             self.health_monitor.sample_once()
             return
 
-        if event_name in {"receive_loop_started", "receive_loop_stopped", "packet_listener_attached"}:
+        if event_name in {
+            "receive_loop_started",
+            "receive_loop_stopped",
+            "packet_listener_attached",
+        }:
             self.health.record_system_event(
                 f"bus_{event_name}",
                 severity="info",
@@ -1942,11 +2368,14 @@ class BackendService:
             self.health_monitor.sample_once()
 
     def _handle_bus_packet_hook(self, packet: Any) -> None:
-        """Reserved bus-level packet hook.
+        """Reserve a bus-level packet hook for a future packet-only fanout path.
 
         The authoritative live telemetry path still comes from device runtime
         callbacks installed by ``DeviceRegistry``. This hook stays available for a
         later packet-only fanout path once bus-level decode rules are ready.
+
+        Args:
+            packet: Bus-level packet observed by :class:`BusManager`.
         """
 
     def _build_mock_runtime_shadow(
@@ -1955,16 +2384,34 @@ class BackendService:
         runtime: Any,
         payload: Mapping[str, Any],
     ) -> Any:
+        """Build a runtime-like shadow object for mock telemetry ingest.
+
+        Args:
+            runtime: Current live runtime object used as the fallback source for
+                unspecified fields.
+            payload: Mock telemetry ingest payload.
+
+        Returns:
+            A ``SimpleNamespace`` exposing the runtime attributes consumed by
+            telemetry normalization.
+        """
         return SimpleNamespace(
             value=payload.get("runtime_value", getattr(runtime, "value", None)),
             aux=payload.get("runtime_aux", getattr(runtime, "aux", None)),
             time=payload.get("runtime_time", getattr(runtime, "time", None)),
             state=payload.get("runtime_state", getattr(runtime, "state", None)),
-            position=payload.get("runtime_position", getattr(runtime, "position", None)),
+            position=payload.get(
+                "runtime_position", getattr(runtime, "position", None)
+            ),
             status=payload.get("runtime_status", getattr(runtime, "status", None)),
         )
 
     def _handle_bus_error_event(self, event: Mapping[str, Any]) -> None:
+        """Record a bus-manager error callback as a backend system event.
+
+        Args:
+            event: Bus-manager error payload.
+        """
         payload = dict(event)
         error_type = str(payload.pop("error_type", "bus_manager_error"))
         message = payload.pop("message", "bus manager error")
@@ -1976,10 +2423,18 @@ class BackendService:
         )
         self.health_monitor.sample_once()
 
-
     def _handle_script_exit(self, info: Mapping[str, Any]) -> None:
+        """Finalize backend script state after the runner process exits.
+
+        Args:
+            info: Script exit payload produced by :class:`ScriptRunner`.
+        """
         returncode = info.get("returncode")
-        failure_message = info.get("failure_message") if isinstance(info.get("failure_message"), str) else None
+        failure_message = (
+            info.get("failure_message")
+            if isinstance(info.get("failure_message"), str)
+            else None
+        )
 
         if returncode == 0 and not failure_message:
             exit_status = "completed"
@@ -2031,6 +2486,25 @@ class BackendService:
         source: str,
         identity_override: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Normalize, reduce, and record a telemetry packet through the backend.
+
+        The packet is normalized into ``NormalizedTelemetryPacket``, converted to
+        a raw telemetry event, optionally updated with gateway-materialized
+        identity fields, reduced into backend runtime state, and finally written
+        as structured telemetry. When structured recording is active, the method
+        also attempts periodic playback snapshots.
+
+        Args:
+            meta: Static device metadata associated with the packet.
+            runtime: Runtime object used for normalization.
+            packet: Packet to ingest.
+            source: Telemetry source label recorded into the normalized packet.
+            identity_override: Authoritative raw identity fields supplied by the
+                gateway when the raw-side event was already materialized there.
+
+        Returns:
+            The structured telemetry event recorded for the packet.
+        """
         telemetry = NormalizedTelemetryPacket.from_meta_runtime_packet(
             meta=meta,
             runtime=runtime,
@@ -2088,13 +2562,19 @@ class BackendService:
 
         return structured_event
 
-    def _maybe_write_periodic_snapshot(self, structured_event: Mapping[str, Any]) -> None:
+    def _maybe_write_periodic_snapshot(
+        self, structured_event: Mapping[str, Any]
+    ) -> None:
         """Attempt a periodic playback snapshot after recording a structured event.
 
         Safe to call from any structured-event recording path (telemetry,
-        operator_action, command_out).  RunController.maybe_write_periodic_snapshot
+        operator_action, command_out). RunController.maybe_write_periodic_snapshot
         enforces the 5-second minimum interval, so multiple call sites do not
         cause snapshot spam.
+
+        Args:
+            structured_event: Structured event whose ``recorded_at`` value is
+                used as the snapshot timing anchor.
         """
         try:
             self.run_controller.maybe_write_periodic_snapshot(
@@ -2104,7 +2584,14 @@ class BackendService:
         except Exception:
             log.exception("Failed to write periodic playback snapshot")
 
-    def _record_operator_action_if_running(self, action_event: Mapping[str, Any]) -> None:
+    def _record_operator_action_if_running(
+        self, action_event: Mapping[str, Any]
+    ) -> None:
+        """Record an operator action into raw and structured history when active.
+
+        Args:
+            action_event: Canonical raw operator action event.
+        """
         if self.history_manager.is_running:
             self.history_manager.record_raw_event("operator_action", action_event)
 
@@ -2124,6 +2611,13 @@ class BackendService:
         *,
         result_summary: Any = None,
     ) -> None:
+        """Record a command-out structured event when a run is active.
+
+        Args:
+            command_event: Command event emitted by the command router.
+            result_summary: Optional command result summary to include in the
+                structured command event.
+        """
         if not self.history_manager.is_running:
             return
 
@@ -2140,7 +2634,20 @@ class BackendService:
         )
         self._maybe_write_periodic_snapshot(structured_command_event)
 
-    def _build_operator_action_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _build_operator_action_event(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Build the canonical backend operator-action raw event.
+
+        Args:
+            payload: Operator action payload received over IPC.
+
+        Returns:
+            The canonical operator-action event recorded by the backend.
+
+        Raises:
+            ValueError: The payload does not contain a non-empty ``action``.
+        """
         action = self._require_non_empty_string(payload, "action")
         event = {
             "event_kind": "operator_action",
@@ -2157,6 +2664,7 @@ class BackendService:
         return event
 
     def _build_backend_status_message(self) -> IPCMessage:
+        """Build the canonical backend status IPC message from state-store data."""
         status = self.state_store.get_backend_status()
         return backend_status_message(
             backend_started_at=status["backend_started_at"],
@@ -2172,13 +2680,26 @@ class BackendService:
             last_command=status.get("last_command"),
         )
 
-    def _register_client_hello(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _register_client_hello(
+        self, connection_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Normalize and store GUI client hello/session metadata.
+
+        Args:
+            connection_id: Transport-level client connection identifier.
+            payload: Hello payload received from the client.
+
+        Returns:
+            The normalized client session dictionary stored in backend state.
+        """
         normalized = self._normalize_client_session(connection_id, payload)
 
         with self._lock:
             previous = self._client_sessions_by_connection_id.get(connection_id)
             if previous is not None:
-                normalized["connected_at"] = previous.get("connected_at") or normalized["connected_at"]
+                normalized["connected_at"] = (
+                    previous.get("connected_at") or normalized["connected_at"]
+                )
             self._client_sessions_by_connection_id[connection_id] = dict(normalized)
 
         self.state_store.upsert_gui_client_session(normalized)
@@ -2186,9 +2707,23 @@ class BackendService:
         self.health_monitor.sample_once()
         return dict(normalized)
 
-    def _normalize_client_session(self, connection_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _normalize_client_session(
+        self, connection_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Normalize a GUI client hello payload into backend session metadata.
+
+        Args:
+            connection_id: Transport-level client connection identifier.
+            payload: Hello payload received from the client.
+
+        Returns:
+            Canonical session metadata stored in backend runtime state.
+        """
         client_name = self._get_optional_string(payload, "client_name") or "user-gui"
-        logical_client_id = self._get_optional_string(payload, "logical_client_id") or f"gui:{connection_id}"
+        logical_client_id = (
+            self._get_optional_string(payload, "logical_client_id")
+            or f"gui:{connection_id}"
+        )
         window_role = self._get_optional_string(payload, "window_role")
         session_id = self._get_optional_string(payload, "session_id") or connection_id
         mode = self._get_optional_string(payload, "mode")
@@ -2213,7 +2748,16 @@ class BackendService:
             "last_hello_wall_time": wall_time,
         }
 
-    def _touch_client_session(self, client_id: str, message_type: str, *, is_ping: bool = False) -> None:
+    def _touch_client_session(
+        self, client_id: str, message_type: str, *, is_ping: bool = False
+    ) -> None:
+        """Refresh the last-seen metadata for a connected GUI client.
+
+        Args:
+            client_id: Transport-level client connection identifier.
+            message_type: Message type just received from the client.
+            is_ping: Whether the message was a ping heartbeat.
+        """
         self.state_store.touch_gui_client_session(
             connection_id=client_id,
             wall_time=isoformat_z(),
@@ -2221,14 +2765,22 @@ class BackendService:
             is_ping=is_ping,
         )
 
-
     def _build_ingest_packet(
         self,
         normalized: Mapping[str, Any],
         *,
         meta: Mapping[str, Any],
     ) -> DataPacket:
-        """Build a DataPacket from an IPC telemetry ingest payload."""
+        """Build a ``DataPacket`` from an IPC telemetry ingest payload.
+
+        Args:
+            normalized: Validated ingest payload.
+            meta: Device metadata containing the target device address.
+
+        Returns:
+            A ``DataPacket`` suitable for the shared telemetry normalization
+            pipeline.
+        """
         seq = self._get_optional_int(normalized, "seq") or 1
         cmd = self._get_optional_int(normalized, "cmd") or 1
         reply = self._get_optional_bool(normalized, "reply", default=True)
@@ -2252,11 +2804,19 @@ class BackendService:
 
         return packet
 
-
     def _extract_raw_identity_fields(
         self,
         raw_event: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
+        """Extract shared raw-event identity fields for structured mirroring.
+
+        Args:
+            raw_event: Raw event payload that may already contain authoritative
+                identity fields.
+
+        Returns:
+            Shared raw identity fields copied into a new dictionary.
+        """
         if not isinstance(raw_event, Mapping):
             return {}
 
@@ -2273,12 +2833,21 @@ class BackendService:
                 identity[key] = raw_event[key]
         return identity
 
-
     def _apply_raw_identity_to_structured_event(
         self,
         structured_event: Mapping[str, Any],
         raw_identity: Mapping[str, Any],
     ) -> dict[str, Any]:
+        """Overlay authoritative raw-event identity fields onto another event.
+
+        Args:
+            structured_event: Event payload to augment.
+            raw_identity: Raw-side identity fields to copy onto the event.
+
+        Returns:
+            A new event dictionary containing the original payload plus the raw
+            identity fields.
+        """
         if not raw_identity:
             return dict(structured_event)
 
@@ -2291,7 +2860,17 @@ class BackendService:
         self,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Ingest a mock/test telemetry packet through the real processing pipeline."""
+        """Ingest mock/test telemetry through the normal backend telemetry path.
+
+        Args:
+            payload: Mock telemetry ingest payload.
+
+        Returns:
+            Structured telemetry event produced by the shared processing path.
+
+        Raises:
+            ValueError: The payload references an unknown device ID.
+        """
         normalized = self._normalize_mapping_payload(payload)
         device_id = self._require_non_empty_string(normalized, "device_id")
 
@@ -2318,7 +2897,17 @@ class BackendService:
         self,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Ingest a live telemetry packet forwarded from the gateway."""
+        """Ingest gateway-forwarded live telemetry through the shared pipeline.
+
+        Args:
+            payload: Live telemetry payload forwarded from the gateway.
+
+        Returns:
+            Structured telemetry event produced by the shared processing path.
+
+        Raises:
+            ValueError: The payload references an unknown device ID.
+        """
         normalized = self._normalize_mapping_payload(payload)
         device_id = self._require_non_empty_string(normalized, "device_id")
 
@@ -2342,37 +2931,103 @@ class BackendService:
         )
 
     def _normalize_mapping_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Copy an IPC payload mapping into a mutable dictionary.
+
+        Args:
+            payload: Mapping payload received from IPC or another backend helper.
+
+        Returns:
+            A plain dictionary copy of ``payload``.
+        """
         return dict(payload)
 
     def _require_non_empty_string(self, payload: Mapping[str, Any], key: str) -> str:
+        """Return a required non-empty string field from a payload.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+
+        Returns:
+            The stripped string value.
+
+        Raises:
+            ValueError: The field is missing, not a string, or empty.
+        """
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"IPC payload must include a non-empty string '{key}'")
         return value.strip()
 
     def _get_optional_string(self, payload: Mapping[str, Any], key: str) -> str | None:
+        """Return an optional stripped string field from a payload.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+
+        Returns:
+            The stripped string value, or None when the field is missing or
+            empty.
+
+        Raises:
+            ValueError: The field is present but not a string.
+        """
         value = payload.get(key)
         if value is None:
             return None
         if not isinstance(value, str):
-            raise ValueError(f"IPC payload field '{key}' must be a string when provided")
+            raise ValueError(
+                f"IPC payload field '{key}' must be a string when provided"
+            )
         stripped = value.strip()
         return stripped or None
 
-    def _get_optional_mapping(self, payload: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    def _get_optional_mapping(
+        self, payload: Mapping[str, Any], key: str
+    ) -> dict[str, Any] | None:
+        """Return an optional mapping field as a plain dictionary.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+
+        Returns:
+            A plain dictionary copy of the mapping field, or None when the
+            field is missing.
+
+        Raises:
+            ValueError: The field is present but not a mapping.
+        """
         value = payload.get(key)
         if value is None:
             return None
         if not isinstance(value, Mapping):
-            raise ValueError(f"IPC payload field '{key}' must be an object when provided")
+            raise ValueError(
+                f"IPC payload field '{key}' must be an object when provided"
+            )
         return dict(value)
 
     def _get_optional_int(self, payload: Mapping[str, Any], key: str) -> int | None:
+        """Return an optional integer field from a payload.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+
+        Returns:
+            The integer value, or None when the field is missing.
+
+        Raises:
+            ValueError: The field is present but not an integer.
+        """
         value = payload.get(key)
         if value is None:
             return None
         if not isinstance(value, int):
-            raise ValueError(f"IPC payload field '{key}' must be an integer when provided")
+            raise ValueError(
+                f"IPC payload field '{key}' must be an integer when provided"
+            )
         return int(value)
 
     def _get_optional_bool(
@@ -2382,14 +3037,46 @@ class BackendService:
         *,
         default: bool | None = None,
     ) -> bool | None:
+        """Return an optional boolean field from a payload.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+            default: Default value used when the field is missing.
+
+        Returns:
+            The boolean value, or None when neither the field nor the default
+            supplies one.
+
+        Raises:
+            ValueError: The resolved value is not boolean.
+        """
         value = payload.get(key, default)
         if value is None:
             return None
         if not isinstance(value, bool):
-            raise ValueError(f"IPC payload field '{key}' must be a boolean when provided")
+            raise ValueError(
+                f"IPC payload field '{key}' must be a boolean when provided"
+            )
         return value
 
-    def _get_optional_int_list(self, payload: Mapping[str, Any], key: str) -> list[int] | None:
+    def _get_optional_int_list(
+        self, payload: Mapping[str, Any], key: str
+    ) -> list[int] | None:
+        """Return an optional byte-list field from a payload.
+
+        Args:
+            payload: Payload mapping to inspect.
+            key: Field name to read.
+
+        Returns:
+            A list of integers in the range 0..255, or None when the field is
+            missing.
+
+        Raises:
+            ValueError: The field is present but is not a list of byte-sized
+                integers.
+        """
         value = payload.get(key)
         if value is None:
             return None
@@ -2398,7 +3085,9 @@ class BackendService:
         result: list[int] = []
         for item in value:
             if not isinstance(item, int):
-                raise ValueError(f"IPC payload field '{key}' must contain integers only")
+                raise ValueError(
+                    f"IPC payload field '{key}' must contain integers only"
+                )
             if item < 0 or item > 255:
                 raise ValueError(f"IPC payload field '{key}' integers must be 0..255")
             result.append(int(item))

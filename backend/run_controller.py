@@ -15,16 +15,12 @@ from .state_store import StateStore
 
 
 class RunController:
-    """Coordinate backend run lifecycle with HistoryManager and StateStore.
+    """Coordinate backend run lifecycle, snapshots, and archive finalization.
 
-    Commit 51 focus:
-    - preserve the commit 50 archive lifecycle anchors and snapshots
-    - persist a finished-run integrity report immediately after archive close
-    - surface integrity summary information to the launcher/UI path that requested finish_run
-
-    This lets playback catalog code load a stable ``integrity_report.json`` without
-    always rescanning the archive inline, and it keeps archive finalization resilient:
-    an integrity scan failure should not make run shutdown fail.
+    This controller starts and finishes recording runs through ``HistoryManager``,
+    mirrors run lifecycle state into ``StateStore``, writes archive lifecycle
+    events, emits numbered snapshots, and persists post-close integrity summary
+    information for playback and UI consumers.
     """
 
     def __init__(
@@ -33,6 +29,14 @@ class RunController:
         history_manager: HistoryManager,
         state_store: StateStore,
     ) -> None:
+        """Initialize the run lifecycle controller.
+
+        Args:
+            history_manager: History subsystem used to create runs, write
+                snapshots, record lifecycle events, and finalize archives.
+            state_store: Authoritative backend runtime state store updated when
+                runs start and finish.
+        """
         self.history_manager = history_manager
         self.state_store = state_store
         self._next_snapshot_index = 0
@@ -56,6 +60,37 @@ class RunController:
         clock_info: Mapping[str, Any] | None = None,
         extra_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Start a run, seed lifecycle state, and write the initial snapshot.
+
+        The start path creates the run through ``HistoryManager``, marks the run
+        active in ``StateStore``, records a ``run_archive_initialized`` system
+        event, and writes snapshot index ``0`` with ``recorded_at`` anchored to
+        the run start wall time.
+
+        Args:
+            test_name: User-facing test name stored in run metadata.
+            mode: Run mode, usually ``"live"`` or ``"playback"``.
+            run_id: Optional caller-supplied run identifier.
+            operator: Operator name stored with the run metadata.
+            profile_name: Selected profile name stored with the run metadata.
+            notes: Optional notes stored with the run metadata.
+            software_git_commit: Git commit recorded in state metadata.
+            software_branch: Git branch recorded in state metadata.
+            device_map_version: Device map version recorded in state metadata.
+            svg_version: SCADA or SVG version recorded in state metadata.
+            bus_config: Bus configuration metadata copied into state metadata.
+            clock_info: Clock metadata copied into state metadata.
+            extra_metadata: Additional metadata copied into state metadata.
+
+        Returns:
+            A run-start summary containing the active run metadata, start wall
+            time, initial snapshot path, and archive initialization status.
+
+        Raises:
+            RuntimeError: If the application already consumed its single
+                recording session, or if ``HistoryManager`` does not expose the
+                active run after ``start_run()`` returns.
+        """
         if self.state_store.recording_session_consumed:
             raise RuntimeError(
                 "Recording session already consumed - restart the application for a new run"
@@ -79,7 +114,9 @@ class RunController:
 
         current_run = self.history_manager.current_run
         if current_run is None:
-            raise RuntimeError("HistoryManager did not expose current_run after start_run()")
+            raise RuntimeError(
+                "HistoryManager did not expose current_run after start_run()"
+            )
 
         state_metadata: dict[str, Any] = {
             "software_git_commit": software_git_commit,
@@ -138,6 +175,26 @@ class RunController:
         }
 
     def finish_run(self, *, reason: str = "operator_stop") -> dict[str, Any]:
+        """Finalize the active run and persist post-close integrity summary data.
+
+        The finish path writes a finalizing lifecycle event, writes a final
+        snapshot preview, closes the archive through ``HistoryManager``, tries
+        to sort the merged history, marks the run finished in ``StateStore``,
+        and then attempts to write ``integrity_report.json`` without letting an
+        integrity scan failure abort run shutdown.
+
+        Args:
+            reason: Caller-supplied finish reason stored in the final snapshot
+                preview and returned in the finish summary.
+
+        Returns:
+            A finish summary containing final snapshot information, archive
+            finalization status, merged-history sort errors, and integrity scan
+            status details for the UI or launcher path.
+
+        Raises:
+            RuntimeError: If no run is currently active.
+        """
         current_run = self.history_manager.current_run
         if current_run is None:
             raise RuntimeError("No active run to finish")
@@ -189,7 +246,9 @@ class RunController:
         integrity_scan_error: str | None = None
 
         try:
-            integrity_report, report_path = scan_and_write_run_integrity(finished_run_id)
+            integrity_report, report_path = scan_and_write_run_integrity(
+                finished_run_id
+            )
             integrity_status = str(integrity_report.get("overall_status") or "unknown")
             integrity_badge = str(integrity_report.get("badge") or "red")
             integrity_summary_message = str(
@@ -227,6 +286,17 @@ class RunController:
         severity: str,
         **extra: Any,
     ) -> None:
+        """Record matching raw and structured archive lifecycle system events.
+
+        Args:
+            event_type: Lifecycle event name such as
+                ``"run_archive_initialized"`` or ``"run_archive_finalizing"``.
+            severity: Severity stored on both event representations.
+            **extra: Additional event fields merged into the recorded payloads.
+
+        Returns:
+            None.
+        """
         if not self.history_manager.is_running:
             return
 
@@ -247,6 +317,14 @@ class RunController:
         self.history_manager.record_structured_event("system_event", structured_event)
 
     def _write_snapshot(self, snapshot: Mapping[str, Any]) -> Any:
+        """Write the next numbered snapshot and advance the local index counter.
+
+        Args:
+            snapshot: Snapshot payload to persist.
+
+        Returns:
+            The path returned by ``HistoryManager.write_snapshot``.
+        """
         path = self.history_manager.write_snapshot(self._next_snapshot_index, snapshot)
         self._next_snapshot_index += 1
         return path
@@ -257,6 +335,23 @@ class RunController:
         snapshot: Mapping[str, Any],
         event_recorded_at: str | None = None,
     ) -> str | None:
+        """Write a periodic snapshot when enough in-order time has elapsed.
+
+        The snapshot timer is based on event ``recorded_at`` timestamps rather
+        than wall-clock checks performed here. Out-of-order timestamps and
+        timestamps inside the configured interval are skipped.
+
+        Args:
+            snapshot: Current backend snapshot candidate to persist.
+            event_recorded_at: Timestamp associated with the event that may
+                trigger this periodic snapshot. When absent or invalid, the
+                current UTC timestamp is used.
+
+        Returns:
+            The written snapshot path as a string, or None when recording is not
+            active or the timestamp does not advance the periodic snapshot
+            interval.
+        """
         if not self.history_manager.is_running:
             return None
 
@@ -295,6 +390,22 @@ class RunController:
         finished_wall_time: str,
         reason: str,
     ) -> dict[str, Any]:
+        """Build the final pre-close snapshot view used during run finalization.
+
+        The preview copies the current backend snapshot and updates the run,
+        recording clock, playback clock, and archive sections so the final
+        snapshot reflects the completed run state before the archive is fully
+        closed.
+
+        Args:
+            run_id: Run identifier being finalized.
+            finished_wall_time: Wall-clock finish timestamp to embed into the
+                preview state.
+            reason: Finish reason stored in run and archive preview fields.
+
+        Returns:
+            A deep-copied snapshot payload updated to reflect the completed run.
+        """
         snapshot = deepcopy(self.state_store.get_snapshot())
 
         run_state = dict(snapshot.get("run", {}))
@@ -306,7 +417,9 @@ class RunController:
         snapshot["run"] = run_state
 
         started_wall_time = run_state.get("last_started_wall_time")
-        elapsed_seconds = self._elapsed_seconds_between(started_wall_time, finished_wall_time)
+        elapsed_seconds = self._elapsed_seconds_between(
+            started_wall_time, finished_wall_time
+        )
 
         recording_clock = dict(snapshot.get("recording_clock", {}))
         recording_clock["active"] = False
@@ -339,7 +452,19 @@ class RunController:
         return snapshot
 
     @staticmethod
-    def _elapsed_seconds_between(start_wall_time: Any, end_wall_time: Any) -> float | None:
+    def _elapsed_seconds_between(
+        start_wall_time: Any, end_wall_time: Any
+    ) -> float | None:
+        """Return non-negative elapsed seconds between two ISO UTC timestamps.
+
+        Args:
+            start_wall_time: Start timestamp candidate.
+            end_wall_time: End timestamp candidate.
+
+        Returns:
+            The elapsed seconds when both values are valid ISO timestamps and
+            the interval is non-negative, otherwise None.
+        """
         if not isinstance(start_wall_time, str) or not isinstance(end_wall_time, str):
             return None
         try:
@@ -352,6 +477,16 @@ class RunController:
 
     @staticmethod
     def _format_recording_display(*, elapsed_seconds: Any, active: bool) -> str:
+        """Format the recording clock label used in backend snapshot state.
+
+        Args:
+            elapsed_seconds: Elapsed recording duration in seconds.
+            active: Whether the recording clock is currently active.
+
+        Returns:
+            The display string shown for the recording clock. Invalid elapsed
+            values produce the placeholder active label or ``"Not Recording"``.
+        """
         if not isinstance(elapsed_seconds, (int, float)):
             return "Recording: --m : --s" if active else "Not Recording"
         total_seconds = max(0, int(elapsed_seconds))
@@ -362,6 +497,18 @@ class RunController:
 
 
 def _parse_iso_utc(value: str) -> datetime:
+    """Parse an ISO timestamp string, accepting a trailing ``Z`` suffix.
+
+    Args:
+        value: ISO-formatted timestamp string.
+
+    Returns:
+        A ``datetime`` parsed from the normalized timestamp.
+
+    Raises:
+        ValueError: If the timestamp cannot be parsed by
+            ``datetime.fromisoformat``.
+    """
     normalized = value.strip()
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"

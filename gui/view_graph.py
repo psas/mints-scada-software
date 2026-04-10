@@ -1,5 +1,12 @@
 # gui/view_graph.py
 
+"""Matplotlib-backed graph widget for live and playback sensor history.
+
+The widget renders one line per registered device, pulls history either from
+the device object itself or from an attached graph data provider, and keeps the
+visible window aligned to the current live or playback time range.
+"""
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
 import matplotlib
 import matplotlib.lines
@@ -19,6 +26,14 @@ log = logging.getLogger("Graph")
 
 
 class GraphView(QWidget):
+    """Display time-series sensor data for live and playback modes.
+
+    The widget tracks a set of registered sensor-like objects, renders one
+    matplotlib line per device, and refreshes on a timer. History can come
+    directly from each sensor's ``history`` attribute or from an attached graph
+    provider that serves samples for the current graph window.
+    """
+
     durationChanged = pyqtSignal(int)
     seriesChanged = pyqtSignal()
 
@@ -27,6 +42,7 @@ class GraphView(QWidget):
     LEGEND_COLOR = "#353535"
 
     def __init__(self):
+        """Initialize the graph widget, matplotlib canvas, and refresh timer."""
         super().__init__()
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -70,26 +86,75 @@ class GraphView(QWidget):
         self.timer.start()
 
     def attach_graph_provider(self, provider: "BaseGraphDataProvider | None") -> None:
+        """Attach the current graph data provider and refresh the plot.
+
+        Args:
+            provider: Provider used to supply graph samples when device-local
+                history is unavailable. Pass None to clear the provider.
+
+        Returns:
+            None.
+        """
         self._graph_provider = provider
         self._update()
 
     def detach_graph_provider(self) -> None:
+        """Detach the current graph data provider and refresh the plot.
+
+        Returns:
+            None.
+        """
         self._graph_provider = None
         self._update()
 
     def _display_label(self, sensor: object) -> str:
+        """Return the legend label for a sensor-like object.
+
+        Args:
+            sensor: Sensor-like object with optional ``display_name`` and
+                ``device_id`` attributes.
+
+        Returns:
+            The display name when present, otherwise the runtime device ID, or
+            ``"Unknown"`` when neither attribute exists.
+        """
         return getattr(sensor, "display_name", getattr(sensor, "device_id", "Unknown"))
 
     def _runtime_id(self, sensor: object) -> str:
+        """Return the runtime device identifier for a sensor-like object.
+
+        Args:
+            sensor: Sensor-like object with an optional ``device_id`` attribute.
+
+        Returns:
+            The device ID string, or an empty string when the object does not
+            expose one.
+        """
         return getattr(sensor, "device_id", "")
 
     def _extract_history(self, sensor: object):
+        """Return timestamp/value history for a sensor.
+
+        The method first tries to read a two-row history array from the sensor
+        object itself. If that is unavailable, it queries the attached graph
+        provider for samples in the current live or playback window and converts
+        them into the same two-row numpy shape.
+
+        Args:
+            sensor: Sensor-like object to read history from.
+
+        Returns:
+            A two-row numpy array where row 0 contains timestamps and row 1
+            contains values, or None when no usable history is available.
+        """
         hist = getattr(sensor, "history", None)
         if hist is not None:
             try:
                 hist = np.asarray(hist)
             except Exception:
-                log.exception("Failed to convert history for sensor %s", self._runtime_id(sensor))
+                log.exception(
+                    "Failed to convert history for sensor %s", self._runtime_id(sensor)
+                )
                 hist = None
             else:
                 if hist.ndim == 2 and hist.shape[0] >= 2:
@@ -134,15 +199,42 @@ class GraphView(QWidget):
             return None
 
     def _is_enabled(self, sensor: object) -> bool:
+        """Return whether a sensor's channel is currently enabled.
+
+        Args:
+            sensor: Sensor-like object to inspect.
+
+        Returns:
+            True when the channel is enabled or has not been explicitly
+            disabled.
+        """
         runtime_id = self._runtime_id(sensor)
         return self._enabled_channels.get(runtime_id, True)
 
     def _set_empty_line(self, idx: int):
+        """Clear the plotted data for a line slot.
+
+        Args:
+            idx: Index of the line to clear.
+
+        Returns:
+            None.
+        """
         if 0 <= idx < len(self.lines):
             self.lines[idx].set_xdata([None])
             self.lines[idx].set_ydata([None])
 
     def _update(self):
+        """Refresh all plotted series for the current graph window.
+
+        The update uses the provider's explicit playback window when available.
+        Otherwise it uses the current wall-clock time and the configured graph
+        duration. Disabled channels and channels without usable history are
+        cleared from the plot.
+
+        Returns:
+            None.
+        """
         ymin = 0.0
         ymax = 0.0
         visible_count = 0
@@ -205,23 +297,55 @@ class GraphView(QWidget):
         self.canvas.draw_idle()
 
     def is_channel_enabled(self, channel: str) -> bool:
+        """Return whether a channel is enabled for plotting.
+
+        Args:
+            channel: Runtime device ID for the channel.
+
+        Returns:
+            True when the channel is enabled or has not been explicitly
+            disabled.
+        """
         return self._enabled_channels.get(channel, True)
 
     def legend_entries(self) -> list[tuple[str, str, str, bool]]:
+        """Build the current legend metadata for all registered series.
+
+        Returns:
+            A list of tuples containing runtime ID, display label, matplotlib
+            line color, and enabled state for each registered sensor.
+        """
         entries = []
         for sensor, line in zip(self.sensors, self.lines):
             runtime_id = self._runtime_id(sensor)
-            entries.append((
-                runtime_id,
-                self._display_label(sensor),
-                line.get_color(),
-                self.is_channel_enabled(runtime_id),
-            ))
+            entries.append(
+                (
+                    runtime_id,
+                    self._display_label(sensor),
+                    line.get_color(),
+                    self.is_channel_enabled(runtime_id),
+                )
+            )
         return entries
 
     def add_device(self, sensor: object, graphed: bool = True) -> bool:
+        """Register a device as a plotted series.
+
+        If a device with the same runtime ID already exists, the method updates
+        its enabled state instead of creating a duplicate line.
+
+        Args:
+            sensor: Sensor-like object to add.
+            graphed: Whether the channel should start enabled.
+
+        Returns:
+            True when a new series was added. False when the device already
+            existed and only its enabled state was updated.
+        """
         runtime_id = self._runtime_id(sensor)
-        if runtime_id and any(self._runtime_id(existing) == runtime_id for existing in self.sensors):
+        if runtime_id and any(
+            self._runtime_id(existing) == runtime_id for existing in self.sensors
+        ):
             self.enableChannel(runtime_id, graphed)
             return False
 
@@ -238,9 +362,27 @@ class GraphView(QWidget):
         return True
 
     def addSensor(self, sensor: GenericSensor, graphed=True):
+        """Add a sensor using the legacy script-facing API.
+
+        Args:
+            sensor: Sensor instance to add.
+            graphed: Whether the channel should start enabled.
+
+        Returns:
+            The result from ``add_device``.
+        """
         return self.add_device(sensor, graphed)
 
     def remove_device(self, channel: str) -> bool:
+        """Remove a plotted series by runtime device ID.
+
+        Args:
+            channel: Runtime device ID to remove.
+
+        Returns:
+            True when a matching device was removed, or False when no matching
+            series exists.
+        """
         for idx, sensor in enumerate(self.sensors):
             if self._runtime_id(sensor) != channel:
                 continue
@@ -258,6 +400,11 @@ class GraphView(QWidget):
         return False
 
     def clear_devices(self):
+        """Remove all registered devices and plotted lines.
+
+        Returns:
+            None.
+        """
         self.sensors.clear()
         while self.lines:
             line = self.lines.pop()
@@ -270,6 +417,15 @@ class GraphView(QWidget):
         self._update()
 
     def set_devices(self, devices: list[object], graphed: bool = True):
+        """Replace the plotted device set.
+
+        Args:
+            devices: New sensor-like objects to register.
+            graphed: Whether each channel should start enabled.
+
+        Returns:
+            None.
+        """
         self.clear_devices()
         for device in devices:
             self.add_device(device, graphed)
@@ -277,21 +433,40 @@ class GraphView(QWidget):
         self._update()
 
     def set_duration(self, duration: int):
+        """Set the visible graph duration in seconds.
+
+        Args:
+            duration: Requested time window length in seconds.
+
+        Returns:
+            None.
+        """
         self.duration = max(1, int(duration))
         self.durationChanged.emit(int(self.duration))
         self._update()
 
     # Functions for use in scripts
     def setDuration(self, duration: int):
-        """Sets the duration of the graph"""
+        """Set the visible graph duration through the legacy script API.
+
+        Args:
+            duration: Requested time window length in seconds.
+
+        Returns:
+            None.
+        """
         self.set_duration(duration)
 
     def enableChannel(self, channel: str, state: bool = True) -> bool:
-        """Set if a channel is enabled in the graph.
+        """Enable or disable a plotted channel by runtime device ID.
 
-        * channel is the device id of the channel
-        * state is a boolean if the channel should be enabled or not, defaults to true
-        * Returns if the channel was changed
+        Args:
+            channel: Runtime device ID of the channel.
+            state: Whether the channel should be enabled.
+
+        Returns:
+            True when the channel exists and its enabled state was updated, or
+            False when no matching channel is registered.
         """
         for sensor in self.sensors:
             if self._runtime_id(sensor) == channel:

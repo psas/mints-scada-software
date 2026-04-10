@@ -1,5 +1,7 @@
 # gui/playback_catalog.py
 
+"""Discover and summarize recorded runs available for playback selection."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,13 @@ from historymanager.paths import HISTORY_ROOT_DIRNAME
 
 @dataclass(frozen=True)
 class PlaybackRunSummary:
+    """Summarize one recorded run discovered under ``ignitionhistory``.
+
+    The summary collects metadata, snapshot availability, merged-timeline
+    presence, and integrity status so the playback startup UI can sort runs and
+    render compact labels, subtitles, and tooltips without reopening files.
+    """
+
     run_id: str
     run_dir: Path
     metadata_path: Path
@@ -37,6 +46,13 @@ class PlaybackRunSummary:
 
     @property
     def sort_key(self) -> tuple[int, str]:
+        """Return the descending sort key used for playback run discovery.
+
+        Returns:
+            A tuple of ``(unix_timestamp, run_id)`` when ``start_wall_time`` can
+            be parsed, or ``(0, run_id)`` when no parseable start time is
+            available.
+        """
         parsed = _parse_iso_wall_time(self.start_wall_time)
         if parsed is None:
             return (0, self.run_id)
@@ -44,6 +60,12 @@ class PlaybackRunSummary:
 
     @property
     def display_title(self) -> str:
+        """Return the primary display label for the run list.
+
+        Returns:
+            ``"<run_id>  -  <test_name>"`` when a distinct test name is present,
+            otherwise the run id alone.
+        """
         test_name = (self.test_name or "").strip()
         if test_name and test_name != self.run_id:
             return f"{self.run_id}  -  {test_name}"
@@ -51,6 +73,12 @@ class PlaybackRunSummary:
 
     @property
     def integrity_compact_label(self) -> str:
+        """Return the compact archive-integrity label used in subtitles.
+
+        Returns:
+            A short ``archive=...`` label derived from the integrity badge or
+            status.
+        """
         if self.integrity_badge == "green":
             return "archive=ok"
         if self.integrity_badge == "yellow":
@@ -61,6 +89,13 @@ class PlaybackRunSummary:
 
     @property
     def display_subtitle(self) -> str:
+        """Build the one-line playback summary shown under the title.
+
+        Returns:
+            A pipe-delimited summary of mode, status, operator/profile metadata,
+            wall-clock bounds, snapshot and merged-timeline availability, and
+            integrity status.
+        """
         parts: list[str] = []
 
         if self.mode:
@@ -88,6 +123,13 @@ class PlaybackRunSummary:
 
     @property
     def tooltip_text(self) -> str:
+        """Build the multi-line tooltip text for playback run selection.
+
+        Returns:
+            A newline-delimited tooltip containing run identity, archive paths,
+            operator and profile metadata, timing fields, snapshot and merged
+            status, integrity details, and optional notes.
+        """
         lines = [
             f"Run ID: {self.run_id}",
             f"Path: {self.run_dir}",
@@ -127,6 +169,21 @@ def discover_playback_runs(
     *,
     include_integrity: bool = True,
 ) -> list[PlaybackRunSummary]:
+    """Discover playback-ready runs under the project history root.
+
+    The scan looks for run directories under ``ignitionhistory`` that contain a
+    ``metadata.json`` file. Each discovered run is summarized with metadata,
+    snapshot count, merged timeline presence, and optional integrity details.
+
+    Args:
+        project_root: Project root that contains the playback history root.
+        include_integrity: Whether to load or compute integrity report data for
+            each discovered run.
+
+    Returns:
+        Playback run summaries sorted newest-first by parsed start wall time and
+        then by run id.
+    """
     project_root_path = Path(project_root).expanduser().resolve()
     history_root = project_root_path / HISTORY_ROOT_DIRNAME
     if not history_root.is_dir():
@@ -147,7 +204,9 @@ def discover_playback_runs(
             continue
 
         snapshots_dir = child / "snapshots"
-        snapshot_count = len(list(snapshots_dir.glob("*.json"))) if snapshots_dir.is_dir() else 0
+        snapshot_count = (
+            len(list(snapshots_dir.glob("*.json"))) if snapshots_dir.is_dir() else 0
+        )
         integrity_report: dict[str, Any] | None = None
         integrity_report_path: Path | None = None
         integrity_status = "unknown"
@@ -158,15 +217,25 @@ def discover_playback_runs(
             integrity_report_path = child / INTEGRITY_REPORT_FILENAME
             integrity_report = _load_integrity_report_if_present(integrity_report_path)
             if integrity_report is None:
-                integrity_report = _scan_integrity_report(child, project_root=project_root_path)
+                integrity_report = _scan_integrity_report(
+                    child, project_root=project_root_path
+                )
             if isinstance(integrity_report, dict):
-                integrity_status = _coerce_optional_str(integrity_report.get("overall_status")) or "unknown"
-                integrity_badge = _coerce_optional_str(integrity_report.get("badge")) or "red"
+                integrity_status = (
+                    _coerce_optional_str(integrity_report.get("overall_status"))
+                    or "unknown"
+                )
+                integrity_badge = (
+                    _coerce_optional_str(integrity_report.get("badge")) or "red"
+                )
                 integrity_summary_message = (
                     _coerce_optional_str(integrity_report.get("summary_message"))
                     or "Integrity details unavailable."
                 )
-                if integrity_report_path is not None and not integrity_report_path.is_file():
+                if (
+                    integrity_report_path is not None
+                    and not integrity_report_path.is_file()
+                ):
                     integrity_report_path = None
 
         summaries.append(
@@ -199,6 +268,19 @@ def discover_playback_runs(
 
 
 def _load_metadata(path: Path) -> dict[str, Any]:
+    """Load run metadata from a playback run directory.
+
+    Args:
+        path: Path to the run's ``metadata.json`` file.
+
+    Returns:
+        The decoded metadata object.
+
+    Raises:
+        ValueError: If the decoded JSON value is not an object.
+        OSError: If the file cannot be opened.
+        json.JSONDecodeError: If the file does not contain valid JSON.
+    """
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
@@ -207,6 +289,15 @@ def _load_metadata(path: Path) -> dict[str, Any]:
 
 
 def _load_integrity_report_if_present(path: Path) -> dict[str, Any] | None:
+    """Load a persisted integrity report when one is present and valid.
+
+    Args:
+        path: Candidate integrity report path.
+
+    Returns:
+        The decoded integrity report object, or None when the file is missing,
+        unreadable, invalid JSON, or not a JSON object.
+    """
     if not path.is_file():
         return None
     try:
@@ -217,7 +308,19 @@ def _load_integrity_report_if_present(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _scan_integrity_report(run_dir: Path, *, project_root: Path) -> dict[str, Any] | None:
+def _scan_integrity_report(
+    run_dir: Path, *, project_root: Path
+) -> dict[str, Any] | None:
+    """Scan a run directory to compute integrity details on demand.
+
+    Args:
+        run_dir: Run directory to scan.
+        project_root: Project root used by the integrity scanner.
+
+    Returns:
+        The computed integrity report object, or None when scanning fails or
+        does not return a JSON object.
+    """
     try:
         report = scan_run_integrity(run_dir, project_root=project_root)
     except Exception:
@@ -226,6 +329,15 @@ def _scan_integrity_report(run_dir: Path, *, project_root: Path) -> dict[str, An
 
 
 def _coerce_optional_str(value: Any) -> str | None:
+    """Normalize an optional string field loaded from JSON.
+
+    Args:
+        value: Value to normalize.
+
+    Returns:
+        The stripped string value, or None when the value is not a string or is
+        empty after trimming whitespace.
+    """
     if not isinstance(value, str):
         return None
     stripped = value.strip()
@@ -233,6 +345,15 @@ def _coerce_optional_str(value: Any) -> str | None:
 
 
 def _parse_iso_wall_time(value: str | None) -> datetime | None:
+    """Parse an ISO wall-clock timestamp used by playback metadata.
+
+    Args:
+        value: Timestamp string that may end with ``Z``.
+
+    Returns:
+        A ``datetime`` parsed with timezone information when the value is
+        present and valid, otherwise None.
+    """
     if not value:
         return None
 

@@ -1,5 +1,13 @@
 # historymanager/rebuild.py
 
+"""Safe rebuild helpers for history archive verification and publication.
+
+This module inspects raw, rawbak, and structured history artifacts for a run,
+builds a safe rebuild workspace when the shared archive streams are
+cross-consistent, and can publish rebuild preview artifacts back into the run's
+history directory.
+"""
+
 from __future__ import annotations
 
 import json
@@ -21,6 +29,16 @@ _PASS_THROUGH_STREAMS = {"operator_action", "system_event"}
 
 @dataclass(frozen=True)
 class RebuildRunPaths:
+    """Resolved archive paths for a single run rebuild workflow.
+
+    Attributes:
+        project_root: Absolute project root that contains the archive trees.
+        run_id: Run identifier resolved from the provided run reference.
+        raw_dir: Raw archive directory for the run.
+        rawbak_dir: Raw backup archive directory for the run.
+        history_dir: Structured history directory for the run.
+    """
+
     project_root: Path
     run_id: str
     raw_dir: Path
@@ -29,6 +47,11 @@ class RebuildRunPaths:
 
 
 def utc_now_iso() -> str:
+    """Return the current UTC time in millisecond-precision ISO-8601 form.
+
+    Returns:
+        Current UTC timestamp formatted with a trailing ``Z`` suffix.
+    """
     return (
         datetime.now(timezone.utc)
         .isoformat(timespec="milliseconds")
@@ -42,6 +65,27 @@ def rebuild_run_archive(
     project_root: str | Path = ".",
     keep_workspace: bool = True,
 ) -> dict[str, Any]:
+    """Build a safe rebuild workspace for a run archive.
+
+    The rebuild flow validates the shared raw, rawbak, and structured streams,
+    chooses canonical first-order events from raw and rawbak, and prepares a
+    temporary workspace that mirrors the rebuilt archive contents when the run
+    is safe to rebuild. This function does not publish rebuild artifacts back
+    into the run history directory.
+
+    Args:
+        run_ref: Run identifier or path pointing at a run directory or artifact
+            within that run.
+        project_root: Project root that contains ``.ignitionraw``,
+            ``.ignitionrawbak``, and ``ignitionhistory``.
+        keep_workspace: Whether to keep the generated temporary rebuild
+            workspace on disk.
+
+    Returns:
+        A rebuild report describing source availability, per-stream rebuild
+        results, overall status, failure reasons, and the temporary workspace
+        path when one was created.
+    """
     paths = _resolve_run_paths(run_ref, project_root=project_root)
 
     source_presence = {
@@ -80,7 +124,9 @@ def rebuild_run_archive(
     for stream_name in SHARED_STREAM_NAMES:
         raw_scan = _load_event_file(paths.raw_dir / RAW_STREAM_FILES[stream_name])
         rawbak_scan = _load_event_file(paths.rawbak_dir / RAW_STREAM_FILES[stream_name])
-        history_scan = _load_event_file(paths.history_dir / STRUCTURED_STREAM_FILES[stream_name])
+        history_scan = _load_event_file(
+            paths.history_dir / STRUCTURED_STREAM_FILES[stream_name]
+        )
 
         stream_report = _build_stream_rebuild_plan(
             stream_name=stream_name,
@@ -96,7 +142,9 @@ def rebuild_run_archive(
 
         canonical_raw_by_stream[stream_name] = stream_report["canonical_raw_events"]
         history_rebuild_by_stream[stream_name] = stream_report["rebuilt_history_events"]
-        existing_history_by_stream[stream_name] = stream_report["existing_history_events"]
+        existing_history_by_stream[stream_name] = stream_report[
+            "existing_history_events"
+        ]
 
     if fatal_reasons:
         report["status"] = "failed"
@@ -129,8 +177,27 @@ def publish_run_rebuild_artifacts(
     *,
     project_root: str | Path = ".",
 ) -> dict[str, Any]:
+    """Publish rebuild artifacts into a run's history directory.
+
+    This first creates a safe rebuild workspace. When the rebuild succeeds, it
+    copies the rebuilt structured stream files, merged stream, and snapshot
+    directory back into the run's ``ignitionhistory`` directory using
+    ``*.rebuild`` artifact names and writes the final rebuild report.
+
+    Args:
+        run_ref: Run identifier or path pointing at a run directory or artifact
+            within that run.
+        project_root: Project root that contains the archive trees.
+
+    Returns:
+        The final rebuild report. The report status remains failed when the run
+        could not be rebuilt safely, and becomes published after artifacts are
+        copied into the history directory.
+    """
     paths = _resolve_run_paths(run_ref, project_root=project_root)
-    report = rebuild_run_archive(run_ref, project_root=project_root, keep_workspace=True)
+    report = rebuild_run_archive(
+        run_ref, project_root=project_root, keep_workspace=True
+    )
 
     report_path = paths.history_dir / REBUILD_REPORT_FILENAME
 
@@ -183,6 +250,18 @@ def get_rebuild_artifact_status(
     *,
     project_root: str | Path = ".",
 ) -> dict[str, Any]:
+    """Report whether rebuild artifacts exist for a run.
+
+    Args:
+        run_ref: Run identifier or path pointing at a run directory or artifact
+            within that run.
+        project_root: Project root that contains the archive trees.
+
+    Returns:
+        A status dictionary describing whether rebuild artifacts are present,
+        which rebuilt structured streams exist, and where the report, merged
+        rebuild stream, and rebuild snapshots can be found.
+    """
     paths = _resolve_run_paths(run_ref, project_root=project_root)
     report_path = paths.history_dir / REBUILD_REPORT_FILENAME
 
@@ -218,17 +297,42 @@ def get_rebuild_artifact_status(
         "available_streams": available_streams,
         "merged_path": str(merged_path) if merged_path.is_file() else None,
         "snapshots_dir": str(snapshots_dir) if snapshots_dir.is_dir() else None,
-        "generated_at": report_payload.get("generated_at") if isinstance(report_payload, dict) else None,
+        "generated_at": (
+            report_payload.get("generated_at")
+            if isinstance(report_payload, dict)
+            else None
+        ),
     }
 
 
 def discard_rebuild_workspace(workspace_path: str | Path) -> None:
+    """Remove a temporary rebuild workspace directory when it exists.
+
+    Args:
+        workspace_path: Workspace directory previously created by the rebuild
+            flow.
+
+    Returns:
+        None.
+    """
     path = Path(workspace_path).expanduser().resolve()
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _resolve_run_paths(run_ref: str | Path, *, project_root: str | Path) -> RebuildRunPaths:
+def _resolve_run_paths(
+    run_ref: str | Path, *, project_root: str | Path
+) -> RebuildRunPaths:
+    """Resolve archive directories for a run reference.
+
+    Args:
+        run_ref: Run identifier or path to a run directory or artifact within a
+            run directory.
+        project_root: Project root that contains the archive trees.
+
+    Returns:
+        Resolved rebuild path metadata for the target run.
+    """
     project_root_path = Path(project_root).expanduser().resolve()
     raw_root = project_root_path / ".ignitionraw"
     rawbak_root = project_root_path / ".ignitionrawbak"
@@ -253,6 +357,20 @@ def _resolve_run_paths(run_ref: str | Path, *, project_root: str | Path) -> Rebu
 
 
 def _load_event_file(path: Path) -> dict[str, Any]:
+    """Load and index an event file by shared event identity.
+
+    The scan accepts only events that contain the shared identity fields needed
+    for safe rebuild comparison: ``event_uid``, ``canonical_hash``, and
+    ``stream_seq``.
+
+    Args:
+        path: JSONL event file to scan.
+
+    Returns:
+        A scan result dictionary containing presence metadata, accepted events,
+        an ``event_uid`` index, parse errors, duplicate identifiers, and
+        records that were skipped because shared identity was incomplete.
+    """
     result: dict[str, Any] = {
         "path": str(path),
         "present": path.is_file(),
@@ -328,6 +446,26 @@ def _build_stream_rebuild_plan(
     rawbak_scan: dict[str, Any],
     history_scan: dict[str, Any],
 ) -> dict[str, Any]:
+    """Build a safe rebuild plan for one shared archive stream.
+
+    The planner validates parseability and shared identity, unions raw and
+    rawbak into a canonical first-order stream, and decides whether structured
+    history can be reused or safely rebuilt. Pass-through streams can be copied
+    directly from canonical first-order events. ``telemetry_in`` can only be
+    reused when it already matches the canonical first-order stream because
+    reducer-based structured replay is not available in safe rebuild mode.
+
+    Args:
+        stream_name: Shared stream name being evaluated.
+        raw_scan: Scan result for the raw stream file.
+        rawbak_scan: Scan result for the raw backup stream file.
+        history_scan: Scan result for the structured history stream file.
+
+    Returns:
+        A per-stream rebuild report that includes status, issues, canonical
+        first-order events, rebuilt history events, and the existing history
+        events sorted into replay order.
+    """
     issues: list[str] = []
 
     for source_name, scan in (
@@ -338,9 +476,13 @@ def _build_stream_rebuild_plan(
         if scan["parse_errors"]:
             issues.append(f"{stream_name}: {source_name} has parse errors")
         if scan["duplicate_uids"]:
-            issues.append(f"{stream_name}: {source_name} has duplicate event_uid values")
+            issues.append(
+                f"{stream_name}: {source_name} has duplicate event_uid values"
+            )
         if scan["missing_identity"]:
-            issues.append(f"{stream_name}: {source_name} has events missing shared identity fields")
+            issues.append(
+                f"{stream_name}: {source_name} has events missing shared identity fields"
+            )
 
     raw_present = raw_scan["present"]
     rawbak_present = rawbak_scan["present"]
@@ -393,7 +535,9 @@ def _build_stream_rebuild_plan(
                     history_events=history_events,
                 )
                 if history_matches:
-                    rebuilt_history_events = sorted(history_scan["events"], key=_event_sort_key)
+                    rebuilt_history_events = sorted(
+                        history_scan["events"], key=_event_sort_key
+                    )
                     history_strategy = "reuse"
                 else:
                     rebuilt_history_events = [dict(event) for event in canonical_sorted]
@@ -404,14 +548,20 @@ def _build_stream_rebuild_plan(
                 canonical_raw_events=canonical_raw_events,
                 history_events=history_events,
             ):
-                rebuilt_history_events = sorted(history_scan["events"], key=_event_sort_key)
+                rebuilt_history_events = sorted(
+                    history_scan["events"], key=_event_sort_key
+                )
                 history_strategy = "reuse"
             elif canonical_raw_events:
                 issues.append(
                     "telemetry_in: structured rebuild requires reducer/structured replay and is not available in safe rebuild mode"
                 )
 
-        if not canonical_raw_events and not rebuilt_history_events and not history_present:
+        if (
+            not canonical_raw_events
+            and not rebuilt_history_events
+            and not history_present
+        ):
             issues.append(f"{stream_name}: no usable archive data found")
 
     status = "ready" if not issues else "failed"
@@ -433,7 +583,9 @@ def _build_stream_rebuild_plan(
         "canonical_event_count": len(canonical_raw_events),
         "rebuilt_history_event_count": len(rebuilt_history_events),
         "issues": issues,
-        "canonical_raw_events": sorted(canonical_raw_events.values(), key=_event_sort_key),
+        "canonical_raw_events": sorted(
+            canonical_raw_events.values(), key=_event_sort_key
+        ),
         "rebuilt_history_events": rebuilt_history_events,
         "existing_history_events": sorted(history_scan["events"], key=_event_sort_key),
     }
@@ -444,6 +596,17 @@ def _history_matches_canonical(
     canonical_raw_events: dict[str, dict[str, Any]],
     history_events: dict[str, dict[str, Any]],
 ) -> bool:
+    """Return whether structured history matches canonical first-order events.
+
+    Args:
+        canonical_raw_events: Canonical first-order events indexed by
+            ``event_uid``.
+        history_events: Structured history events indexed by ``event_uid``.
+
+    Returns:
+        True when both collections contain the same event identifiers and each
+        event preserves the same ``canonical_hash`` and ``stream_seq`` values.
+    """
     if set(canonical_raw_events.keys()) != set(history_events.keys()):
         return False
 
@@ -451,7 +614,9 @@ def _history_matches_canonical(
         history_payload = history_events.get(event_uid)
         if history_payload is None:
             return False
-        if canonical_payload.get("canonical_hash") != history_payload.get("canonical_hash"):
+        if canonical_payload.get("canonical_hash") != history_payload.get(
+            "canonical_hash"
+        ):
             return False
         if canonical_payload.get("stream_seq") != history_payload.get("stream_seq"):
             return False
@@ -465,10 +630,32 @@ def _create_rebuild_workspace(
     history_rebuild_by_stream: dict[str, list[dict[str, Any]]],
     existing_history_by_stream: dict[str, list[dict[str, Any]]],
 ) -> Path:
+    """Create a temporary workspace containing rebuilt archive artifacts.
+
+    The workspace mirrors the raw, rawbak, and history directory structure used
+    by a normal run archive. Shared raw streams are written from canonical
+    first-order events, structured streams are written from rebuilt history
+    events when available or existing history otherwise, and existing metadata
+    and snapshots are copied through.
+
+    Args:
+        paths: Resolved run paths for the rebuild target.
+        canonical_raw_by_stream: Canonical first-order events grouped by shared
+            stream name.
+        history_rebuild_by_stream: Rebuilt structured events grouped by stream
+            name.
+        existing_history_by_stream: Existing structured history events grouped
+            by stream name.
+
+    Returns:
+        Path to the created temporary rebuild workspace.
+    """
     workspace_root = paths.history_dir / REBUILD_WORKSPACE_DIRNAME
     workspace_root.mkdir(parents=True, exist_ok=True)
 
-    workspace = workspace_root / f"{utc_now_iso().replace(':', '-')}_{uuid.uuid4().hex[:8]}"
+    workspace = (
+        workspace_root / f"{utc_now_iso().replace(':', '-')}_{uuid.uuid4().hex[:8]}"
+    )
     raw_out = workspace / "raw"
     rawbak_out = workspace / "rawbak"
     history_out = workspace / "history"
@@ -481,11 +668,15 @@ def _create_rebuild_workspace(
 
     for stream_name, filename in RAW_STREAM_FILES.items():
         _write_jsonl(raw_out / filename, canonical_raw_by_stream.get(stream_name, []))
-        _write_jsonl(rawbak_out / filename, canonical_raw_by_stream.get(stream_name, []))
+        _write_jsonl(
+            rawbak_out / filename, canonical_raw_by_stream.get(stream_name, [])
+        )
 
     merged_events: list[dict[str, Any]] = []
     for stream_name, filename in STRUCTURED_STREAM_FILES.items():
-        events = history_rebuild_by_stream.get(stream_name) or existing_history_by_stream.get(stream_name, [])
+        events = history_rebuild_by_stream.get(
+            stream_name
+        ) or existing_history_by_stream.get(stream_name, [])
         _write_jsonl(history_out / filename, events)
         merged_events.extend(events)
 
@@ -493,7 +684,9 @@ def _create_rebuild_workspace(
     _write_jsonl(history_out / "merged.jsonl", merged_events)
 
     _copy_if_exists(paths.history_dir / "metadata.json", history_out / "metadata.json")
-    _copy_if_exists(paths.history_dir / "writer_stats.json", history_out / "writer_stats.json")
+    _copy_if_exists(
+        paths.history_dir / "writer_stats.json", history_out / "writer_stats.json"
+    )
     _copy_if_exists(paths.history_dir / "complete.json", history_out / "complete.json")
 
     original_snapshots = paths.history_dir / "snapshots"
@@ -505,6 +698,15 @@ def _create_rebuild_workspace(
 
 
 def _write_jsonl(path: Path, events: list[dict[str, Any]]) -> None:
+    """Write events to a JSONL file.
+
+    Args:
+        path: Destination JSONL path.
+        events: Event payloads to write in order.
+
+    Returns:
+        None.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for payload in events:
@@ -513,12 +715,30 @@ def _write_jsonl(path: Path, events: list[dict[str, Any]]) -> None:
 
 
 def _copy_if_exists(source: Path, destination: Path) -> None:
+    """Copy a file into place when the source exists.
+
+    Args:
+        source: Existing file to copy.
+        destination: Destination path for the copied file.
+
+    Returns:
+        None.
+    """
     if source.is_file():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
 
 
 def _event_sort_key(payload: dict[str, Any]) -> tuple[str, int, int, str]:
+    """Build a stable replay-oriented sort key for an event payload.
+
+    Args:
+        payload: Event payload to inspect.
+
+    Returns:
+        Tuple of ``recorded_at``, ``global_seq``, ``stream_seq``, and
+        ``event_uid`` with missing values normalized to empty or zero values.
+    """
     recorded_at = payload.get("recorded_at")
     if not isinstance(recorded_at, str):
         recorded_at = ""
@@ -535,6 +755,15 @@ def _event_sort_key(payload: dict[str, Any]) -> tuple[str, int, int, str]:
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write a JSON document to disk.
+
+    Args:
+        path: Final output path.
+        payload: JSON-serializable dictionary to write.
+
+    Returns:
+        None.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.tmp")
     with temp_path.open("w", encoding="utf-8") as handle:

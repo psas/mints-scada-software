@@ -1,5 +1,13 @@
 # gateway/service.py
 
+"""Gateway-owned live ingest service and IPC boundary.
+
+This module hosts the gateway process that owns live hardware initialization,
+packet ingest, raw/rawbak history recording, and gateway-side IPC handling. It
+forwards higher-level state updates to the backend while keeping the backend as
+the system of record for authoritative runtime state and structured history.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -30,7 +38,9 @@ from .ipc_models import (
 )
 from .ipc_server import GatewayIPCServer
 from .models import GatewayRuntimeConfig
-from scripts.script_runtime.abort_flow_contract import CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE
+from scripts.script_runtime.abort_flow_contract import (
+    CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE,
+)
 from scripts.script_runtime.script_contract import ABORT_RELAY_MESSAGE_TYPE
 
 log = logging.getLogger(__name__)
@@ -46,17 +56,27 @@ ABORT_LATCHED_PLACEHOLDER_TODOS = (
 
 
 def isoformat_z() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    """Return the current UTC time formatted as a whole-second Z timestamp.
+
+    Returns:
+        The current UTC timestamp in ISO 8601 format with a ``Z`` suffix and no
+        fractional seconds.
+    """
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 class GatewayService:
-    """Gateway-owned live ingest service.
+    """Own gateway-side live hardware, raw history, and IPC responsibilities.
 
-    This commit moves inbound live bus initialization and packet ingest into
-    gateway, while backend still owns higher-level state, structured history,
-    and GUI IPC.
-
-    Outbound command routing is now also proxied through gateway.
+    The gateway process owns live bus initialization, inbound packet ingest,
+    raw/rawbak recording, gateway IPC, and forwarding of live hardware status
+    and relay-driven abort actions to the backend. The backend remains the
+    system of record for authoritative runtime state and structured history.
     """
 
     def __init__(
@@ -67,6 +87,19 @@ class GatewayService:
         backend_socket_path: Path | None = None,
         idle_sleep_s: float = 0.25,
     ) -> None:
+        """Initialize gateway runtime dependencies and IPC wiring.
+
+        Args:
+            project_root: Project root used for default socket and history
+                locations. Defaults to the repository root.
+            socket_path: Unix domain socket path exposed by the gateway IPC
+                server. Defaults to ``.gateway_service.sock`` under the project
+                root.
+            backend_socket_path: Unix domain socket path for the backend IPC
+                service. Defaults to ``.backend_service.sock`` under the
+                project root.
+            idle_sleep_s: Idle sleep interval for the runtime configuration.
+        """
         if project_root is None:
             project_root = Path(__file__).resolve().parents[1]
         else:
@@ -158,26 +191,52 @@ class GatewayService:
 
     @property
     def project_root(self) -> Path:
+        """Return the resolved project root for the gateway runtime.
+
+        Returns:
+            The configured project root path.
+        """
         return self.config.project_root
 
     @property
     def socket_path(self) -> Path:
+        """Return the gateway IPC socket path.
+
+        Returns:
+            The Unix domain socket path served by the gateway.
+        """
         return self.config.socket_path
 
     @property
     def backend_socket_path(self) -> Path:
+        """Return the backend IPC socket path used by the gateway client.
+
+        Returns:
+            The Unix domain socket path for backend IPC.
+        """
         return self.config.backend_socket_path
 
     @property
     def connected_client_count(self) -> int:
+        """Return the current number of connected gateway IPC clients.
+
+        Returns:
+            The number of clients currently tracked by the gateway server.
+        """
         with self._lock:
             return len(self._connected_clients)
 
     @property
     def is_running(self) -> bool:
+        """Return whether the gateway service has been started.
+
+        Returns:
+            True when the gateway runtime has been started.
+        """
         return self._started
 
     def start(self) -> None:
+        """Mark the gateway service as started and log startup metadata."""
         if self._started:
             log.debug("GatewayService.start() called while already started")
             return
@@ -190,6 +249,7 @@ class GatewayService:
         )
 
     def serve_forever(self) -> None:
+        """Start the gateway if needed and run the IPC server loop."""
         if not self._started:
             self.start()
 
@@ -200,6 +260,12 @@ class GatewayService:
             log.info("Gateway service IPC server exited")
 
     def stop(self) -> None:
+        """Stop gateway-owned runtime resources and clear live state.
+
+        The shutdown path attempts to finish any active raw/rawbak run, close
+        the backend IPC client, shut down live hardware, clear registration
+        flags, and stop the gateway IPC server.
+        """
         if not self._started:
             return
 
@@ -229,18 +295,32 @@ class GatewayService:
         self._started = False
 
     def on_client_connected(self, client_id: str) -> None:
+        """Track a newly connected gateway IPC client.
+
+        Args:
+            client_id: Gateway server client identifier.
+        """
         with self._lock:
             self._connected_clients.add(client_id)
         log.info("Gateway IPC client connected: %s", client_id)
 
     def on_client_disconnected(self, client_id: str) -> None:
+        """Forget a disconnected gateway IPC client.
+
+        Args:
+            client_id: Gateway server client identifier.
+        """
         with self._lock:
             self._connected_clients.discard(client_id)
         log.info("Gateway IPC client disconnected: %s", client_id)
 
-
-
     def _current_raw_run_summary(self) -> dict[str, Any]:
+        """Build the current raw/rawbak run summary for status replies.
+
+        Returns:
+            A summary dictionary describing whether a raw run is active and, if
+            so, its run identifier, mode, test name, and wall-clock start time.
+        """
         current_run = self.raw_history_manager.current_run
         if current_run is None:
             return {
@@ -261,19 +341,30 @@ class GatewayService:
         }
 
     def _mark_backend_link_failure(self, reason: str) -> None:
+        """Mark the backend link unhealthy and retain the latest failure reason.
+
+        Args:
+            reason: Human-readable failure summary for logs and status state.
+        """
         if self._backend_link_ok or self._last_backend_link_failure_reason != reason:
             log.warning("Gateway lost backend link: %s", reason)
         self._backend_link_ok = False
         self._last_backend_link_failure_reason = reason
 
     def _mark_backend_link_restored(self) -> None:
+        """Mark the backend link healthy and clear the failure reason."""
         if not self._backend_link_ok:
             log.info("Gateway backend link restored")
         self._backend_link_ok = True
         self._last_backend_link_failure_reason = None
 
-
     def _build_status_message(self) -> GatewayIPCMessage:
+        """Build the canonical gateway status reply.
+
+        Returns:
+            A gateway status IPC message containing service metadata, live bus
+            state, raw run summary, backend-link health, and abort-latch state.
+        """
         raw_run = self._current_raw_run_summary()
         return gateway_status_message(
             service_name=self.service_name,
@@ -298,6 +389,15 @@ class GatewayService:
         )
 
     def _latch_abort(self, payload: Mapping[str, Any]) -> None:
+        """Latch gateway abort placeholder state for a relay abort request.
+
+        The latch records the first abort timestamp and relay identifiers, then
+        emits the placeholder abort log messages. Subsequent abort requests only
+        refresh the stored relay identifiers when new values are present.
+
+        Args:
+            payload: Gateway abort relay payload.
+        """
         relay_request_id = str(payload.get("relay_request_id") or "") or None
         relay_session_id = str(payload.get("relay_session_id") or "") or None
         if self._abort_latched:
@@ -317,6 +417,11 @@ class GatewayService:
             log.critical(line)
 
     def _record_abort_placeholder_raw_event(self, payload: Mapping[str, Any]) -> None:
+        """Record the placeholder gateway abort latch event into raw history.
+
+        Args:
+            payload: Gateway abort relay payload.
+        """
         if not self.raw_history_manager.is_running:
             return
         event = {
@@ -335,11 +440,27 @@ class GatewayService:
         }
         self.raw_history_manager.record_raw_event("system_event", event)
 
-    def _forward_abort_to_backend(self, payload: Mapping[str, Any]) -> tuple[bool, str | None]:
+    def _forward_abort_to_backend(
+        self, payload: Mapping[str, Any]
+    ) -> tuple[bool, str | None]:
+        """Forward the relay-driven abort action and command payloads to backend.
+
+        Args:
+            payload: Gateway abort relay payload containing ``operator_action``
+                and ``command_payload``.
+
+        Returns:
+            A tuple of ``(forwarded, reason)`` describing whether the backend
+            accepted the forward and the backend-side failure reason when it did
+            not.
+        """
         operator_action_payload = dict(payload.get("operator_action") or {})
         command_payload = dict(payload.get("command_payload") or {})
         if not operator_action_payload or not command_payload:
-            return False, "gateway abort request requires operator_action and command_payload"
+            return (
+                False,
+                "gateway abort request requires operator_action and command_payload",
+            )
         try:
             forwarded, reason = self.backend_client.forward_abort_to_backend(
                 operator_action_payload=operator_action_payload,
@@ -352,10 +473,26 @@ class GatewayService:
         if forwarded:
             self._mark_backend_link_restored()
         else:
-            self._mark_backend_link_failure(reason or "gateway abort forward was rejected")
+            self._mark_backend_link_failure(
+                reason or "gateway abort forward was rejected"
+            )
         return forwarded, reason
 
-    def _handle_abort_request_message(self, payload: Mapping[str, Any]) -> GatewayIPCMessage:
+    def _handle_abort_request_message(
+        self, payload: Mapping[str, Any]
+    ) -> GatewayIPCMessage:
+        """Handle the gateway abort relay message end to end.
+
+        This latches the gateway abort placeholder state, records the matching
+        raw system event when raw recording is active, forwards the abort to the
+        backend, and returns the gateway abort result message.
+
+        Args:
+            payload: Gateway abort relay payload.
+
+        Returns:
+            The gateway abort result IPC message.
+        """
         self._latch_abort(payload)
         try:
             self._record_abort_placeholder_raw_event(payload)
@@ -374,8 +511,16 @@ class GatewayService:
             wall_time=isoformat_z(),
         )
 
-
     def _clear_abort_latch(self, payload: Mapping[str, Any]) -> bool:
+        """Clear the gateway abort latch and reset stored relay identifiers.
+
+        Args:
+            payload: Clear-abort relay payload. The payload is accepted for API
+                symmetry but is not currently inspected by this method.
+
+        Returns:
+            True when the latch had previously been active.
+        """
         was_latched = bool(self._abort_latched)
         self._abort_latched = False
         self._abort_latched_at = None
@@ -386,7 +531,16 @@ class GatewayService:
             log.warning(CLEAR_ABORT_LATCH_REINITIALIZED_MESSAGE)
         return was_latched
 
-    def _record_clear_abort_latch_raw_event(self, payload: Mapping[str, Any], *, was_latched: bool) -> None:
+    def _record_clear_abort_latch_raw_event(
+        self, payload: Mapping[str, Any], *, was_latched: bool
+    ) -> None:
+        """Record the clear-abort-latch gateway event into raw history.
+
+        Args:
+            payload: Clear-abort relay payload.
+            was_latched: Whether the gateway abort latch had been active before
+                clearing it.
+        """
         if not self.raw_history_manager.is_running:
             return
         event = {
@@ -405,15 +559,33 @@ class GatewayService:
         }
         self.raw_history_manager.record_raw_event("system_event", event)
 
-    def _forward_clear_abort_latch_to_backend(self, payload: Mapping[str, Any]) -> tuple[bool, str | None]:
+    def _forward_clear_abort_latch_to_backend(
+        self, payload: Mapping[str, Any]
+    ) -> tuple[bool, str | None]:
+        """Forward the clear-abort-latch action and command payloads to backend.
+
+        Args:
+            payload: Clear-abort relay payload containing ``operator_action`` and
+                ``command_payload``.
+
+        Returns:
+            A tuple of ``(forwarded, reason)`` describing whether the backend
+            accepted the forward and the backend-side failure reason when it did
+            not.
+        """
         operator_action_payload = dict(payload.get("operator_action") or {})
         command_payload = dict(payload.get("command_payload") or {})
         if not operator_action_payload or not command_payload:
-            return False, "clear abort latch request requires operator_action and command_payload"
+            return (
+                False,
+                "clear abort latch request requires operator_action and command_payload",
+            )
         try:
-            forwarded, reason = self.backend_client.forward_clear_abort_latch_to_backend(
-                operator_action_payload=operator_action_payload,
-                command_payload=command_payload,
+            forwarded, reason = (
+                self.backend_client.forward_clear_abort_latch_to_backend(
+                    operator_action_payload=operator_action_payload,
+                    command_payload=command_payload,
+                )
             )
         except Exception as exc:
             self._mark_backend_link_failure(f"clear abort latch forward failed: {exc}")
@@ -422,10 +594,22 @@ class GatewayService:
         if forwarded:
             self._mark_backend_link_restored()
         else:
-            self._mark_backend_link_failure(reason or "clear abort latch forward was rejected")
+            self._mark_backend_link_failure(
+                reason or "clear abort latch forward was rejected"
+            )
         return forwarded, reason
 
-    def _handle_clear_abort_latch_request_message(self, payload: Mapping[str, Any]) -> GatewayIPCMessage:
+    def _handle_clear_abort_latch_request_message(
+        self, payload: Mapping[str, Any]
+    ) -> GatewayIPCMessage:
+        """Handle the clear-abort-latch relay message end to end.
+
+        Args:
+            payload: Clear-abort relay payload.
+
+        Returns:
+            The gateway clear-abort-latch result IPC message.
+        """
         was_latched = self._clear_abort_latch(payload)
         try:
             self._record_clear_abort_latch_raw_event(payload, was_latched=was_latched)
@@ -446,21 +630,39 @@ class GatewayService:
         )
 
     def _sync_hardware_status_to_backend(self, payload: Mapping[str, Any]) -> None:
+        """Forward gateway hardware status into the backend link-health path.
+
+        Args:
+            payload: Gateway hardware status payload sent to backend.
+        """
         try:
             responses = self.backend_client.gateway_hardware_status(payload)
             if responses:
                 self._mark_backend_link_restored()
             else:
-                self._mark_backend_link_failure("hardware status sync returned no response")
+                self._mark_backend_link_failure(
+                    "hardware status sync returned no response"
+                )
         except Exception as exc:
             self._mark_backend_link_failure(f"hardware status sync failed: {exc}")
 
     def _handle_bus_status_event(self, payload: Mapping[str, Any]) -> None:
-        status = str(payload.get("status") or "").strip().lower()
-        connected = status in {"connected", "receive_loop_started"} or bool(payload.get("connected", False))
-        reconnecting = status == "reconnecting" or bool(payload.get("reconnecting", False))
+        """Translate a BusManager status callback into backend hardware status.
 
-        registered_ids = list(payload.get("registered_ids") or self._last_registered_ids)
+        Args:
+            payload: Bus-status callback payload emitted by ``BusManager``.
+        """
+        status = str(payload.get("status") or "").strip().lower()
+        connected = status in {"connected", "receive_loop_started"} or bool(
+            payload.get("connected", False)
+        )
+        reconnecting = status == "reconnecting" or bool(
+            payload.get("reconnecting", False)
+        )
+
+        registered_ids = list(
+            payload.get("registered_ids") or self._last_registered_ids
+        )
         skipped_ids = list(payload.get("skipped_ids") or self._last_skipped_ids)
 
         if connected:
@@ -480,23 +682,40 @@ class GatewayService:
             "bitrate": payload.get("bitrate", self.bus_manager.bitrate),
             "registered_ids": list(self._last_registered_ids),
             "skipped_ids": list(self._last_skipped_ids),
-            "registered_count": int(payload.get("registered_count", len(self._last_registered_ids))),
-            "skipped_count": int(payload.get("skipped_count", len(self._last_skipped_ids))),
+            "registered_count": int(
+                payload.get("registered_count", len(self._last_registered_ids))
+            ),
+            "skipped_count": int(
+                payload.get("skipped_count", len(self._last_skipped_ids))
+            ),
             "packet_listener_attached": payload.get("packet_listener_attached"),
             "wall_time": isoformat_z(),
         }
         self._sync_hardware_status_to_backend(backend_payload)
 
     def _handle_bus_error_event(self, payload: Mapping[str, Any]) -> None:
+        """Log a BusManager error callback payload.
+
+        Args:
+            payload: Bus-error callback payload emitted by ``BusManager``.
+        """
         log.warning("Gateway bus error event: %s", dict(payload))
-
-
 
     def _record_raw_telemetry_if_running(
         self,
         meta: Mapping[str, Any],
         packet: Any,
     ) -> dict[str, Any] | None:
+        """Record a gateway telemetry_in raw event when raw history is active.
+
+        Args:
+            meta: Device metadata associated with the inbound packet.
+            packet: Inbound live packet object.
+
+        Returns:
+            The materialized raw event dictionary when recording is active, or
+            None when no raw run is active.
+        """
         if not self.raw_history_manager.is_running:
             return None
 
@@ -509,8 +728,7 @@ class GatewayService:
             "err": bool(getattr(packet, "err", False)),
             "rsvd": bool(getattr(packet, "rsvd", False)),
             "data": [
-                int(x)
-                for x in list(getattr(packet, "data", [0, 0, 0, 0, 0, 0]) or [])
+                int(x) for x in list(getattr(packet, "data", [0, 0, 0, 0, 0, 0]) or [])
             ],
             "packet_timestamp": getattr(packet, "timestamp", None),
             "source": "gateway_live_bus",
@@ -524,6 +742,13 @@ class GatewayService:
         device_id: str | None,
         packet: DataPacket,
     ) -> None:
+        """Record a gateway wire_command_out raw event when raw history is active.
+
+        Args:
+            device_id: Logical device identifier associated with the outbound
+                packet, if known.
+            packet: Outbound packet that was sent on the live bus.
+        """
         if not self.raw_history_manager.is_running:
             return
 
@@ -549,6 +774,16 @@ class GatewayService:
         stream_name: str,
         event: Mapping[str, Any],
     ) -> tuple[str | None, dict[str, Any] | None]:
+        """Record an externally supplied raw event into the active raw run.
+
+        Args:
+            stream_name: Raw stream name to append to.
+            event: Raw event payload supplied by the caller.
+
+        Returns:
+            A tuple of ``(run_id, materialized_event)`` for the active raw run,
+            or ``(None, None)`` when no raw run is active.
+        """
         if not self.raw_history_manager.is_running:
             return None, None
 
@@ -559,7 +794,20 @@ class GatewayService:
         run_id = current_run.run_id if current_run is not None else None
         return run_id, event_payload
 
-    def _handle_device_packet(self, meta: dict[str, Any], runtime: Any, packet: Any) -> None:
+    def _handle_device_packet(
+        self, meta: dict[str, Any], runtime: Any, packet: Any
+    ) -> None:
+        """Handle a live device packet from the registry listener path.
+
+        The gateway records the packet into raw telemetry when a raw run is
+        active, then forwards the packet and any materialized raw event payload
+        to the backend ingest path.
+
+        Args:
+            meta: Static or runtime device metadata for the packet source.
+            runtime: Device runtime object supplied by the registry listener.
+            packet: Inbound live packet object.
+        """
         del runtime
 
         materialized_raw_event: dict[str, Any] | None = None
@@ -567,7 +815,9 @@ class GatewayService:
         try:
             materialized_raw_event = self._record_raw_telemetry_if_running(meta, packet)
         except Exception:
-            log.exception("Gateway failed to record raw telemetry_in for %s", meta.get("id"))
+            log.exception(
+                "Gateway failed to record raw telemetry_in for %s", meta.get("id")
+            )
 
         try:
             responses = self.backend_client.ingest_live_packet(
@@ -578,13 +828,27 @@ class GatewayService:
             if responses:
                 self._mark_backend_link_restored()
             else:
-                self._mark_backend_link_failure("live packet forward returned no response")
+                self._mark_backend_link_failure(
+                    "live packet forward returned no response"
+                )
         except Exception as exc:
             self._mark_backend_link_failure(
                 f"live packet forward failed for {meta.get('id')}: {exc}"
             )
 
     def _build_outbound_packet(self, payload: Mapping[str, Any]) -> DataPacket:
+        """Build a DataPacket from the canonical gateway send_packet payload.
+
+        Args:
+            payload: Gateway ``send_packet`` payload.
+
+        Returns:
+            The normalized outbound ``DataPacket``.
+
+        Raises:
+            ValueError: If the payload ``data`` field contains more than six
+                bytes.
+        """
         packet_id = int(payload["id"])
         seq = int(payload.get("seq", 1))
         cmd = int(payload.get("cmd", 1))
@@ -609,6 +873,19 @@ class GatewayService:
         )
 
     def _resolve_live_bus_for_device(self, device_id: str | None):
+        """Resolve a live bus handle for an outbound device command.
+
+        The lookup first prefers the runtime registered for ``device_id`` and
+        then falls back to the first currently registered runtime that exposes a
+        bus handle.
+
+        Args:
+            device_id: Requested logical device identifier, if any.
+
+        Returns:
+            The resolved live bus handle, or None when no registered runtime
+            currently exposes one.
+        """
         if device_id and device_id in self.device_registry:
             runtime = self.device_registry.get_runtime(device_id)
             bus = getattr(runtime, "_bus", None)
@@ -630,6 +907,21 @@ class GatewayService:
         client_id: str,
         message: GatewayIPCMessage,
     ) -> Iterable[GatewayIPCMessage]:
+        """Handle a gateway IPC request and yield reply messages.
+
+        Supported requests cover handshake/status operations, raw/rawbak run
+        lifecycle, external raw-event recording, live hardware initialization,
+        ordinary packet sends, and relay-driven abort-latch messages.
+
+        Args:
+            client_id: Gateway server client identifier for the caller.
+            message: Parsed gateway IPC request message.
+
+        Yields:
+            Gateway IPC reply messages for the request. Most request types yield
+            exactly one reply, while ``hello`` yields both a hello-ack and a
+            status message.
+        """
         if message.type == "hello":
             yield hello_ack_message(
                 service_name=self.service_name,
@@ -660,7 +952,9 @@ class GatewayService:
 
         if message.type == CLEAR_ABORT_LATCH_RELAY_MESSAGE_TYPE:
             try:
-                yield self._handle_clear_abort_latch_request_message(dict(message.payload))
+                yield self._handle_clear_abort_latch_request_message(
+                    dict(message.payload)
+                )
             except Exception as exc:
                 yield error_message(
                     code="gateway_clear_abort_latch_failed",
@@ -674,7 +968,9 @@ class GatewayService:
                 stream_name = str(payload["stream_name"])
                 event_payload = payload.get("event")
                 if not isinstance(event_payload, Mapping):
-                    raise ValueError("record_raw_event requires 'event' to be a mapping")
+                    raise ValueError(
+                        "record_raw_event requires 'event' to be a mapping"
+                    )
 
                 run_id, materialized_event = self._record_external_raw_event_if_running(
                     stream_name=stream_name,
@@ -722,7 +1018,9 @@ class GatewayService:
 
                 current_run = self.raw_history_manager.current_run
                 started_wall_time = (
-                    current_run.started_wall_time if current_run is not None else isoformat_z()
+                    current_run.started_wall_time
+                    if current_run is not None
+                    else isoformat_z()
                 )
 
                 yield run_started_message(
@@ -837,7 +1135,9 @@ class GatewayService:
                 device_id = str(device_id_raw) if device_id_raw is not None else None
 
                 if self._abort_latched:
-                    raise RuntimeError("gateway abort latch is active; refusing ordinary send_packet request")
+                    raise RuntimeError(
+                        "gateway abort latch is active; refusing ordinary send_packet request"
+                    )
 
                 if not self._bus_connected:
                     raise RuntimeError("gateway live bus is not connected")

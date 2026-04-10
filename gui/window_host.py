@@ -1,5 +1,15 @@
 # gui/window_host.py
 
+"""Launch and synchronize a single minTS GUI window process.
+
+This module boots one controller or SCADA window in either live or playback
+mode. In live mode it binds a window to the backend IPC contract, supervisor
+heartbeats, workspace persistence, and optional AbortRelay controls. In
+playback mode it loads ignitionhistory artifacts, restores snapshot-baseline
+state, replays structured events over time, and keeps split windows synchronized
+through a shared seek file.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -23,17 +33,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from PyQt5.QtCore import QObject, QTimer, Qt, QEvent, QRect  # noqa: E402
-from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton, QFrame, QLabel  # noqa: E402
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QPushButton,
+    QFrame,
+    QLabel,
+)  # noqa: E402
 
 import settings  # noqa: E402
 from gui import QLoggingHandler  # noqa: E402
-from gui.abort_relay import send_abort_request, send_clear_abort_latch_request  # noqa: E402
+from gui.abort_relay import (
+    send_abort_request,
+    send_clear_abort_latch_request,
+)  # noqa: E402
 from gui.backend_client import BackendClient, GuiBackendActionAPI  # noqa: E402
 from gui.controller_window import ControllerWindow  # noqa: E402
 from gui.device_catalog import BackendDeviceCatalog  # noqa: E402
-from gui.playback_state_manager import PlaybackStateManager, PlaybackRunContext  # noqa: E402
+from gui.playback_state_manager import (
+    PlaybackStateManager,
+    PlaybackRunContext,
+)  # noqa: E402
 from gui.scada_window import ScadaWindow  # noqa: E402
-from gui.workspace_metadata import attach_workspace_persistence, prepare_workspace_window  # noqa: E402
+from gui.workspace_metadata import (
+    attach_workspace_persistence,
+    prepare_workspace_window,
+)  # noqa: E402
 from historymanager.paths import HISTORY_ROOT_DIRNAME  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -44,10 +69,28 @@ _REBUILD_SELECTION_PREFIX = "rebuild::"
 
 
 def _project_root() -> Path:
+    """Return the repository root for this window-host process.
+
+    Returns:
+        The project root resolved from this module location.
+    """
     return PROJECT_ROOT
 
 
 def _decode_json_arg(value: str | None) -> dict[str, Any] | None:
+    """Decode a URL-safe base64 JSON command-line argument.
+
+    Args:
+        value: Encoded JSON string, or None when the argument was
+            omitted.
+
+    Returns:
+        The decoded JSON object when it is a dictionary, otherwise None.
+
+    Raises:
+        ValueError: If the value cannot be base64-decoded or parsed as
+            JSON.
+    """
     if not value:
         return None
     try:
@@ -60,7 +103,6 @@ def _decode_json_arg(value: str | None) -> dict[str, Any] | None:
     return None
 
 
-
 def _supervisor_message_payload(
     *,
     message_type: str,
@@ -69,6 +111,19 @@ def _supervisor_message_payload(
     window_role: str,
     session_id: str | None,
 ) -> dict[str, Any]:
+    """Build one supervisor heartbeat payload.
+
+    Args:
+        message_type: Message type to send.
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+        window_role: Stable workspace or supervisor role for this
+            process.
+        session_id: Supervisor session identifier.
+
+    Returns:
+        A JSON-serializable payload for the supervisor Unix socket.
+    """
     return {
         "type": message_type,
         "mode": mode,
@@ -80,23 +135,47 @@ def _supervisor_message_payload(
     }
 
 
-
 def _coerce_health_warnings(value: Any) -> list[str]:
+    """Extract normalized warning strings from a backend health section.
+
+    Args:
+        value: Health payload field that may contain strings or warning
+            objects.
+
+    Returns:
+        A list of non-empty warning messages.
+    """
     warnings: list[str] = []
     if isinstance(value, list):
         for item in value:
             if isinstance(item, str) and item.strip():
                 warnings.append(item.strip())
             elif isinstance(item, dict):
-                message = item.get("message") or item.get("warning") or item.get("detail")
+                message = (
+                    item.get("message") or item.get("warning") or item.get("detail")
+                )
                 if isinstance(message, str) and message.strip():
                     warnings.append(message.strip())
     return warnings
 
 
 def _normalize_health_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize backend health data into banner-friendly summary fields.
+
+    When the backend does not provide explicit active warnings, this derives
+    warning text from writer, bus, and script status sections.
+
+    Args:
+        payload: Payload received by this helper.
+
+    Returns:
+        A normalized summary containing sampled time, overall status,
+            warning count, and warning strings.
+    """
     summary = dict(payload or {})
-    overall_status = str(summary.get("overall_status") or "unknown").strip().lower() or "unknown"
+    overall_status = (
+        str(summary.get("overall_status") or "unknown").strip().lower() or "unknown"
+    )
     active_warnings = _coerce_health_warnings(summary.get("active_warnings"))
     if not active_warnings:
         writer_section = summary.get("writers")
@@ -104,7 +183,9 @@ def _normalize_health_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
             for writer_name, writer_payload in writer_section.items():
                 if not isinstance(writer_payload, dict):
                     continue
-                writer_status = str(writer_payload.get("status") or "unknown").strip().lower()
+                writer_status = (
+                    str(writer_payload.get("status") or "unknown").strip().lower()
+                )
                 if writer_status not in {"ok", "healthy", "running", "idle"}:
                     active_warnings.append(f"{writer_name} writer: {writer_status}")
         bus_section = summary.get("bus")
@@ -114,25 +195,36 @@ def _normalize_health_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
                 active_warnings.append(f"bus: {bus_status}")
         script_section = summary.get("script")
         if isinstance(script_section, dict):
-            script_status = str(script_section.get("status") or "unknown").strip().lower()
+            script_status = (
+                str(script_section.get("status") or "unknown").strip().lower()
+            )
             if script_status not in {"ok", "healthy", "idle", "stopped"}:
                 active_warnings.append(f"script: {script_status}")
 
     return {
         "sampled_at": summary.get("sampled_at"),
         "overall_status": overall_status,
-        "active_warning_count": int(summary.get("active_warning_count") or len(active_warnings)),
+        "active_warning_count": int(
+            summary.get("active_warning_count") or len(active_warnings)
+        ),
         "active_warnings": active_warnings,
     }
 
 
 class WindowHealthBannerController(QObject):
+    """Manage the top-of-window backend health banner for one GUI window."""
+
     _STYLE_BY_SEVERITY = {
         "warning": ("#f9a825", "#1f1f1f"),
         "error": ("#c62828", "#ffffff"),
     }
 
     def __init__(self, *, window: Any) -> None:
+        """Create banner widgets and attach them to a window.
+
+        Args:
+            window: Window facade or window object.
+        """
         super().__init__(window)
         self.window = window
         self.frame = QFrame(window)
@@ -152,6 +244,15 @@ class WindowHealthBannerController(QObject):
         window.installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Reposition the banner when the owning window geometry changes.
+
+        Args:
+            watched: Object that emitted the event.
+            event: Event payload to process.
+
+        Returns:
+            False so normal event processing continues.
+        """
         if watched is self.window and event.type() in (
             QEvent.Resize,
             QEvent.Show,
@@ -162,9 +263,22 @@ class WindowHealthBannerController(QObject):
         return False
 
     def clear(self) -> None:
+        """Hide the banner without altering its cached text.
+
+        Returns:
+            None.
+        """
         self.frame.hide()
 
     def show_backend_disconnected(self, *, reason_text: str | None) -> None:
+        """Show the backend-disconnected banner state.
+
+        Args:
+            reason_text: Optional detail text for the banner.
+
+        Returns:
+            None.
+        """
         detail = reason_text or "The GUI window is disconnected from backend."
         self._show_banner(
             severity="error",
@@ -173,6 +287,14 @@ class WindowHealthBannerController(QObject):
         )
 
     def show_backend_reconnecting(self, *, reason_text: str | None) -> None:
+        """Show the backend-reconnecting banner state.
+
+        Args:
+            reason_text: Optional detail text for the banner.
+
+        Returns:
+            None.
+        """
         detail = reason_text or "Trying to reconnect this GUI window to the backend."
         self._show_banner(
             severity="warning",
@@ -181,6 +303,14 @@ class WindowHealthBannerController(QObject):
         )
 
     def show_health_summary(self, summary: dict[str, Any]) -> None:
+        """Show or clear the banner from a backend health summary.
+
+        Args:
+            summary: Summary payload to process.
+
+        Returns:
+            None.
+        """
         normalized = _normalize_health_payload(summary)
         overall = normalized["overall_status"]
         warnings = normalized["active_warnings"]
@@ -189,7 +319,11 @@ class WindowHealthBannerController(QObject):
             self.clear()
             return
 
-        severity = "error" if overall in {"error", "failed", "dead", "disconnected"} else "warning"
+        severity = (
+            "error"
+            if overall in {"error", "failed", "dead", "disconnected"}
+            else "warning"
+        )
         title = "BACKEND DEGRADED" if severity == "error" else "BACKEND WARNING"
         detail = "; ".join(warnings[:3]) if warnings else f"overall_status={overall}"
         self._show_banner(
@@ -199,12 +333,23 @@ class WindowHealthBannerController(QObject):
         )
 
     def show_backend_error(self, *, code: str | None, message: str | None) -> None:
+        """Show an explicit backend error banner.
+
+        Args:
+            code: Backend error code, if available.
+            message: Backend or operator-facing message text.
+
+        Returns:
+            None.
+        """
         detail_parts = []
         if code:
             detail_parts.append(f"code={code}")
         if message:
             detail_parts.append(message)
-        detail = " - ".join(detail_parts) if detail_parts else "Backend reported an error."
+        detail = (
+            " - ".join(detail_parts) if detail_parts else "Backend reported an error."
+        )
         self._show_banner(
             severity="error",
             title="BACKEND ERROR",
@@ -212,7 +357,19 @@ class WindowHealthBannerController(QObject):
         )
 
     def _show_banner(self, *, severity: str, title: str, detail: str) -> None:
-        border, fg = self._STYLE_BY_SEVERITY.get(severity, self._STYLE_BY_SEVERITY["warning"])
+        """Apply styles and text, then display the banner.
+
+        Args:
+            severity: Banner severity key.
+            title: Short title text.
+            detail: Longer detail text.
+
+        Returns:
+            None.
+        """
+        border, fg = self._STYLE_BY_SEVERITY.get(
+            severity, self._STYLE_BY_SEVERITY["warning"]
+        )
         self.frame.setStyleSheet(
             """
             QFrame#windowHealthBanner {
@@ -220,7 +377,9 @@ class WindowHealthBannerController(QObject):
                 border: 2px solid BORDER_COLOR;
                 border-radius: 10px;
             }
-            """.replace("BORDER_COLOR", border)
+            """.replace(
+                "BORDER_COLOR", border
+            )
         )
         self.title_label.setStyleSheet(
             f"color: {border}; font-size: 16px; font-weight: 700; background: transparent;"
@@ -234,6 +393,11 @@ class WindowHealthBannerController(QObject):
         self.reposition()
 
     def reposition(self) -> None:
+        """Recompute banner geometry from the current window size.
+
+        Returns:
+            None.
+        """
         if self.frame.isHidden():
             return
 
@@ -250,6 +414,8 @@ class WindowHealthBannerController(QObject):
 
 
 class SupervisorHeartbeatClient(QObject):
+    """Send hello, heartbeat, and goodbye messages to the GUI supervisor."""
+
     def __init__(
         self,
         *,
@@ -260,6 +426,17 @@ class SupervisorHeartbeatClient(QObject):
         session_id: str | None,
         parent: QObject | None = None,
     ) -> None:
+        """Configure periodic supervisor heartbeat delivery.
+
+        Args:
+            socket_path: Unix socket path.
+            mode: Runtime mode for this window process.
+            window_kind: Concrete window type.
+            window_role: Stable workspace or supervisor role for this
+                process.
+            session_id: Supervisor session identifier.
+            parent: Optional Qt parent object.
+        """
         super().__init__(parent)
         self.socket_path = socket_path or ""
         self.mode = mode
@@ -272,12 +449,25 @@ class SupervisorHeartbeatClient(QObject):
         self._disabled = False
 
     def _is_dummy_socket(self) -> bool:
+        """Return whether the configured supervisor socket is a no-op path.
+
+        Returns:
+            True when the socket path is empty or points at the dummy
+                supervisor namespace.
+        """
         if not self.socket_path:
             return True
         name = Path(self.socket_path).name
-        return "mints_scada_supervisor_dummy" in self.socket_path or name.startswith("noop_supervisor_")
+        return "mints_scada_supervisor_dummy" in self.socket_path or name.startswith(
+            "noop_supervisor_"
+        )
 
     def start(self) -> None:
+        """Send the initial hello and start periodic heartbeats.
+
+        Returns:
+            None.
+        """
         if not self.socket_path or self._is_dummy_socket():
             log.debug(
                 "Supervisor heartbeat disabled for %s via dummy socket: %s",
@@ -296,17 +486,35 @@ class SupervisorHeartbeatClient(QObject):
             )
 
     def stop(self) -> None:
+        """Stop heartbeats and send the final goodbye message.
+
+        Returns:
+            None.
+        """
         if self._timer.isActive():
             self._timer.stop()
         if self.socket_path and not self._disabled:
             self._send("goodbye")
 
     def send_heartbeat(self) -> None:
+        """Send one heartbeat message when the client is enabled.
+
+        Returns:
+            None.
+        """
         if not self.socket_path or self._disabled:
             return
         self._send("heartbeat")
 
     def _send(self, message_type: str) -> None:
+        """Send one supervisor message over the Unix socket.
+
+        Args:
+            message_type: Message type to send.
+
+        Returns:
+            None.
+        """
         if self._disabled:
             return
         payload = _supervisor_message_payload(
@@ -340,7 +548,15 @@ class SupervisorHeartbeatClient(QObject):
 
 
 class WindowHostFacade:
+    """Expose a controller or SCADA window through a common bridge surface."""
+
     def __init__(self, *, window_kind: str, window: Any) -> None:
+        """Attach facade state around one concrete window instance.
+
+        Args:
+            window_kind: Concrete window type.
+            window: Window facade or window object.
+        """
         self.window_kind = window_kind
         self.window = window
         self.controller = window if window_kind == "controller" else None
@@ -350,12 +566,25 @@ class WindowHostFacade:
 
     @property
     def timeline(self):
+        """Return the controller timeline widget.
+
+        Returns:
+            The controller timeline widget.
+
+        Raises:
+            AttributeError: If the facade does not wrap a controller window.
+        """
         if self.controller is None:
             raise AttributeError("Timeline is only available for controller windows")
         return self.controller.timeline
 
     @property
     def playback_time(self) -> float:
+        """Return the current playback position for this window.
+
+        Returns:
+            The authoritative playback position in seconds.
+        """
         if self.playback_state is not None:
             return self.playback_state.position_seconds
         if self.controller is None:
@@ -364,6 +593,14 @@ class WindowHostFacade:
 
     @playback_time.setter
     def playback_time(self, value: float) -> None:
+        """Update the current playback position for this window.
+
+        Args:
+            value: Playback position in seconds.
+
+        Returns:
+            None.
+        """
         if self.playback_state is not None:
             self.playback_state.set_position(float(value))
             return
@@ -371,35 +608,94 @@ class WindowHostFacade:
             self.controller.playback_time = value
 
     def addDevice(self, *args: Any, **kwargs: Any) -> None:
+        """Forward device attachment to the controller window.
+
+        Args:
+            *args: Positional arguments forwarded to
+                ControllerWindow.addDevice.
+            **kwargs: Keyword arguments forwarded to
+                ControllerWindow.addDevice.
+
+        Returns:
+            None.
+        """
         if self.controller is not None:
             self.controller.addDevice(*args, **kwargs)
 
     def handle_backend_status(self, payload: dict[str, Any]) -> None:
+        """Forward backend status payloads into the wrapped window.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         handler = getattr(self.window, "handle_backend_status", None)
         if callable(handler):
             handler(dict(payload))
 
     def apply_backend_state_snapshot(self, payload: dict[str, Any]) -> None:
+        """Forward a backend state snapshot into the wrapped window.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         handler = getattr(self.window, "apply_backend_state_snapshot", None)
         if callable(handler):
             handler(dict(payload))
 
     def handle_structured_event(self, payload: dict[str, Any]) -> None:
+        """Forward a structured event into the wrapped window.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         handler = getattr(self.window, "handle_structured_event", None)
         if callable(handler):
             handler(dict(payload))
 
     def update_health_summary(self, summary: dict[str, Any]) -> None:
+        """Store and display the latest backend health summary.
+
+        Args:
+            summary: Summary payload to process.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "backend_health_summary", dict(summary))
         self.health_banner_controller.show_health_summary(dict(summary))
 
     def show_backend_disconnected(self, reason_payload: dict[str, Any] | None) -> None:
+        """Show a disconnected banner derived from a reconnect payload.
+
+        Args:
+            reason_payload: Reason payload.
+
+        Returns:
+            None.
+        """
         detail = None
         if isinstance(reason_payload, dict):
             detail = reason_payload.get("message") or reason_payload.get("code")
         self.health_banner_controller.show_backend_disconnected(reason_text=detail)
 
     def show_backend_reconnecting(self, reason_payload: dict[str, Any] | None) -> None:
+        """Show a reconnecting banner derived from a reconnect payload.
+
+        Args:
+            reason_payload: Reason payload.
+
+        Returns:
+            None.
+        """
         detail = None
         if isinstance(reason_payload, dict):
             detail = reason_payload.get("message") or reason_payload.get("code")
@@ -409,6 +705,14 @@ class WindowHostFacade:
         self.health_banner_controller.show_backend_reconnecting(reason_text=detail)
 
     def show_backend_error_banner(self, payload: dict[str, Any]) -> None:
+        """Show a backend error banner from an error payload.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         self.health_banner_controller.show_backend_error(
             code=str(payload.get("code") or "") or None,
             message=str(payload.get("message") or "") or None,
@@ -416,7 +720,7 @@ class WindowHostFacade:
 
 
 class GuiBackendBridge:
-    """Bind backend IPC messages into a single GUI window process."""
+    """Bind backend IPC messages and actions into one GUI window process."""
 
     def __init__(
         self,
@@ -428,6 +732,18 @@ class GuiBackendBridge:
         initialize_live_hardware_on_connect: bool,
         pending_start_run_payload: dict[str, Any] | None = None,
     ) -> None:
+        """Create the bridge and attach timers, actions, and signal handlers.
+
+        Args:
+            window: Window facade or window object.
+            backend_client: Backend IPC client.
+            mode: Runtime mode for this window process.
+            window_kind: Concrete window type.
+            initialize_live_hardware_on_connect: Whether to request live
+                hardware initialization after backend connect.
+            pending_start_run_payload: Checklist metadata cached for a later
+                start_run request.
+        """
         self.window = window
         self.backend_client = backend_client
         self.mode = str(mode)
@@ -441,10 +757,14 @@ class GuiBackendBridge:
         )
         self.device_catalog = BackendDeviceCatalog()
         self._last_disconnect_reason: dict[str, Any] | None = None
-        self._health_poll_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
+        self._health_poll_timer = QTimer(
+            self.window.window if hasattr(self.window, "window") else None
+        )
         self._health_poll_timer.setInterval(1000)
         self._health_poll_timer.timeout.connect(self._poll_backend_health)
-        self._state_sync_timer = QTimer(self.window.window if hasattr(self.window, 'window') else None)
+        self._state_sync_timer = QTimer(
+            self.window.window if hasattr(self.window, "window") else None
+        )
         self._state_sync_timer.setInterval(100 if self.mode == "live" else 5000)
         self._state_sync_timer.timeout.connect(self._sync_backend_runtime_state)
         self.gui_action_api = GuiBackendActionAPI(
@@ -458,6 +778,11 @@ class GuiBackendBridge:
         self._connect_signals()
 
     def _attach_gui_action_api(self) -> None:
+        """Expose backend action helpers and metadata on window targets.
+
+        Returns:
+            None.
+        """
         targets = [self.window]
         for child_name in ("controller", "scada"):
             child = getattr(self.window, child_name, None)
@@ -473,8 +798,12 @@ class GuiBackendBridge:
             setattr(target, "stop_backend_script", self.stop_backend_script)
             setattr(target, "hold_backend_script", self.hold_backend_script)
             setattr(target, "continue_backend_script", self.continue_backend_script)
-            setattr(target, "request_backend_status_now", self.request_backend_status_now)
-            setattr(target, "request_full_backend_state", self.request_full_backend_state)
+            setattr(
+                target, "request_backend_status_now", self.request_backend_status_now
+            )
+            setattr(
+                target, "request_full_backend_state", self.request_full_backend_state
+            )
             setattr(target, "start_backend_run", self.start_backend_run)
             setattr(target, "finish_backend_run", self.finish_backend_run)
             setattr(target, "backend_runtime_owner", "backend_service")
@@ -482,13 +811,22 @@ class GuiBackendBridge:
             setattr(target, "backend_direct_client_exposed", False)
 
     def _connect_signals(self) -> None:
+        """Connect backend client signals to bridge handlers.
+
+        Returns:
+            None.
+        """
         self.backend_client.connected.connect(self.on_connected)
         self.backend_client.disconnected.connect(self.on_disconnected)
-        self.backend_client.disconnected_with_reason.connect(self.on_disconnected_with_reason)
+        self.backend_client.disconnected_with_reason.connect(
+            self.on_disconnected_with_reason
+        )
         if hasattr(self.backend_client, "reconnect_scheduled"):
             self.backend_client.reconnect_scheduled.connect(self.on_reconnect_scheduled)
         if hasattr(self.backend_client, "reconnect_attempt_started"):
-            self.backend_client.reconnect_attempt_started.connect(self.on_reconnect_attempt_started)
+            self.backend_client.reconnect_attempt_started.connect(
+                self.on_reconnect_attempt_started
+            )
         if hasattr(self.backend_client, "reconnect_succeeded"):
             self.backend_client.reconnect_succeeded.connect(self.on_reconnect_succeeded)
         self.backend_client.hello_ack_received.connect(self.on_hello_ack)
@@ -498,12 +836,19 @@ class GuiBackendBridge:
         self.backend_client.device_inventory_received.connect(self.on_device_inventory)
         self.backend_client.hardware_status_received.connect(self.on_hardware_status)
         self.backend_client.run_status_received.connect(self.on_run_status)
-        self.backend_client.operator_action_recorded_received.connect(self.on_operator_action_recorded)
+        self.backend_client.operator_action_recorded_received.connect(
+            self.on_operator_action_recorded
+        )
         self.backend_client.command_result_received.connect(self.on_command_result)
         self.backend_client.script_status_received.connect(self.on_script_status)
         self.backend_client.error_received.connect(self.on_error)
 
     def _poll_backend_health(self) -> None:
+        """Request backend status for health-banner updates.
+
+        Returns:
+            None.
+        """
         if not self.backend_client.is_connected:
             return
         try:
@@ -512,6 +857,11 @@ class GuiBackendBridge:
             log.debug("Failed to request backend status for health polling: %s", exc)
 
     def _sync_backend_runtime_state(self) -> None:
+        """Refresh the full backend runtime snapshot on a timer.
+
+        Returns:
+            None.
+        """
         if not self.backend_client.is_connected:
             return
         try:
@@ -520,12 +870,30 @@ class GuiBackendBridge:
             log.debug("Failed to refresh backend runtime state: %s", exc)
 
     def request_backend_status_now(self) -> None:
+        """Request an immediate backend status refresh.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.request_backend_status()
 
     def request_full_backend_state(self) -> None:
+        """Request an immediate full backend state snapshot.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.request_full_state()
 
     def start_backend_run(self) -> None:
+        """Request start_run with cached checklist metadata.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: If no checklist metadata was provided for the run.
+        """
         payload = self.pending_start_run_payload
         if payload is None:
             raise RuntimeError("No checklist metadata available for start_run")
@@ -533,9 +901,26 @@ class GuiBackendBridge:
         log.info("Requested backend start_run with checklist metadata: %s", payload)
 
     def finish_backend_run(self, *, reason: str = "operator_stop") -> None:
+        """Request finish_run through the backend action API.
+
+        Args:
+            reason: Reason.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.finish_run(reason=reason)
 
     def send_operator_action(self, action: str, **extra: Any) -> None:
+        """Record one operator action through the backend action API.
+
+        Args:
+            action: Canonical operator action name.
+            **extra: Additional action payload fields.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.record_operator_action(action, **extra)
 
     def request_backend_command(
@@ -548,6 +933,20 @@ class GuiBackendBridge:
         mock_only: bool = False,
         operator_action: dict[str, Any] | None = None,
     ) -> None:
+        """Request one backend command through the action API.
+
+        Args:
+            command_name: Canonical backend command name.
+            device_id: Optional target device identifier.
+            command_args: Positional command arguments.
+            command_kwargs: Keyword command arguments.
+            mock_only: Whether the command should avoid live dispatch.
+            operator_action: Optional operator-action payload recorded with
+                the command.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.request_backend_command(
             command_name,
             device_id=device_id,
@@ -566,6 +965,18 @@ class GuiBackendBridge:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
+        """Start a backend-owned script.
+
+        Args:
+            name: Script display name.
+            command: Optional subprocess command.
+            inline_python: Optional inline Python source.
+            cwd: Optional working directory.
+            env: Optional environment overrides.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.start_backend_script(
             name=name,
             command=command,
@@ -575,15 +986,44 @@ class GuiBackendBridge:
         )
 
     def stop_backend_script(self, *, reason: str = "operator_stop") -> None:
+        """Request that the backend stop the active script.
+
+        Args:
+            reason: Reason.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.stop_backend_script(reason=reason)
 
     def hold_backend_script(self, *, reason: str = "operator_hold") -> None:
+        """Request that the backend hold the active script.
+
+        Args:
+            reason: Reason.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.hold_backend_script(reason=reason)
 
     def continue_backend_script(self, *, reason: str = "operator_continue") -> None:
+        """Request that the backend continue the active script.
+
+        Args:
+            reason: Reason.
+
+        Returns:
+            None.
+        """
         self.gui_action_api.continue_backend_script(reason=reason)
 
     def on_connected(self) -> None:
+        """Handle backend socket connection establishment.
+
+        Returns:
+            None.
+        """
         log.info("Connected to backend at %s", self.backend_client.socket_path)
         self._last_disconnect_reason = None
         setattr(self.window, "backend_reconnect_state", {"state": "connected"})
@@ -603,6 +1043,11 @@ class GuiBackendBridge:
                 log.error("Failed to request live hardware initialization: %s", exc)
 
     def on_disconnected(self) -> None:
+        """Handle loss of the backend socket connection.
+
+        Returns:
+            None.
+        """
         log.warning("Disconnected from backend")
         setattr(self.window, "backend_connected", False)
         setattr(self.window, "backend_reconnect_state", {"state": "disconnected"})
@@ -614,30 +1059,84 @@ class GuiBackendBridge:
             self.window.show_backend_disconnected(self._last_disconnect_reason)
 
     def on_disconnected_with_reason(self, payload: dict[str, Any]) -> None:
+        """Cache the backend disconnect reason payload.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         self._last_disconnect_reason = dict(payload)
         setattr(self.window, "backend_disconnect_reason", dict(payload))
 
     def on_reconnect_scheduled(self, payload: dict[str, Any]) -> None:
-        setattr(self.window, "backend_reconnect_state", {"state": "scheduled", **dict(payload)})
+        """Handle a scheduled reconnect notification from the backend client.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
+        setattr(
+            self.window,
+            "backend_reconnect_state",
+            {"state": "scheduled", **dict(payload)},
+        )
         if hasattr(self.window, "show_backend_reconnecting"):
             self.window.show_backend_reconnecting(dict(payload))
 
     def on_reconnect_attempt_started(self, payload: dict[str, Any]) -> None:
-        setattr(self.window, "backend_reconnect_state", {"state": "attempting", **dict(payload)})
+        """Handle the start of one reconnect attempt.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
+        setattr(
+            self.window,
+            "backend_reconnect_state",
+            {"state": "attempting", **dict(payload)},
+        )
         if hasattr(self.window, "show_backend_reconnecting"):
             self.window.show_backend_reconnecting(dict(payload))
 
     def on_reconnect_succeeded(self, payload: dict[str, Any]) -> None:
-        setattr(self.window, "backend_reconnect_state", {"state": "reconnected", **dict(payload)})
+        """Handle a successful reconnect after a disconnect.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
+        setattr(
+            self.window,
+            "backend_reconnect_state",
+            {"state": "reconnected", **dict(payload)},
+        )
         setattr(self.window, "backend_disconnect_reason", None)
         if hasattr(self.window, "health_banner_controller"):
             self.window.health_banner_controller.clear()
         try:
             self.gui_action_api.refresh_runtime_views()
         except Exception as exc:
-            log.debug("Failed to refresh backend runtime state after reconnect: %s", exc)
+            log.debug(
+                "Failed to refresh backend runtime state after reconnect: %s", exc
+            )
 
     def on_hello_ack(self, payload: dict[str, Any]) -> None:
+        """Handle the backend hello_ack handshake response.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         log.info(
             "Backend hello_ack: service=%s clients=%s",
             payload.get("service_name"),
@@ -645,7 +1144,11 @@ class GuiBackendBridge:
         )
         setattr(self.window, "backend_connected", True)
         setattr(self.window, "backend_hello_ack", dict(payload))
-        setattr(self.window, "backend_reconnect_state", {"state": "hello_ack", **dict(payload)})
+        setattr(
+            self.window,
+            "backend_reconnect_state",
+            {"state": "hello_ack", **dict(payload)},
+        )
 
         try:
             self.gui_action_api.refresh_runtime_views()
@@ -653,12 +1156,25 @@ class GuiBackendBridge:
             log.debug("Failed to refresh backend state after hello_ack: %s", exc)
 
         if self.pending_start_run_payload is not None:
-            log.info("Checklist metadata cached for manual Start Recording: %s", self.pending_start_run_payload)
+            log.info(
+                "Checklist metadata cached for manual Start Recording: %s",
+                self.pending_start_run_payload,
+            )
 
     def on_backend_status(self, payload: dict[str, Any]) -> None:
+        """Store and fan out a backend status update.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "backend_status", dict(payload))
         health_summary = payload.get("health_summary")
-        if isinstance(health_summary, dict) and hasattr(self.window, "update_health_summary"):
+        if isinstance(health_summary, dict) and hasattr(
+            self.window, "update_health_summary"
+        ):
             self.window.update_health_summary(dict(health_summary))
         handler = getattr(self.window, "handle_backend_status", None)
         if callable(handler):
@@ -668,6 +1184,14 @@ class GuiBackendBridge:
         # Seed device library from snapshot before applying runtime state.
         # Ensures devices appear in live mode without waiting for a separate
         # device_inventory event or hardware response.
+        """Apply a backend state snapshot and seed device proxies when needed.
+
+        Args:
+            snapshot: Snapshot.
+
+        Returns:
+            None.
+        """
         device_registry = snapshot.get("device_registry")
         if isinstance(device_registry, dict):
             devices = device_registry.get("devices", [])
@@ -679,14 +1203,21 @@ class GuiBackendBridge:
                     except Exception as exc:
                         log.exception(
                             "Failed to add device proxy %s from snapshot: %s",
-                            proxy.device_id, exc,
+                            proxy.device_id,
+                            exc,
                         )
 
         self.device_catalog.apply_state_snapshot(snapshot)
         setattr(self.window, "backend_state_snapshot", dict(snapshot))
-        setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
+        setattr(
+            self.window,
+            "backend_device_presentation",
+            self.device_catalog.to_presentation_snapshot(),
+        )
         health_snapshot = snapshot.get("health")
-        if isinstance(health_snapshot, dict) and hasattr(self.window, "update_health_summary"):
+        if isinstance(health_snapshot, dict) and hasattr(
+            self.window, "update_health_summary"
+        ):
             self.window.update_health_summary(dict(health_snapshot))
 
         handler = getattr(self.window, "apply_backend_state_snapshot", None)
@@ -701,6 +1232,14 @@ class GuiBackendBridge:
                     child_handler(dict(snapshot))
 
     def on_structured_event(self, payload: dict[str, Any]) -> None:
+        """Store and fan out a structured event.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "last_structured_event", dict(payload))
         handler = getattr(self.window, "handle_structured_event", None)
         if callable(handler):
@@ -714,6 +1253,14 @@ class GuiBackendBridge:
                     child_handler(dict(payload))
 
     def on_device_inventory(self, payload: dict[str, Any]) -> None:
+        """Apply device inventory summaries from the backend.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         devices = payload.get("devices", [])
         if not isinstance(devices, list):
             devices = []
@@ -723,18 +1270,40 @@ class GuiBackendBridge:
             try:
                 self.window.addDevice(proxy, proxy.meta)
             except Exception as exc:
-                log.exception("Failed to add backend device proxy %s: %s", proxy.device_id, exc)
+                log.exception(
+                    "Failed to add backend device proxy %s: %s", proxy.device_id, exc
+                )
 
         setattr(self.window, "backend_device_inventory", dict(payload))
-        setattr(self.window, "backend_device_presentation", self.device_catalog.to_presentation_snapshot())
+        setattr(
+            self.window,
+            "backend_device_presentation",
+            self.device_catalog.to_presentation_snapshot(),
+        )
 
     def on_hardware_status(self, payload: dict[str, Any]) -> None:
+        """Store and fan out backend hardware status.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "backend_hardware_status", dict(payload))
         handler = getattr(self.window, "handle_hardware_status", None)
         if callable(handler):
             handler(dict(payload))
 
     def on_run_status(self, payload: dict[str, Any]) -> None:
+        """Store run status updates and refresh derived runtime views.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "backend_run_status", dict(payload))
         handler = getattr(self.window, "handle_run_status", None)
         if callable(handler):
@@ -745,27 +1314,61 @@ class GuiBackendBridge:
             try:
                 self.gui_action_api.refresh_runtime_views()
             except Exception as exc:
-                log.debug("Failed to refresh backend runtime state after run_status: %s", exc)
+                log.debug(
+                    "Failed to refresh backend runtime state after run_status: %s", exc
+                )
 
     def on_operator_action_recorded(self, payload: dict[str, Any]) -> None:
+        """Store and fan out an operator-action recording acknowledgment.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "last_operator_action_recorded", dict(payload))
         handler = getattr(self.window, "handle_operator_action_recorded", None)
         if callable(handler):
             handler(dict(payload))
 
     def on_command_result(self, payload: dict[str, Any]) -> None:
+        """Store and fan out a backend command result.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "last_command_result", dict(payload))
         handler = getattr(self.window, "handle_command_result", None)
         if callable(handler):
             handler(dict(payload))
 
     def on_script_status(self, payload: dict[str, Any]) -> None:
+        """Store and fan out backend script runtime status.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         setattr(self.window, "backend_script_status", dict(payload))
         handler = getattr(self.window, "handle_script_status", None)
         if callable(handler):
             handler(dict(payload))
 
     def on_error(self, payload: dict[str, Any]) -> None:
+        """Store backend error payloads and show the error banner.
+
+        Args:
+            payload: Payload received by this helper.
+
+        Returns:
+            None.
+        """
         code = payload.get("code", "backend_error")
         message = payload.get("message", "Unknown backend error")
         log.error("Backend error [%s]: %s", code, message)
@@ -775,6 +1378,17 @@ class GuiBackendBridge:
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:
+    """Load one JSON file and require an object at the top level.
+
+    Args:
+        path: File path to use.
+
+    Returns:
+        The parsed JSON object.
+
+    Raises:
+        ValueError: If the parsed payload is not a dictionary.
+    """
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
@@ -783,6 +1397,17 @@ def _load_json_file(path: Path) -> dict[str, Any]:
 
 
 def _load_jsonl_file(path: Path) -> list[dict[str, Any]]:
+    """Load JSONL events from a file and keep object lines only.
+
+    Args:
+        path: File path to use.
+
+    Returns:
+        Parsed object events in file order.
+
+    Raises:
+        ValueError: If any non-empty line cannot be parsed as JSON.
+    """
     events: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
@@ -792,13 +1417,24 @@ def _load_jsonl_file(path: Path) -> list[dict[str, Any]]:
             try:
                 payload = json.loads(line)
             except Exception as exc:
-                raise ValueError(f"Failed to parse JSONL line {line_number} in {path}: {exc}") from exc
+                raise ValueError(
+                    f"Failed to parse JSONL line {line_number} in {path}: {exc}"
+                ) from exc
             if isinstance(payload, dict):
                 events.append(payload)
     return events
 
 
 def _parse_iso_wall_time(value: Any) -> datetime | None:
+    """Parse one wall-time string into a datetime.
+
+    Args:
+        value: Candidate ISO-8601 wall-time value.
+
+    Returns:
+        The parsed datetime, or None when the value is absent or
+            invalid.
+    """
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -811,6 +1447,15 @@ def _parse_iso_wall_time(value: Any) -> datetime | None:
 
 
 def _extract_event_wall_time(event: dict[str, Any]) -> datetime | None:
+    """Extract the first recognized wall-time field from one event.
+
+    Args:
+        event: Event payload to process.
+
+    Returns:
+        The first parsed wall-time, or None when no recognized timestamp
+            is present.
+    """
     for key in ("recorded_at", "structured_at", "time", "runtime_time"):
         parsed = _parse_iso_wall_time(event.get(key))
         if parsed is not None:
@@ -819,6 +1464,15 @@ def _extract_event_wall_time(event: dict[str, Any]) -> datetime | None:
 
 
 def _build_playback_timeline_label(event: dict[str, Any]) -> str | None:
+    """Build a short timeline label for selected playback event streams.
+
+    Args:
+        event: Event payload to process.
+
+    Returns:
+        A short label for timeline markers, or None when the event
+            should not create one.
+    """
     stream = event.get("stream")
     if stream == "system_event":
         kind = event.get("event") or event.get("event_kind") or "system"
@@ -833,18 +1487,49 @@ def _build_playback_timeline_label(event: dict[str, Any]) -> str | None:
 
 
 def _parse_playback_selection(selected_test: str) -> tuple[str, str]:
-    if isinstance(selected_test, str) and selected_test.startswith(_REBUILD_SELECTION_PREFIX):
-        return selected_test[len(_REBUILD_SELECTION_PREFIX):], _PLAYBACK_SOURCE_REBUILD
+    """Split a playback selector into run reference and source kind.
+
+    Args:
+        selected_test: Playback selection string.
+
+    Returns:
+        A tuple of selected run reference and playback source.
+    """
+    if isinstance(selected_test, str) and selected_test.startswith(
+        _REBUILD_SELECTION_PREFIX
+    ):
+        return selected_test[len(_REBUILD_SELECTION_PREFIX) :], _PLAYBACK_SOURCE_REBUILD
     return selected_test, _PLAYBACK_SOURCE_NATIVE
 
 
 def _playback_artifact_paths(run_dir: Path, playback_source: str) -> tuple[Path, Path]:
+    """Return merged-event and snapshot paths for one playback source.
+
+    Args:
+        run_dir: Playback run directory.
+        playback_source: Playback source selector.
+
+    Returns:
+        The merged-event JSONL path and snapshot directory path.
+    """
     if playback_source == _PLAYBACK_SOURCE_REBUILD:
         return run_dir / "merged.rebuild.jsonl", run_dir / "snapshots_rebuild"
     return run_dir / "merged.jsonl", run_dir / "snapshots"
 
 
 def _resolve_ignitionhistory_run_dir(selected_test: str) -> Path:
+    """Resolve a playback selection into an ignitionhistory run directory.
+
+    Args:
+        selected_test: Playback selection string.
+
+    Returns:
+        The resolved playback run directory.
+
+    Raises:
+        FileNotFoundError: If the selection cannot be resolved to a run
+            directory.
+    """
     candidate = Path(selected_test)
 
     if candidate.is_absolute():
@@ -872,6 +1557,14 @@ def _resolve_ignitionhistory_run_dir(selected_test: str) -> Path:
 
 
 def _load_playback_device_proxies(window: Any) -> None:
+    """Seed GUI-only playback device proxies from the static settings catalog.
+
+    Args:
+        window: Window facade or window object.
+
+    Returns:
+        None.
+    """
     catalog = BackendDeviceCatalog()
     proxies = catalog.seed_from_settings_devices(settings.devices)
 
@@ -883,6 +1576,15 @@ def _load_playback_device_proxies(window: Any) -> None:
 
 
 def _dispatch_playback_loaded(window: Any, payload: dict[str, Any]) -> None:
+    """Store and broadcast the playback-loaded summary payload.
+
+    Args:
+        window: Window facade or window object.
+        payload: Payload received by this helper.
+
+    Returns:
+        None.
+    """
     setattr(window, "playback_load_summary", dict(payload))
     targets = [window]
     for child_name in ("controller", "scada", "script"):
@@ -896,6 +1598,15 @@ def _dispatch_playback_loaded(window: Any, payload: dict[str, Any]) -> None:
 
 
 def _dispatch_playback_seek_bootstrap(window: Any, payload: dict[str, Any]) -> None:
+    """Store and broadcast one playback-seek bootstrap summary payload.
+
+    Args:
+        window: Window facade or window object.
+        payload: Payload received by this helper.
+
+    Returns:
+        None.
+    """
     setattr(window, "playback_seek_summary", dict(payload))
     targets = [window]
     for child_name in ("controller", "scada", "script"):
@@ -913,6 +1624,15 @@ def _build_playback_snapshot_index(
     snapshot_files: list[Path],
     start_dt: datetime | None,
 ) -> list[dict[str, Any]]:
+    """Build sorted snapshot metadata for fast playback seeks.
+
+    Args:
+        snapshot_files: Snapshot JSON files for the run.
+        start_dt: Playback start wall-time.
+
+    Returns:
+        Snapshot index entries sorted by relative playback position.
+    """
     index_entries: list[dict[str, Any]] = []
     for path in snapshot_files:
         try:
@@ -944,20 +1664,46 @@ def _build_playback_snapshot_index(
             }
         )
 
-    index_entries.sort(key=lambda entry: (entry["relative_seconds"], entry["snapshot_index"]))
+    index_entries.sort(
+        key=lambda entry: (entry["relative_seconds"], entry["snapshot_index"])
+    )
     return index_entries
 
 
 @lru_cache(maxsize=16)
 def _load_playback_snapshot_payload_cached(snapshot_path: str) -> dict[str, Any]:
+    """Load one snapshot payload with a small LRU cache.
+
+    Args:
+        snapshot_path: Snapshot JSON path.
+
+    Returns:
+        The parsed snapshot payload.
+    """
     return _load_json_file(Path(snapshot_path))
 
 
 def _load_playback_snapshot_payload(snapshot_path: str) -> dict[str, Any]:
+    """Return a mutable deep copy of one cached snapshot payload.
+
+    Args:
+        snapshot_path: Snapshot JSON path.
+
+    Returns:
+        A deep-copied snapshot payload.
+    """
     return deepcopy(_load_playback_snapshot_payload_cached(snapshot_path))
 
 
 def _datetime_to_seek_key(value: datetime | None) -> float | None:
+    """Convert a datetime into a sortable float seek key.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        The POSIX timestamp, or None when the value is not a datetime.
+    """
     if not isinstance(value, datetime):
         return None
     return value.timestamp()
@@ -968,6 +1714,17 @@ def _playback_event_end_index(
     event_time_keys: list[float] | None,
     seek_dt: datetime | None,
 ) -> int:
+    """Return the right-inclusive event index for a playback seek target.
+
+    Args:
+        event_time_keys: Sorted event timestamp keys aligned with seek
+            events.
+        seek_dt: Seek target wall-time.
+
+    Returns:
+        The slice end index for events up to and including the seek
+            target.
+    """
     if not event_time_keys:
         return 0
     seek_key = _datetime_to_seek_key(seek_dt)
@@ -976,12 +1733,29 @@ def _playback_event_end_index(
     return bisect_right(event_time_keys, seek_key)
 
 
-def _apply_playback_state_snapshot(window: Any, snapshot_payload: dict[str, Any]) -> bool:
+def _apply_playback_state_snapshot(
+    window: Any, snapshot_payload: dict[str, Any]
+) -> bool:
+    """Apply a playback snapshot or snapshot-like state payload to the UI.
+
+    Args:
+        window: Window facade or window object.
+        snapshot_payload: Snapshot payload.
+
+    Returns:
+        True when a state snapshot was applied, otherwise False.
+    """
     snapshot_state = snapshot_payload.get("state")
     if not isinstance(snapshot_state, dict):
         if isinstance(snapshot_payload, dict) and any(
             key in snapshot_payload
-            for key in ("device_states", "playback_clock", "mission_clock", "recording_clock", "run")
+            for key in (
+                "device_states",
+                "playback_clock",
+                "mission_clock",
+                "recording_clock",
+                "run",
+            )
         ):
             snapshot_state = dict(snapshot_payload)
         else:
@@ -1016,12 +1790,22 @@ def _slice_playback_tail_events(
     seek_dt: datetime | None,
     event_time_keys: list[float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return events strictly after replay_start_dt and up to (inclusive) seek_dt.
+    """Return tail events after a snapshot boundary and up to a seek target.
 
-    Boundary semantics: a snapshot represents state that already includes all
-    effects up to and including its recorded_at.  Tail replay therefore starts
-    *strictly after* the snapshot boundary to avoid double-applying events that
-    were already captured by the snapshot.
+    A snapshot represents state that already includes all effects up to and
+    including its recorded_at, so tail replay starts strictly after that
+    boundary.
+
+    Args:
+        merged_events: Merged playback events.
+        replay_start_dt: Snapshot boundary wall-time.
+        seek_dt: Seek target wall-time.
+        event_time_keys: Sorted event timestamp keys aligned with seek
+            events.
+
+    Returns:
+        Events that should be replayed after restoring the snapshot
+            baseline.
     """
     if replay_start_dt is None or seek_dt is None:
         return []
@@ -1054,7 +1838,19 @@ def _slice_playback_tail_events(
     return tail_events
 
 
-def _find_nearest_snapshot_entry(snapshot_index: list[dict[str, Any]], seek_time: float) -> dict[str, Any] | None:
+def _find_nearest_snapshot_entry(
+    snapshot_index: list[dict[str, Any]], seek_time: float
+) -> dict[str, Any] | None:
+    """Return the latest snapshot at or before a playback time.
+
+    Args:
+        snapshot_index: Snapshot index.
+        seek_time: Playback seek position in seconds.
+
+    Returns:
+        The nearest snapshot entry at or before the target time, or the
+            first entry when none qualify.
+    """
     if not snapshot_index:
         return None
 
@@ -1071,6 +1867,19 @@ def _find_nearest_snapshot_entry(snapshot_index: list[dict[str, Any]], seek_time
 
 
 def _handle_playback_seek(window: Any, seek_time: float) -> None:
+    """Reconstruct playback-visible state at an exact seek position.
+
+    This restores the nearest snapshot baseline, replays tail events up to
+    the target time, updates playback bookkeeping, and then pushes the exact
+    seek position into controller, SCADA, and reconstructed-state consumers.
+
+    Args:
+        window: Window facade or window object.
+        seek_time: Playback seek position in seconds.
+
+    Returns:
+        None.
+    """
     psm = getattr(window, "playback_state", None)
     if psm is not None and psm.context is not None:
         snapshot_index = psm.snapshot_index
@@ -1079,7 +1888,11 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
         start_dt = psm.start_dt
     else:
         snapshot_index = getattr(window, "playback_snapshot_index", [])
-        merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+        merged_events = getattr(
+            window,
+            "playback_seek_events",
+            getattr(window, "playback_merged_events", []),
+        )
         event_time_keys = getattr(window, "playback_event_time_keys", None)
         start_dt = getattr(window, "playback_start_dt", None)
 
@@ -1104,7 +1917,9 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
 
     if selected_snapshot is not None:
         try:
-            snapshot_payload = _load_playback_snapshot_payload(selected_snapshot["path"])
+            snapshot_payload = _load_playback_snapshot_payload(
+                selected_snapshot["path"]
+            )
 
             # Keep the snapshot bootstrap, but rewrite its playback clock to the exact
             # seek target so controller/SCADA do not snap back to the snapshot boundary
@@ -1118,21 +1933,37 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
                 else:
                     playback_clock = {}
                 playback_clock["position_seconds"] = seek_time
-                total_duration = psm.duration_seconds if psm else getattr(window, "playback_duration_seconds", None)
+                total_duration = (
+                    psm.duration_seconds
+                    if psm
+                    else getattr(window, "playback_duration_seconds", None)
+                )
                 if isinstance(total_duration, (int, float)):
-                    playback_clock.setdefault("total_duration_seconds", float(total_duration))
+                    playback_clock.setdefault(
+                        "total_duration_seconds", float(total_duration)
+                    )
                 updated_state["playback_clock"] = playback_clock
                 snapshot_payload = dict(snapshot_payload)
                 snapshot_payload["state"] = updated_state
 
-            restored_from_snapshot = _apply_playback_state_snapshot(window, snapshot_payload)
-            snapshot_recorded_at = _parse_iso_wall_time(snapshot_payload.get("recorded_at"))
+            restored_from_snapshot = _apply_playback_state_snapshot(
+                window, snapshot_payload
+            )
+            snapshot_recorded_at = _parse_iso_wall_time(
+                snapshot_payload.get("recorded_at")
+            )
             if snapshot_recorded_at is not None:
                 replay_start_dt = snapshot_recorded_at
             elif isinstance(start_dt, datetime):
-                replay_start_dt = start_dt + timedelta(seconds=float(selected_snapshot["relative_seconds"]))
+                replay_start_dt = start_dt + timedelta(
+                    seconds=float(selected_snapshot["relative_seconds"])
+                )
         except Exception as exc:
-            log.warning("Failed to restore playback snapshot during seek from %s: %s", selected_snapshot["path"], exc)
+            log.warning(
+                "Failed to restore playback snapshot during seek from %s: %s",
+                selected_snapshot["path"],
+                exc,
+            )
 
     tail_events = _slice_playback_tail_events(
         merged_events,
@@ -1150,11 +1981,19 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
 
     payload = {
         "seek_time_seconds": seek_time,
-        "selected_snapshot": dict(selected_snapshot) if selected_snapshot is not None else None,
+        "selected_snapshot": (
+            dict(selected_snapshot) if selected_snapshot is not None else None
+        ),
         "restored_from_snapshot": restored_from_snapshot,
         "tail_event_count": len(tail_events),
-        "replay_start_recorded_at": replay_start_dt.isoformat() if isinstance(replay_start_dt, datetime) else None,
-        "seek_recorded_at": seek_dt.isoformat() if isinstance(seek_dt, datetime) else None,
+        "replay_start_recorded_at": (
+            replay_start_dt.isoformat()
+            if isinstance(replay_start_dt, datetime)
+            else None
+        ),
+        "seek_recorded_at": (
+            seek_dt.isoformat() if isinstance(seek_dt, datetime) else None
+        ),
     }
     setattr(window, "playback_seek_tail_events", tail_events)
     setattr(window, "playback_last_applied_time", seek_time)
@@ -1190,15 +2029,18 @@ def _handle_playback_seek(window: Any, seek_time: float) -> None:
 
 
 def _resolve_applied_snapshot_state(window: Any) -> dict[str, Any]:
-    """Return the unwrapped state dict that was actually applied to the UI.
+    """Return the state dictionary that was actually applied to the UI.
 
-    Prefers the controller's ``_last_backend_snapshot`` because that is the
-    unwrapped, clock-corrected dict that ``apply_backend_state_snapshot``
-    received and that the controller's display helpers read from.
+    This prefers the controller's _last_backend_snapshot because it is the
+    unwrapped, clock-corrected state consumed by controller display helpers,
+    and falls back to the facade snapshot only when needed.
 
-    Falls back to re-parsing ``playback_active_snapshot`` (the raw snapshot
-    payload on the facade) only when no controller is present (e.g. in a
-    standalone SCADA window process).
+    Args:
+        window: Window facade or window object.
+
+    Returns:
+        The applied state snapshot, or an empty dictionary when none is
+            available.
     """
     # Primary: controller's post-apply container
     controller = getattr(window, "controller", None)
@@ -1216,6 +2058,15 @@ def _resolve_applied_snapshot_state(window: Any) -> dict[str, Any]:
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
+    """Return the value when it is a dictionary, otherwise an empty one.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        The original value when it is a dictionary, otherwise an empty
+            dictionary.
+    """
     return value if isinstance(value, dict) else {}
 
 
@@ -1226,15 +2077,22 @@ def _build_reconstructed_playback_state(
     tail_event_count: int = 0,
     restored_from_snapshot: bool = False,
 ) -> dict[str, Any]:
-    """Build a single dict representing playback-visible state at *seek_time*.
+    """Build one replay-aware summary of playback-visible state at a seek position.
 
-    Reads from the controller's post-apply state containers when available
-    (these are the unwrapped, clock-corrected values that the controller
-    actually uses for its displays).  Falls back to parsing the facade's
-    raw ``playback_active_snapshot`` for non-controller window processes.
+    This reads from already-applied controller and facade state containers
+    instead of re-deriving state from scratch. Position, timing, and run
+    metadata come from the playback state manager when available.
 
-    This does NOT re-derive state -- it reads from sources that have already
-    been updated by the seek/advance handler.
+    Args:
+        window: Window facade or window object.
+        seek_time: Playback seek position in seconds.
+        tail_event_count: Number of tail events applied after snapshot
+            restore.
+        restored_from_snapshot: Whether the current state was
+            bootstrapped from a snapshot.
+
+    Returns:
+        A summarized playback-visible state dictionary.
     """
     psm = getattr(window, "playback_state", None)
 
@@ -1256,15 +2114,27 @@ def _build_reconstructed_playback_state(
     # and are what the controller's display timer actually reads.
     controller = getattr(window, "controller", None)
 
-    ctrl_mission = getattr(controller, "_backend_mission_clock", None) if controller else None
-    ctrl_recording = getattr(controller, "_backend_recording_clock", None) if controller else None
+    ctrl_mission = (
+        getattr(controller, "_backend_mission_clock", None) if controller else None
+    )
+    ctrl_recording = (
+        getattr(controller, "_backend_recording_clock", None) if controller else None
+    )
 
     run_section = _safe_dict(applied.get("run"))
     script_section = _safe_dict(applied.get("script_runner"))
     alarms_section = _safe_dict(applied.get("alarms"))
     health_section = _safe_dict(applied.get("health"))
-    mission_clock = _safe_dict(ctrl_mission) if ctrl_mission is not None else _safe_dict(applied.get("mission_clock"))
-    recording_clock = _safe_dict(ctrl_recording) if ctrl_recording is not None else _safe_dict(applied.get("recording_clock"))
+    mission_clock = (
+        _safe_dict(ctrl_mission)
+        if ctrl_mission is not None
+        else _safe_dict(applied.get("mission_clock"))
+    )
+    recording_clock = (
+        _safe_dict(ctrl_recording)
+        if ctrl_recording is not None
+        else _safe_dict(applied.get("recording_clock"))
+    )
 
     # -- device count from catalog (already updated by snapshot apply) --
     catalog = getattr(window, "backend_device_catalog", None)
@@ -1297,11 +2167,19 @@ def _build_reconstructed_playback_state(
         "active_alarm_count": int(alarms_section.get("active_alarm_count") or 0),
         "active_fault_count": int(alarms_section.get("active_fault_count") or 0),
         # -- Mission clock (snapshot-baseline only: live-computed, not event-driven) --
-        "mission_clock_seconds": float(mission_clock["seconds"]) if isinstance(mission_clock.get("seconds"), (int, float)) else None,
+        "mission_clock_seconds": (
+            float(mission_clock["seconds"])
+            if isinstance(mission_clock.get("seconds"), (int, float))
+            else None
+        ),
         "mission_clock_state": str(mission_clock.get("state") or ""),
         # -- Recording clock (snapshot-baseline only: live-computed, not event-driven) --
         "recording_active": bool(recording_clock.get("active")),
-        "recording_elapsed_seconds": float(recording_clock["elapsed_seconds"]) if isinstance(recording_clock.get("elapsed_seconds"), (int, float)) else None,
+        "recording_elapsed_seconds": (
+            float(recording_clock["elapsed_seconds"])
+            if isinstance(recording_clock.get("elapsed_seconds"), (int, float))
+            else None
+        ),
         # -- Devices (snapshot-baseline: catalog updated by snapshot apply) --
         "device_count": device_count,
     }
@@ -1314,7 +2192,19 @@ def _update_reconstructed_playback_state(
     tail_event_count: int = 0,
     restored_from_snapshot: bool = False,
 ) -> None:
-    """Build and store the reconstructed state on the PlaybackStateManager."""
+    """Rebuild and store reconstructed playback state on the state manager.
+
+    Args:
+        window: Window facade or window object.
+        seek_time: Playback seek position in seconds.
+        tail_event_count: Number of tail events applied after snapshot
+            restore.
+        restored_from_snapshot: Whether the current state was
+            bootstrapped from a snapshot.
+
+    Returns:
+        None.
+    """
     psm = getattr(window, "playback_state", None)
     if psm is None:
         return
@@ -1328,15 +2218,42 @@ def _update_reconstructed_playback_state(
 
 
 def _safe_get_timeline(window: Any):
+    """Return the window timeline when one is available.
+
+    Args:
+        window: Window facade or window object.
+
+    Returns:
+        The timeline object, or None when the window does not expose
+            one.
+    """
     try:
         return window.timeline
     except Exception:
         return None
 
+
 def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
+    """Push the exact seek time into all playback-aware UI targets.
+
+    Args:
+        window: Window facade or window object.
+        seek_time: Playback seek position in seconds.
+
+    Returns:
+        None.
+    """
     seek_time = max(0.0, float(seek_time))
 
     def _retime_target(target: Any) -> None:
+        """Retarget one playback-aware object to the exact seek position.
+
+        Args:
+            target: Facade, controller, SCADA, or script target.
+
+        Returns:
+            None.
+        """
         if target is None:
             return
 
@@ -1351,7 +2268,7 @@ def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
 
         # Prefer set_playback_time as the single coordinated update point.
         # It handles timeline, console, mission_time, aux_clock, and graph sync
-        # in one call — calling those individually here would duplicate the work.
+        # in one call - calling those individually here would duplicate the work.
         setter = getattr(target, "set_playback_time", None)
         if callable(setter):
             setter(seek_time)
@@ -1374,8 +2291,22 @@ def _apply_exact_playback_seek_state(window: Any, seek_time: float) -> None:
         _retime_target(getattr(window, child_name, None))
 
 
+def _handle_playback_advance(
+    window: Any, previous_time: float, new_time: float
+) -> None:
+    """Advance playback incrementally when possible.
 
-def _handle_playback_advance(window: Any, previous_time: float, new_time: float) -> None:
+    Large jumps and reverse seeks fall back to full seek reconstruction so
+    the UI stays aligned with snapshot-baseline state.
+
+    Args:
+        window: Window facade or window object.
+        previous_time: Previously applied playback position in seconds.
+        new_time: New playback position in seconds.
+
+    Returns:
+        None.
+    """
     previous_time = max(0.0, float(previous_time))
     new_time = max(0.0, float(new_time))
     if new_time < previous_time:
@@ -1393,7 +2324,11 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
         start_dt = psm.start_dt
         last_event_index = psm.last_event_index
     else:
-        merged_events = getattr(window, "playback_seek_events", getattr(window, "playback_merged_events", []))
+        merged_events = getattr(
+            window,
+            "playback_seek_events",
+            getattr(window, "playback_merged_events", []),
+        )
         event_time_keys = getattr(window, "playback_event_time_keys", None)
         start_dt = getattr(window, "playback_start_dt", None)
         last_event_index = getattr(window, "playback_last_event_index", None)
@@ -1439,11 +2374,28 @@ def _handle_playback_advance(window: Any, previous_time: float, new_time: float)
 
 
 def _playback_sync_path(selected_test: str) -> Path:
+    """Return the shared seek-sync file path for one playback selection.
+
+    Args:
+        selected_test: Playback selection string.
+
+    Returns:
+        The deterministic seek-sync file path under /tmp.
+    """
     digest = hashlib.sha1(str(selected_test).encode("utf-8")).hexdigest()[:16]
     return Path("/tmp") / f"mints_scada_playback_seek_{digest}.json"
 
 
 def _write_playback_seek_sync(sync_path: Path | None, seek_time: float) -> None:
+    """Atomically publish the current playback seek position to disk.
+
+    Args:
+        sync_path: Shared playback seek sync file path.
+        seek_time: Playback seek position in seconds.
+
+    Returns:
+        None.
+    """
     if sync_path is None:
         return
     payload = {
@@ -1455,12 +2407,29 @@ def _write_playback_seek_sync(sync_path: Path | None, seek_time: float) -> None:
     tmp_path.replace(sync_path)
 
 
-def _install_playback_seek_sync_poller(parent: QObject, *, window: Any, sync_path: Path) -> QTimer:
+def _install_playback_seek_sync_poller(
+    parent: QObject, *, window: Any, sync_path: Path
+) -> QTimer:
+    """Poll the shared seek-sync file and mirror external seek changes.
+
+    Args:
+        parent: Optional Qt parent object.
+        window: Window facade or window object.
+        sync_path: Shared playback seek sync file path.
+
+    Returns:
+        The started polling timer.
+    """
     timer = QTimer(parent)
     timer.setInterval(120)
     state = {"mtime_ns": None, "seek_time": None}
 
     def _poll() -> None:
+        """Read the shared seek file and apply a changed seek position.
+
+        Returns:
+            None.
+        """
         try:
             stat = sync_path.stat()
         except FileNotFoundError:
@@ -1483,7 +2452,10 @@ def _install_playback_seek_sync_poller(parent: QObject, *, window: Any, sync_pat
         if not isinstance(seek_time, (int, float)):
             return
         seek_time = max(0.0, float(seek_time))
-        if state["seek_time"] is not None and abs(state["seek_time"] - seek_time) < 1e-9:
+        if (
+            state["seek_time"] is not None
+            and abs(state["seek_time"] - seek_time) < 1e-9
+        ):
             return
         state["seek_time"] = seek_time
         _handle_playback_seek(window, seek_time)
@@ -1495,6 +2467,20 @@ def _install_playback_seek_sync_poller(parent: QObject, *, window: Any, sync_pat
 
 
 def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
+    """Load ignitionhistory playback artifacts into one window process.
+
+    This resolves the run directory, loads metadata, merged events, and
+    snapshots, initializes the playback state manager, seeds timeline
+    labels, installs seek and advance handlers, and applies the initial
+    snapshot baseline.
+
+    Args:
+        window: Window facade or window object.
+        selected_test: Playback selection string.
+
+    Returns:
+        None.
+    """
     selected_run_ref, playback_source = _parse_playback_selection(selected_test)
     run_dir = _resolve_ignitionhistory_run_dir(selected_run_ref)
 
@@ -1506,7 +2492,9 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
 
     metadata = _load_json_file(metadata_path)
     merged_events = _load_jsonl_file(merged_path) if merged_path.exists() else []
-    snapshot_files = sorted(snapshots_dir.glob("*.json")) if snapshots_dir.is_dir() else []
+    snapshot_files = (
+        sorted(snapshots_dir.glob("*.json")) if snapshots_dir.is_dir() else []
+    )
 
     # Build the seek index.  Events with a parseable wall-time get their
     # true timestamp; events WITHOUT a parseable timestamp are assigned the
@@ -1514,7 +2502,9 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
     # time if none precedes them).  This keeps untimestamped events in the
     # bisect-based seek path with their best-effort temporal position rather
     # than silently dropping them from playback.
-    run_start_key = _datetime_to_seek_key(_parse_iso_wall_time(metadata.get("start_wall_time")))
+    run_start_key = _datetime_to_seek_key(
+        _parse_iso_wall_time(metadata.get("start_wall_time"))
+    )
     seek_entries: list[tuple[float, int, dict[str, Any]]] = []
     last_known_key: float | None = run_start_key
     for original_index, event in enumerate(merged_events):
@@ -1543,7 +2533,11 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
 
     start_dt = _parse_iso_wall_time(metadata.get("start_wall_time"))
     end_dt = _parse_iso_wall_time(metadata.get("end_wall_time"))
-    event_times = [dt for dt in (_extract_event_wall_time(event) for event in merged_events) if dt is not None]
+    event_times = [
+        dt
+        for dt in (_extract_event_wall_time(event) for event in merged_events)
+        if dt is not None
+    ]
 
     if start_dt is None and event_times:
         start_dt = min(event_times)
@@ -1555,7 +2549,9 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         end_dt = start_dt
 
     duration_s = max(0.0, (end_dt - start_dt).total_seconds())
-    playback_snapshot_index = _build_playback_snapshot_index(snapshot_files=snapshot_files, start_dt=start_dt)
+    playback_snapshot_index = _build_playback_snapshot_index(
+        snapshot_files=snapshot_files, start_dt=start_dt
+    )
     setattr(window, "playback_start_dt", start_dt)
     setattr(window, "playback_end_dt", end_dt)
     setattr(window, "playback_duration_seconds", duration_s)
@@ -1590,15 +2586,36 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         psm.load_context(context)
 
     sync_path_value = getattr(window, "playback_seek_sync_path", None)
-    sync_path = Path(sync_path_value) if isinstance(sync_path_value, str) and sync_path_value else None
+    sync_path = (
+        Path(sync_path_value)
+        if isinstance(sync_path_value, str) and sync_path_value
+        else None
+    )
     sync_write = bool(getattr(window, "playback_seek_sync_write", False))
 
     def _bound_seek_handler(seek_time: float) -> None:
+        """Apply a seek locally and publish it to the sync file when needed.
+
+        Args:
+            seek_time: Target playback position in seconds.
+
+        Returns:
+            None.
+        """
         _handle_playback_seek(window, seek_time)
         if sync_write and sync_path is not None:
             _write_playback_seek_sync(sync_path, seek_time)
 
     def _bound_advance_handler(previous_time: float, seek_time: float) -> None:
+        """Advance locally and publish the new position when needed.
+
+        Args:
+            previous_time: Previously applied playback position in seconds.
+            seek_time: New playback position in seconds.
+
+        Returns:
+            None.
+        """
         _handle_playback_advance(window, previous_time, seek_time)
         if sync_write and sync_path is not None:
             _write_playback_seek_sync(sync_path, seek_time)
@@ -1660,6 +2677,15 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
 
 
 def _configure_logging(window_kind: str, mode: str) -> QLoggingHandler:
+    """Configure file, stderr, and Qt logging for one window-host process.
+
+    Args:
+        window_kind: Concrete window type.
+        mode: Runtime mode for this window process.
+
+    Returns:
+        The Qt logging handler attached to the root logger.
+    """
     formatstr = "%(asctime)s [%(name)-16.16s] [%(levelname)-5.5s] %(message)s"
     consolehandler = QLoggingHandler()
     consolehandler.setFormatter(logging.Formatter(formatstr))
@@ -1689,6 +2715,19 @@ def _setup_workspace_support(
     playback_mode: bool,
     layout_profile: str,
 ) -> Any:
+    """Prepare workspace restore and persistence hooks for one window.
+
+    Args:
+        app: Running Qt application.
+        window: Window facade or window object.
+        window_role: Stable workspace or supervisor role for this
+            process.
+        playback_mode: Whether the window is in playback mode.
+        layout_profile: Workspace layout profile name.
+
+    Returns:
+        The workspace persistence controller.
+    """
     project_root = _project_root()
     prepare_workspace_window(
         window,
@@ -1714,6 +2753,15 @@ def _setup_workspace_support(
 
 
 def _show_window_for_workspace(window: Any, *, window_kind: str) -> None:
+    """Show a window using restored workspace state or default placement.
+
+    Args:
+        window: Window facade or window object.
+        window_kind: Concrete window type.
+
+    Returns:
+        None.
+    """
     restored_mode = getattr(window, "_workspace_show_mode", "normal")
     restored = bool(getattr(window, "_workspace_restored", False))
 
@@ -1728,7 +2776,9 @@ def _show_window_for_workspace(window: Any, *, window_kind: str) -> None:
         return
 
     app = QApplication.instance()
-    screens = sorted(app.screens(), key=lambda s: s.geometry().x()) if app is not None else []
+    screens = (
+        sorted(app.screens(), key=lambda s: s.geometry().x()) if app is not None else []
+    )
     if not screens:
         window.show()
         return
@@ -1761,14 +2811,43 @@ def _show_window_for_workspace(window: Any, *, window_kind: str) -> None:
 
 
 def _workspace_role(mode: str, window_kind: str) -> str:
+    """Build the stable workspace role for one window process.
+
+    Args:
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+
+    Returns:
+        The workspace role string.
+    """
     return f"{mode}_{window_kind}"
 
 
 def _layout_profile(mode: str) -> str:
+    """Build the workspace layout profile name for a runtime mode.
+
+    Args:
+        mode: Runtime mode for this window process.
+
+    Returns:
+        The layout profile string.
+    """
     return f"{mode}_split_window"
 
 
-def _build_backend_client_identity(*, mode: str, window_kind: str, selected_test: str | None) -> dict[str, Any]:
+def _build_backend_client_identity(
+    *, mode: str, window_kind: str, selected_test: str | None
+) -> dict[str, Any]:
+    """Build the backend hello identity for one GUI window process.
+
+    Args:
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+        selected_test: Playback selection string.
+
+    Returns:
+        The identity payload passed to BackendClient.connect_to_backend.
+    """
     window_role = _workspace_role(mode, window_kind)
     return {
         "client_name": f"{window_kind}-window",
@@ -1783,7 +2862,27 @@ def _build_backend_client_identity(*, mode: str, window_kind: str, selected_test
     }
 
 
-def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback_mode: bool, test_name: str | None) -> Any:
+def _build_window(
+    window_kind: str,
+    *,
+    consolehandler: QLoggingHandler,
+    playback_mode: bool,
+    test_name: str | None,
+) -> Any:
+    """Instantiate one controller or SCADA window.
+
+    Args:
+        window_kind: Concrete window type.
+        consolehandler: Qt logging handler used by controller views.
+        playback_mode: Whether the window is in playback mode.
+        test_name: Playback run or test name.
+
+    Returns:
+        The constructed window object.
+
+    Raises:
+        ValueError: If window_kind is unsupported.
+    """
     if window_kind == "controller":
         return ControllerWindow(
             loghandler=consolehandler,
@@ -1802,6 +2901,14 @@ def _build_window(window_kind: str, *, consolehandler: QLoggingHandler, playback
 
 
 def _abort_result_ok(reply: dict[str, Any]) -> bool:
+    """Return whether an AbortRelay abort reply reports success.
+
+    Args:
+        reply: AbortRelay reply payload.
+
+    Returns:
+        True when the reply contains payload.ok.
+    """
     if not isinstance(reply, dict):
         return False
     payload = reply.get("payload", {})
@@ -1809,6 +2916,14 @@ def _abort_result_ok(reply: dict[str, Any]) -> bool:
 
 
 def _abort_failure_text(reply: dict[str, Any] | None) -> str:
+    """Extract the most useful user-facing abort failure text.
+
+    Args:
+        reply: AbortRelay reply payload.
+
+    Returns:
+        The most specific error text available from the relay reply.
+    """
     if not isinstance(reply, dict):
         return "AbortRelay returned an invalid response."
 
@@ -1820,7 +2935,11 @@ def _abort_failure_text(reply: dict[str, Any] | None) -> str:
     if isinstance(command_response, dict):
         command_payload = command_response.get("payload", {})
         if isinstance(command_payload, dict):
-            message = command_payload.get("message") or command_payload.get("error") or command_payload.get("reason")
+            message = (
+                command_payload.get("message")
+                or command_payload.get("error")
+                or command_payload.get("reason")
+            )
             if isinstance(message, str) and message.strip():
                 return message.strip()
 
@@ -1835,8 +2954,15 @@ def _abort_failure_text(reply: dict[str, Any] | None) -> str:
     return "Backend did not accept the abort request."
 
 
-
 def _clear_abort_result_ok(reply: dict[str, Any]) -> bool:
+    """Return whether a clear-abort-latch relay reply reports success.
+
+    Args:
+        reply: AbortRelay reply payload.
+
+    Returns:
+        True when the reply contains payload.ok.
+    """
     if not isinstance(reply, dict):
         return False
     payload = reply.get("payload", {})
@@ -1846,6 +2972,14 @@ def _clear_abort_result_ok(reply: dict[str, Any]) -> bool:
 
 
 def _clear_abort_failure_text(reply: dict[str, Any] | None) -> str:
+    """Extract the most useful user-facing clear-abort failure text.
+
+    Args:
+        reply: AbortRelay reply payload.
+
+    Returns:
+        The most specific error text available from the relay reply.
+    """
     if not isinstance(reply, dict):
         return "AbortRelay returned an invalid response."
 
@@ -1857,7 +2991,11 @@ def _clear_abort_failure_text(reply: dict[str, Any] | None) -> str:
     if isinstance(gateway_response, dict):
         gateway_payload = gateway_response.get("payload", {})
         if isinstance(gateway_payload, dict):
-            message = gateway_payload.get("message") or gateway_payload.get("backend_error") or gateway_payload.get("error")
+            message = (
+                gateway_payload.get("message")
+                or gateway_payload.get("backend_error")
+                or gateway_payload.get("error")
+            )
             if isinstance(message, str) and message.strip():
                 return message.strip()
 
@@ -1871,7 +3009,25 @@ def _make_clear_abort_latch_trigger(
     mode: str,
     window_kind: str,
 ) -> Any:
+    """Build the click handler for the clear-abort-latch button.
+
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        facade: Window facade associated with the concrete window.
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+
+    Returns:
+        A callable that sends the clear-abort-latch request through
+            AbortRelay.
+    """
+
     def trigger_clear_abort_latch() -> None:
+        """Send clear_abort_latch through AbortRelay after confirmation.
+
+        Returns:
+            None.
+        """
         relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
         relay_available = bool(getattr(actual_window, "abort_relay_available", False))
 
@@ -1942,7 +3098,11 @@ def _make_clear_abort_latch_trigger(
             return
 
         failure_text = _clear_abort_failure_text(reply)
-        log.error("Clear abort latch failed via AbortRelay for %s: %s", window_role, failure_text)
+        log.error(
+            "Clear abort latch failed via AbortRelay for %s: %s",
+            window_role,
+            failure_text,
+        )
         QMessageBox.critical(
             actual_window,
             "Return to Normal Failed",
@@ -1959,7 +3119,24 @@ def _make_abort_trigger(
     mode: str,
     window_kind: str,
 ) -> Any:
+    """Build the click handler for the abort button.
+
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        facade: Window facade associated with the concrete window.
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+
+    Returns:
+        A callable that sends the abort request through AbortRelay.
+    """
+
     def trigger_abort() -> None:
+        """Send abort through AbortRelay and update immediate UI state.
+
+        Returns:
+            None.
+        """
         relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
         relay_available = bool(getattr(actual_window, "abort_relay_available", False))
 
@@ -2037,6 +3214,15 @@ def _make_abort_trigger(
 
 
 def _wire_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
+    """Reconnect the standard abort button to the relay-backed trigger.
+
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        trigger_abort: Trigger abort.
+
+    Returns:
+        True when a standard abort button was found and rewired.
+    """
     button = getattr(actual_window, "btn_abort", None)
     if not isinstance(button, QPushButton):
         return False
@@ -2052,8 +3238,18 @@ def _wire_abort_button(*, actual_window: Any, trigger_abort: Any) -> bool:
     return True
 
 
+def _wire_clear_abort_latch_button(
+    *, actual_window: Any, trigger_clear_abort_latch: Any
+) -> bool:
+    """Reconnect the standard clear-abort button to the relay-backed trigger.
 
-def _wire_clear_abort_latch_button(*, actual_window: Any, trigger_clear_abort_latch: Any) -> bool:
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        trigger_clear_abort_latch: Trigger clear abort latch.
+
+    Returns:
+        True when a standard clear-abort button was found and rewired.
+    """
     button = getattr(actual_window, "btn_clear_abort", None)
     if not isinstance(button, QPushButton):
         return False
@@ -2064,12 +3260,29 @@ def _wire_clear_abort_latch_button(*, actual_window: Any, trigger_clear_abort_la
         pass
 
     button.clicked.connect(trigger_clear_abort_latch)
-    setattr(actual_window, "trigger_clear_abort_latch_via_relay", trigger_clear_abort_latch)
-    button.setToolTip("Clear the abort latch and return to fresh initialized runtime state")
+    setattr(
+        actual_window, "trigger_clear_abort_latch_via_relay", trigger_clear_abort_latch
+    )
+    button.setToolTip(
+        "Clear the abort latch and return to fresh initialized runtime state"
+    )
     return True
 
 
-def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_kind: str) -> None:
+def _setup_abort_controls(
+    *, actual_window: Any, facade: Any, mode: str, window_kind: str
+) -> None:
+    """Install relay-backed abort controls when live AbortRelay is available.
+
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        facade: Window facade associated with the concrete window.
+        mode: Runtime mode for this window process.
+        window_kind: Concrete window type.
+
+    Returns:
+        None.
+    """
     relay_available = bool(getattr(actual_window, "abort_relay_available", False))
     relay_socket = str(getattr(actual_window, "abort_relay_socket_path", "") or "")
     if mode != "live" or not relay_available or not relay_socket:
@@ -2088,7 +3301,9 @@ def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_
         window_kind=window_kind,
     )
 
-    wired_abort = _wire_abort_button(actual_window=actual_window, trigger_abort=trigger_abort)
+    wired_abort = _wire_abort_button(
+        actual_window=actual_window, trigger_abort=trigger_abort
+    )
     wired_clear = _wire_clear_abort_latch_button(
         actual_window=actual_window,
         trigger_clear_abort_latch=trigger_clear_abort_latch,
@@ -2106,7 +3321,19 @@ def _setup_abort_controls(*, actual_window: Any, facade: Any, mode: str, window_
         )
 
 
-def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_socket: str | None) -> None:
+def _apply_abort_relay_context(
+    *, actual_window: Any, facade: Any, abort_relay_socket: str | None
+) -> None:
+    """Attach AbortRelay socket metadata to the window, facade, and children.
+
+    Args:
+        actual_window: Concrete Qt window that owns widgets and dialogs.
+        facade: Window facade associated with the concrete window.
+        abort_relay_socket: AbortRelay Unix socket path.
+
+    Returns:
+        None.
+    """
     socket_path = abort_relay_socket or ""
     available = bool(socket_path)
 
@@ -2122,6 +3349,14 @@ def _apply_abort_relay_context(*, actual_window: Any, facade: Any, abort_relay_s
 
 
 def _run_live_window(args: argparse.Namespace) -> int:
+    """Bootstrap and run one live controller or SCADA window process.
+
+    Args:
+        args: Parsed window-host command-line arguments.
+
+    Returns:
+        The Qt application exit code.
+    """
     app = QApplication(sys.argv)
     consolehandler = _configure_logging(args.window_kind, "live")
     log.info("Starting live window host for %s", args.window_kind)
@@ -2165,9 +3400,14 @@ def _run_live_window(args: argparse.Namespace) -> int:
         mode="live",
         window_kind=args.window_kind,
         initialize_live_hardware_on_connect=(args.window_kind == "controller"),
-        pending_start_run_payload=_decode_json_arg(
-            args.start_run_payload_b64 or os.environ.get("MINTS_PENDING_START_RUN_B64")
-        ) if args.window_kind == "controller" else None,
+        pending_start_run_payload=(
+            _decode_json_arg(
+                args.start_run_payload_b64
+                or os.environ.get("MINTS_PENDING_START_RUN_B64")
+            )
+            if args.window_kind == "controller"
+            else None
+        ),
     )
 
     heartbeat_client = None
@@ -2217,10 +3457,23 @@ def _run_live_window(args: argparse.Namespace) -> int:
 
 
 def _run_playback_window(args: argparse.Namespace) -> int:
+    """Bootstrap and run one playback controller or SCADA window process.
+
+    Args:
+        args: Parsed window-host command-line arguments.
+
+    Returns:
+        The Qt application exit code.
+    """
     app = QApplication(sys.argv)
     consolehandler = _configure_logging(args.window_kind, "playback")
     selected_run_ref, playback_source = _parse_playback_selection(args.selected_test)
-    log.info("Starting playback window host for %s run=%s source=%s", args.window_kind, selected_run_ref, playback_source)
+    log.info(
+        "Starting playback window host for %s run=%s source=%s",
+        args.window_kind,
+        selected_run_ref,
+        playback_source,
+    )
 
     actual_window = _build_window(
         args.window_kind,
@@ -2263,9 +3516,15 @@ def _run_playback_window(args: argparse.Namespace) -> int:
             metadata = getattr(facade, "playback_metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
-            test_name = metadata.get("test_name") or metadata.get("run_id") or selected_run_ref
-            source_suffix = " (Rebuild)" if playback_source == _PLAYBACK_SOURCE_REBUILD else ""
-            actual_window.setWindowTitle(f"minTS SCADA - Playback - {test_name}{source_suffix}")
+            test_name = (
+                metadata.get("test_name") or metadata.get("run_id") or selected_run_ref
+            )
+            source_suffix = (
+                " (Rebuild)" if playback_source == _PLAYBACK_SOURCE_REBUILD else ""
+            )
+            actual_window.setWindowTitle(
+                f"minTS SCADA - Playback - {test_name}{source_suffix}"
+            )
         else:
             _write_playback_seek_sync(sync_path, 0.0)
     except Exception as exc:
@@ -2282,7 +3541,9 @@ def _run_playback_window(args: argparse.Namespace) -> int:
 
     if args.window_kind == "scada":
         try:
-            timer = _install_playback_seek_sync_poller(app, window=facade, sync_path=sync_path)
+            timer = _install_playback_seek_sync_poller(
+                app, window=facade, sync_path=sync_path
+            )
             setattr(actual_window, "_playback_seek_sync_timer", timer)
         except Exception as exc:
             log.warning("Failed to start playback seek sync poller for scada: %s", exc)
@@ -2312,6 +3573,11 @@ def _run_playback_window(args: argparse.Namespace) -> int:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for one window-host subprocess.
+
+    Returns:
+        The configured argument parser.
+    """
     parser = argparse.ArgumentParser(description="Launch one minTS GUI window process")
     parser.add_argument("--mode", choices=("live", "playback"), required=True)
     parser.add_argument("--window-kind", choices=("controller", "scada"), required=True)
@@ -2324,6 +3590,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Parse command-line arguments and run one live or playback window process.
+
+    Returns:
+        The process exit code.
+    """
     parser = _build_arg_parser()
     args = parser.parse_args()
 

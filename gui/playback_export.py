@@ -1,5 +1,13 @@
 # gui/playback_export.py
 
+"""Playback export helpers for run directories and seek-ordered event lists.
+
+This module loads merged playback artifacts from a recorded run directory and
+exports playback events as JSONL or flattened CSV. It supports both
+directory-based exports from ``merged.jsonl`` on disk and in-memory exports from
+the seek-ordered event list used by playback.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -9,7 +17,27 @@ from pathlib import Path
 from typing import Any
 
 
-def load_playback_artifacts(run_dir: str | Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def load_playback_artifacts(
+    run_dir: str | Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Load playback metadata and merged events from a recorded run directory.
+
+    Args:
+        run_dir: Path to the recorded run directory that contains
+            ``metadata.json`` and optionally ``merged.jsonl``.
+
+    Returns:
+        A tuple of ``(metadata, merged_events)`` where ``metadata`` is the
+        decoded run metadata and ``merged_events`` is the list of decoded events
+        from ``merged.jsonl`` in file order. When ``merged.jsonl`` is missing,
+        the event list is empty.
+
+    Raises:
+        FileNotFoundError: If ``metadata.json`` does not exist.
+        json.JSONDecodeError: If ``metadata.json`` or any non-empty line in
+            ``merged.jsonl`` is not valid JSON.
+        OSError: If the run directory contents cannot be read.
+    """
     resolved = Path(run_dir).expanduser().resolve()
     metadata = json.loads((resolved / "metadata.json").read_text(encoding="utf-8"))
     merged_events: list[dict[str, Any]] = []
@@ -25,6 +53,18 @@ def load_playback_artifacts(run_dir: str | Path) -> tuple[dict[str, Any], list[d
 
 
 def flatten_event_for_csv(event: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a merged playback event into a CSV-friendly row.
+
+    The flattened row preserves a stable set of top-level event columns and
+    expands supported nested mappings under ``semantic_`` and
+    ``device_state_`` prefixes.
+
+    Args:
+        event: Playback event dictionary to flatten.
+
+    Returns:
+        A flat dictionary suitable for CSV export.
+    """
     flattened: dict[str, Any] = {
         "recorded_at": event.get("recorded_at"),
         "stream": event.get("stream"),
@@ -56,12 +96,30 @@ def flatten_event_for_csv(event: dict[str, Any]) -> dict[str, Any]:
 # Directory-based export (reads merged.jsonl from disk)
 # ---------------------------------------------------------------------------
 
+
 def export_run_jsonl(
     run_dir: str | Path,
     output_path: str | Path,
     *,
     stream_filter: set[str] | None = None,
 ) -> str:
+    """Export merged run events from disk to a JSONL file.
+
+    Args:
+        run_dir: Path to the recorded run directory.
+        output_path: Destination JSONL path.
+        stream_filter: Optional set of stream names to include. When omitted,
+            all merged events are exported.
+
+    Returns:
+        The resolved destination path as a string.
+
+    Raises:
+        FileNotFoundError: If required run artifacts are missing.
+        json.JSONDecodeError: If an input artifact contains invalid JSON.
+        OSError: If input artifacts cannot be read or the output file cannot be
+            written.
+    """
     _, merged_events = load_playback_artifacts(run_dir)
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +139,26 @@ def export_run_csv(
     *,
     stream_filter: set[str] | None = None,
 ) -> str:
+    """Export merged run events from disk to flattened CSV.
+
+    Column order is derived from the first appearance of keys across the
+    flattened rows that pass the stream filter.
+
+    Args:
+        run_dir: Path to the recorded run directory.
+        output_path: Destination CSV path.
+        stream_filter: Optional set of stream names to include. When omitted,
+            all merged events are exported.
+
+    Returns:
+        The resolved destination path as a string.
+
+    Raises:
+        FileNotFoundError: If required run artifacts are missing.
+        json.JSONDecodeError: If an input artifact contains invalid JSON.
+        OSError: If input artifacts cannot be read or the output file cannot be
+            written.
+    """
     _, merged_events = load_playback_artifacts(run_dir)
     rows = []
     all_columns: list[str] = []
@@ -110,10 +188,11 @@ def export_run_csv(
 # Event-list export (uses pre-sorted events from PlaybackStateManager)
 #
 # These functions export directly from the manager's seek_events list,
-# which is sorted by (timestamp_key, original_index) — the same order
+# which is sorted by (timestamp_key, original_index) - the same order
 # that playback seek and advance use.  This guarantees export ordering
 # matches what the user sees during playback.
 # ---------------------------------------------------------------------------
+
 
 def export_events_jsonl(
     events: list[dict[str, Any]],
@@ -122,7 +201,29 @@ def export_events_jsonl(
     stream_filter: set[str] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> int:
-    """Export pre-sorted events to JSONL.  Returns the number of events written."""
+    """Export seek-ordered playback events to JSONL.
+
+    The output order matches the order already established by playback seek and
+    advance logic. When ``metadata`` is provided, the file begins with a header
+    record marked by ``_export_metadata``.
+
+    Args:
+        events: Pre-sorted playback events, typically from
+            ``PlaybackStateManager.seek_events``.
+        output_path: Destination JSONL path.
+        stream_filter: Optional set of stream names to include. When omitted,
+            all events are exported.
+        metadata: Optional export metadata to merge into the leading header
+            record.
+
+    Returns:
+        The number of event records written, excluding the optional metadata
+        header.
+
+    Raises:
+        OSError: If the output file cannot be written.
+        TypeError: If an event or metadata value cannot be serialized as JSON.
+    """
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -130,7 +231,9 @@ def export_events_jsonl(
         if metadata:
             header = {
                 "_export_metadata": True,
-                "exported_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                "exported_at": datetime.now(timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z"),
             }
             header.update(metadata)
             handle.write(json.dumps(header, ensure_ascii=False, sort_keys=False))
@@ -150,7 +253,24 @@ def export_events_csv(
     *,
     stream_filter: set[str] | None = None,
 ) -> int:
-    """Export pre-sorted events to flattened CSV.  Returns the number of rows written."""
+    """Export seek-ordered playback events to flattened CSV.
+
+    Column order is derived from the first appearance of keys across the
+    flattened rows that pass the stream filter.
+
+    Args:
+        events: Pre-sorted playback events, typically from
+            ``PlaybackStateManager.seek_events``.
+        output_path: Destination CSV path.
+        stream_filter: Optional set of stream names to include. When omitted,
+            all events are exported.
+
+    Returns:
+        The number of CSV rows written.
+
+    Raises:
+        OSError: If the output file cannot be written.
+    """
     rows: list[dict[str, Any]] = []
     all_columns: list[str] = []
     seen: set[str] = set()

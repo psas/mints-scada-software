@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # gui/shutdown_watcher.py
 
-"""Background process that watches for shutdown signal and kills all tracked processes."""
+"""Watch for launcher shutdown signals and tear down tracked application processes.
+
+This module runs as a small background process that waits for the project-root
+``.shutdown_signal`` file. When the signal appears, it terminates the processes
+listed in ``.applicationpid`` and removes backend and gateway pid/socket
+artifacts used by the multi-process launcher.
+"""
 
 import logging
 import os
@@ -14,38 +20,88 @@ log = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
+    """Return the repository root derived from this module location.
+
+    Returns:
+        Absolute path to the project root directory.
+    """
     return Path(__file__).resolve().parent.parent
 
 
 def _shutdown_signal_file() -> Path:
+    """Return the project-root shutdown signal file path.
+
+    Returns:
+        Path to ``.shutdown_signal`` in the project root.
+    """
     return _project_root() / ".shutdown_signal"
 
 
 def _application_pid_file() -> Path:
+    """Return the tracked application pid registry path.
+
+    Returns:
+        Path to ``.applicationpid`` in the project root.
+    """
     return _project_root() / ".applicationpid"
 
 
 def _dev_dir() -> Path:
+    """Return the directory that stores service runtime artifacts.
+
+    Returns:
+        Path to the project ``.dev`` directory.
+    """
     return _project_root() / ".dev"
 
 
 def _backend_socket_path() -> Path:
+    """Return the backend service socket path.
+
+    Returns:
+        Path to ``.backend_service.sock`` in the project root.
+    """
     return _project_root() / ".backend_service.sock"
 
 
 def _gateway_socket_path() -> Path:
+    """Return the gateway service socket path.
+
+    Returns:
+        Path to ``.gateway_service.sock`` in the project root.
+    """
     return _project_root() / ".gateway_service.sock"
 
 
 def _backend_pid_file() -> Path:
+    """Return the backend service pid file path.
+
+    Returns:
+        Path to ``backend.pid`` under the project ``.dev`` directory.
+    """
     return _dev_dir() / "backend.pid"
 
 
 def _gateway_pid_file() -> Path:
+    """Return the gateway service pid file path.
+
+    Returns:
+        Path to ``gateway.pid`` under the project ``.dev`` directory.
+    """
     return _dev_dir() / "gateway.pid"
 
 
 def _remove_if_exists(path: Path) -> None:
+    """Delete a filesystem path when it currently exists.
+
+    The existence check also treats Unix domain sockets as removable artifacts.
+
+    Args:
+        path: File or socket path to remove.
+
+    Returns:
+        None.
+    """
     try:
         if path.exists() or path.is_socket():
             path.unlink()
@@ -57,6 +113,11 @@ def _remove_if_exists(path: Path) -> None:
 
 
 def cleanup_service_artifacts() -> None:
+    """Remove backend and gateway pid/socket artifacts after shutdown cleanup.
+
+    Returns:
+        None.
+    """
     _remove_if_exists(_backend_pid_file())
     _remove_if_exists(_gateway_pid_file())
     _remove_if_exists(_backend_socket_path())
@@ -64,7 +125,16 @@ def cleanup_service_artifacts() -> None:
 
 
 def kill_all_application_processes() -> None:
-    """Kill all tracked application processes except this watcher itself."""
+    """Terminate all tracked application processes except this watcher.
+
+    The watcher reads ``.applicationpid``, deduplicates pid entries, skips its
+    own pid and any explicit ``shutdown_watcher`` entry, then sends SIGTERM
+    followed by SIGKILL to processes that remain alive. After the passes
+    complete, it removes ``.applicationpid``.
+
+    Returns:
+        None.
+    """
     pid_file = _application_pid_file()
     if not pid_file.exists():
         log.info("No .applicationpid file found, nothing to kill")
@@ -146,7 +216,15 @@ def kill_all_application_processes() -> None:
 
 
 def watch_for_shutdown_signal() -> None:
-    """Watch for shutdown signal file and kill all processes when it appears."""
+    """Poll for the shutdown signal file and perform full process cleanup.
+
+    When ``.shutdown_signal`` appears, this removes the signal file first,
+    terminates tracked application processes, deletes backend and gateway
+    runtime artifacts, and exits the watcher process.
+
+    Returns:
+        None.
+    """
     signal_file = _shutdown_signal_file()
 
     log.info("Shutdown watcher started, watching for %s", signal_file)
@@ -154,7 +232,9 @@ def watch_for_shutdown_signal() -> None:
     try:
         while True:
             if signal_file.exists():
-                log.warning("Shutdown signal detected! Killing all application processes...")
+                log.warning(
+                    "Shutdown signal detected! Killing all application processes..."
+                )
 
                 # Remove signal file first so launcher can observe progress.
                 try:
@@ -179,6 +259,11 @@ def watch_for_shutdown_signal() -> None:
 
 
 def main() -> int:
+    """Configure watcher logging and start the shutdown watch loop.
+
+    Returns:
+        Process exit status code.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [shutdown_watcher] [%(levelname)s] %(message)s",

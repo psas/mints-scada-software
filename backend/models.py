@@ -1,5 +1,13 @@
 # backend/models.py
 
+"""Typed backend runtime state models.
+
+This module defines the dataclass-backed state containers that make up the
+backend's authoritative runtime snapshot. The models are grouped by subsystem
+so the state store can compose a single backend-wide state object and expose
+JSON-safe dictionary snapshots to GUI and IPC consumers.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -8,6 +16,8 @@ from typing import Any
 
 @dataclass
 class RunRuntimeState:
+    """Track run-lifecycle metadata for the current or most recent session."""
+
     active_run_id: str | None = None
     is_running: bool = False
     recording_session_consumed: bool = False
@@ -24,6 +34,12 @@ class RunRuntimeState:
     last_finish_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the run state.
+
+        Returns:
+            A dictionary copy of the current run state with ``metadata``
+            materialized as a plain ``dict``.
+        """
         return {
             **asdict(self),
             "metadata": dict(self.metadata),
@@ -32,6 +48,8 @@ class RunRuntimeState:
 
 @dataclass
 class BusRuntimeState:
+    """Track live bus connectivity, registration, and inventory summary."""
+
     connected: bool = False
     reconnecting: bool = False
     last_transition_wall_time: str | None = None
@@ -43,17 +61,30 @@ class BusRuntimeState:
     skipped_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the bus state.
+
+        Returns:
+            A dictionary copy of the current bus runtime state.
+        """
         return asdict(self)
 
 
 @dataclass
 class DeviceRegistryState:
+    """Summarize the backend-owned runtime device registry."""
+
     total_devices: int = 0
     load_error_count: int = 0
     load_errors: list[str] = field(default_factory=list)
     devices: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the registry state.
+
+        Returns:
+            A dictionary copy of the registry summary with copied error and
+            device lists.
+        """
         return {
             "total_devices": self.total_devices,
             "load_error_count": self.load_error_count,
@@ -64,19 +95,25 @@ class DeviceRegistryState:
 
 @dataclass
 class DeviceRuntimeState:
+    """Store per-device runtime state keyed by canonical device ID."""
+
     by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of per-device runtime state.
+
+        Returns:
+            A dictionary containing copied per-device state mappings.
+        """
         return {
-            "by_id": {
-                device_id: dict(state)
-                for device_id, state in self.by_id.items()
-            }
+            "by_id": {device_id: dict(state) for device_id, state in self.by_id.items()}
         }
 
 
 @dataclass
 class GuiPresenceState:
+    """Track connected GUI clients and visible window-role presence."""
+
     total_connections: int = 0
     total_windows: int = 0
     by_connection_id: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -85,6 +122,12 @@ class GuiPresenceState:
     last_event_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of GUI presence state.
+
+        Returns:
+            A dictionary copy of connection, window-role, and logical-client
+            presence metadata.
+        """
         return {
             "total_connections": self.total_connections,
             "total_windows": self.total_windows,
@@ -100,6 +143,8 @@ class GuiPresenceState:
 
 @dataclass
 class RecordingClockState:
+    """Represent the backend-owned recording clock shown to clients."""
+
     active: bool = False
     status: str = "idle"
     started_wall_time: str | None = None
@@ -109,11 +154,18 @@ class RecordingClockState:
     accent: str = "neutral"
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the recording clock.
+
+        Returns:
+            A dictionary copy of the current recording clock state.
+        """
         return asdict(self)
 
 
 @dataclass
 class PlaybackClockState:
+    """Represent playback timeline state exposed through backend snapshots."""
+
     active: bool = False
     status: str = "idle"
     source_run_id: str | None = None
@@ -125,22 +177,36 @@ class PlaybackClockState:
     updated_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the playback clock.
+
+        Returns:
+            A dictionary copy of the current playback clock state.
+        """
         return asdict(self)
 
 
 @dataclass
 class MissionClockState:
+    """Represent the mission clock label and current elapsed time."""
+
     label: str = "T+"
     state: str = "idle"
     seconds: float = 0.0
     updated_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the mission clock.
+
+        Returns:
+            A dictionary copy of the current mission clock state.
+        """
         return asdict(self)
 
 
 @dataclass
 class SequenceRuntimeState:
+    """Track the currently active sequence phase, step, and hold details."""
+
     current_state: str | None = None
     current_phase: str | None = None
     current_step_name: str | None = None
@@ -151,6 +217,12 @@ class SequenceRuntimeState:
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the sequence state.
+
+        Returns:
+            A dictionary copy of the current sequence state with ``details``
+            materialized as a plain ``dict``.
+        """
         return {
             **asdict(self),
             "details": dict(self.details),
@@ -159,6 +231,8 @@ class SequenceRuntimeState:
 
 @dataclass
 class AlarmRuntimeState:
+    """Track active alarms and faults surfaced in backend state snapshots."""
+
     active_alarm_count: int = 0
     active_fault_count: int = 0
     active_alarms: list[dict[str, Any]] = field(default_factory=list)
@@ -166,6 +240,11 @@ class AlarmRuntimeState:
     updated_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of alarm and fault state.
+
+        Returns:
+            A dictionary copy of the active alarm and fault collections.
+        """
         return {
             "active_alarm_count": self.active_alarm_count,
             "active_fault_count": self.active_fault_count,
@@ -177,6 +256,8 @@ class AlarmRuntimeState:
 
 @dataclass
 class ScriptRunnerState:
+    """Track backend-owned script process state, output, and plan progress."""
+
     is_running: bool = False
     script_id: str | None = None
     name: str | None = None
@@ -204,11 +285,19 @@ class ScriptRunnerState:
     last_continue_wall_time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of script runner state.
+
+        Returns:
+            A dictionary copy of the current script runner status, process
+            metadata, buffered output, and plan-progress fields.
+        """
         return asdict(self)
 
 
 @dataclass
 class HealthRuntimeState:
+    """Store summarized backend health and subsystem watchdog output."""
+
     sampled_at: str | None = None
     overall_status: str = "unknown"
     active_warning_count: int = 0
@@ -219,6 +308,12 @@ class HealthRuntimeState:
     gui: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of health summary state.
+
+        Returns:
+            A dictionary copy of the sampled health summary and per-subsystem
+            health payloads.
+        """
         return {
             "sampled_at": self.sampled_at,
             "overall_status": self.overall_status,
@@ -233,6 +328,8 @@ class HealthRuntimeState:
 
 @dataclass
 class CommandRuntimeState:
+    """Track the most recent command request and its dispatch outcome."""
+
     request_id: str | None = None
     requested_at: str | None = None
     request_source: str | None = None
@@ -251,6 +348,12 @@ class CommandRuntimeState:
     result_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the last-command state.
+
+        Returns:
+            A dictionary copy of the most recent command metadata, validation
+            results, and dispatch summary.
+        """
         return {
             "request_id": self.request_id,
             "requested_at": self.requested_at,
@@ -273,6 +376,8 @@ class CommandRuntimeState:
 
 @dataclass
 class BackendRuntimeState:
+    """Compose the backend's full authoritative runtime state snapshot."""
+
     service_name: str
     backend_started_at: str
     connected_clients: int = 0
@@ -291,6 +396,11 @@ class BackendRuntimeState:
     last_command: CommandRuntimeState = field(default_factory=CommandRuntimeState)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the full backend runtime state.
+
+        Returns:
+            A nested dictionary snapshot suitable for IPC and GUI consumers.
+        """
         return {
             "service_name": self.service_name,
             "backend_started_at": self.backend_started_at,

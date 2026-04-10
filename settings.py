@@ -1,52 +1,18 @@
 # settings.py
 
-# # The serial port that the controller software is on
-# sender = "/dev/ttyACM0"
-# # The serial port the dummy sensor is on
-# receiver = "/dev/ttyACM1"
-# # The bitrate to use on the CAN bus
-# bitrate = 1000000
+"""Define the static device catalog and shared device-schema helpers.
 
-# # The sensors and actuators
-# devices = (
-#     # {'name': 'Generic Sensor 1',   'class': 'GenericSensor',   'display': 'SensorRow',       'address': 0x64},
-#     # {'name': 'Thermocouple 1',     'class': 'Thermocouple',    'display': 'ThermocoupleRow', 'address': 0x65},
-#     # {'name': 'Generic Actuator 1', 'class': 'GenericActuator', 'display': 'ActuatorRow',     'address': 0x66},
-#     # {'name': 'Fake Solenoid 1',    'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x67},
-#     # {'name': 'Solenoid 1 (gen)',   'class': 'Solenoid',        'display': 'ActuatorRow',     'address': 0x67},
-#     # {'name': 'Generic Sensor 2',   'class': 'GenericSensor',   'display': 'None',            'address': 0x64},
-#     {'name': 'n2_purge',           'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x70, "config": {"inverted": True}},
-#     {'name': 'n2_ipa',             'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x71},
-#     {'name': 'n2_lox',             'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x72},
-#     {'name': 'ipa_liquid',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x73},
-#     {'name': '12V_test',           'class': 'GenericActuator', 'display': 'ActuatorRow',     'address': 0x77},
-#     {'name': 'lox_liquid',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x80},
-#     {'name': '24V_test',           'class': 'GenericActuator', 'display': 'ActuatorRow',     'address': 0x87},
-#     # {'name': 'Solenoid 4',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x74},
-#     # {'name': 'Solenoid 5',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x75},
-#     # {'name': 'Solenoid 6',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x76},
-#     # {'name': 'Solenoid 7',         'class': 'Solenoid',        'display': 'SolenoidRow',     'address': 0x77},
-# )
+This module is the single source of truth for device metadata that is shared
+across backend and GUI code. It provides:
 
+- hardware/bus defaults used by live runtime startup
+- ``LIVE_STARTUP_STATE`` seeds for one-time live valve state initialization
+- the canonical device descriptor schema and validation rules
+- the static ``devices`` catalog consumed by runtime inventory and GUI presentation layers
+- catalog-derived helpers such as ``get_controllable_valve_ids``
 
-
-
-
-
-
-
-"""Device catalog and schema - single source of truth.
-
-This module is the authoritative home for:
-
-- static device definitions (the ``devices`` tuple)
-- the device descriptor schema (``REQUIRED_DEVICE_FIELDS``, ``normalize_device_desc``)
-- explicit display ordering (``SYSTEM_ORDER``)
-- catalog-derived helpers (``get_controllable_valve_ids``)
-
-All device IDs use the canonical lowercase-hyphenated format (e.g. ``ig-xv-24``,
-``ipa-xv-23``, ``lox-xv-26``, ``lc-1``).  SVG element IDs intentionally match
-device IDs (with a ``-control`` suffix for interactive valve groups).
+All device IDs use the canonical lowercase-hyphenated format so they can match
+backend/runtime identifiers and SCADA SVG element IDs.
 
 Fields
 ------
@@ -57,21 +23,21 @@ Fields
    This matches the SVG element IDs so the software can reliably map
    UI elements to devices.
 
-   Example::
+   Example:
 
        'id': 'ig-psv-42'
 
 2. name
    A human-readable display name for the GUI and operators.
 
-   Example::
+   Example:
 
        'name': 'IG Pressure Safety Valve 42'
 
 3. deviceType
    The software-side device type / backend class family.
 
-   Examples::
+   Examples:
 
        'deviceType': 'GenericSensor'
        'deviceType': 'GenericActuator'
@@ -83,19 +49,19 @@ Fields
    Different from deviceType: multiple engineering groups may share the
    same backend device type.
 
-   Examples::
+   Examples:
 
        'deviceGroup': 'PT'
        'deviceGroup': 'XV'
        'deviceGroup': 'PSV'
 
 5. deviceSystems
-   The system or systems this device belongs to.  This is a **list**
-   because a device may belong to more than one system.  An empty list
+   The system or systems this device belongs to. This is a **list**
+   because a device may belong to more than one system. An empty list
    is valid for devices that are not tied to any particular system
    (e.g. weight cells).
 
-   Examples::
+   Examples:
 
        'deviceSystems': []
        'deviceSystems': ['IG']
@@ -103,9 +69,9 @@ Fields
        'deviceSystems': ['IG', 'LOX']
 
 6. address
-   The hardware / CAN bus address.  Use ``0x000`` when unknown.
+   The hardware / CAN bus address. Use ``0x000`` when unknown.
 
-   Example::
+   Example:
 
        'address': 0x000
 
@@ -136,9 +102,9 @@ import re
 from typing import Any
 
 
-# 
+#
 # Hardware / bus configuration
-# 
+#
 
 # The serial port that the controller software is on
 sender = "/dev/ttyACM0"
@@ -146,7 +112,6 @@ sender = "/dev/ttyACM0"
 receiver = "/dev/ttyACM1"
 # The bitrate to use on the CAN bus
 bitrate = 1000000
-
 
 
 # ---------------------------------------------------------------------
@@ -157,7 +122,7 @@ bitrate = 1000000
 # Keys are canonical device IDs; values are the expected startup valve state.
 # This does NOT send commands to hardware - it only initializes runtime state
 # so the operator sees correct XV positions immediately on live startup.
-# Later command-driven state updates overwrite these normally.  (Current XVs
+# Later command-driven state updates overwrite these normally. (Current XVs
 # are blind-controlled with no position-feedback telemetry.)
 LIVE_STARTUP_STATE: dict[str, str] = {
     "ipa-xv-23": "closed",
@@ -168,12 +133,388 @@ LIVE_STARTUP_STATE: dict[str, str] = {
 }
 
 
-# 
+#
 # Schema and ordering constants
-# 
+#
 
 # Explicit display ordering for device systems in the GUI.
 SYSTEM_ORDER = ("IG", "IPA", "LOX")
+
+
+#
+# Device catalog
+#
+
+devices = (
+    # =========================================================
+    # Devices with signal
+    # =========================================================
+    # Weight cells
+    {
+        "id": "lc-1",
+        "name": "Weight Cell 1",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "LC",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "lc-2",
+        "name": "Weight Cell 2",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "LC",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "lc-3",
+        "name": "Weight Cell 3",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "LC",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "lc-4",
+        "name": "Weight Cell 4",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "LC",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    # Pressure transmitters
+    {
+        "id": "pt-41",
+        "name": "Pressure Transmitter 41",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "pt-42",
+        "name": "Pressure Transmitter 42",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "pt-43",
+        "name": "Pressure Transmitter 43",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    {
+        "id": "pt-44",
+        "name": "Pressure Transmitter 44",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "sensor",
+        "isActive": False,
+    },
+    # Temperature transmitters (placeholder; not in SVG yet)
+    {
+        "id": "tt-1",
+        "name": "Temperature Transmitter 1",
+        "deviceType": "Thermocouple",
+        "deviceGroup": "TT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "thermocouple",
+        "isActive": False,
+    },
+    {
+        "id": "tt-2",
+        "name": "Temperature Transmitter 2",
+        "deviceType": "Thermocouple",
+        "deviceGroup": "TT",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": True,
+        "isControllable": False,
+        "widgetType": "thermocouple",
+        "isActive": False,
+    },
+    # Solenoid valves
+    {
+        "id": "ig-xv-24",
+        "name": "n2_lox (XV-24)",
+        "deviceType": "Solenoid",
+        "deviceGroup": "XV",
+        "deviceSystems": ["IG"],
+        "address": 0x77,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+    },
+    {
+        "id": "ig-xv-27",
+        "name": "n2_purge (XV-27)",
+        "deviceType": "Solenoid",
+        "deviceGroup": "XV",
+        "deviceSystems": ["IG"],
+        "address": 0x70,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+        "config": {"inverted": True},
+    },
+    {
+        "id": "ipa-xv-23",
+        "name": "n2_ipa (XV-23)",
+        "deviceType": "Solenoid",
+        "deviceGroup": "XV",
+        "deviceSystems": ["IPA"],
+        "address": 0x72,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+    },
+    {
+        "id": "ipa-xv-25",
+        "name": "ipa_liquid (XV-25)",
+        "deviceType": "Solenoid",
+        "deviceGroup": "XV",
+        "deviceSystems": ["IPA"],
+        "address": 0x71,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+    },
+    {
+        "id": "lox-xv-26",
+        "name": "lox_liquid (XV-26)",
+        "deviceType": "Solenoid",
+        "deviceGroup": "XV",
+        "deviceSystems": ["LOX"],
+        "address": 0x82,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+    },
+    {
+        "id": "igniter",
+        "name": "Igniter",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "IGN",
+        "deviceSystems": ["IG"],
+        "address": 0x74,
+        "hasElectricalIO": True,
+        "isControllable": True,
+        "widgetType": "solenoid",
+        "isActive": True,
+    },
+    # =========================================================
+    # Mechanical only (no signal, purely placeholder)
+    # =========================================================
+    # Physical watches
+    {
+        "id": "ig-pc-21",
+        "name": "IG Physical Watch 21",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PC",
+        "deviceSystems": ["IG"],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "ig-pc-22",
+        "name": "IG Physical Watch 22",
+        "deviceType": "GenericSensor",
+        "deviceGroup": "PC",
+        "deviceSystems": ["IG"],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    # Check valves
+    {
+        "id": "cv-011",
+        "name": "Check Valve 011",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "CV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "cv-012",
+        "name": "Check Valve 012",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "CV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "cv-013",
+        "name": "Check Valve 013",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "CV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "cv-014",
+        "name": "Check Valve 014",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "CV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    # Globe valves
+    {
+        "id": "hv-036",
+        "name": "Globe Valve 036",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "HV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "hv-039",
+        "name": "Globe Valve 039",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "HV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "hv-040",
+        "name": "Globe Valve 040",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "HV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "hv-051",
+        "name": "Globe Valve 051",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "HV",
+        "deviceSystems": [],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    # Pressure safety valves
+    {
+        "id": "ig-psv-31",
+        "name": "IG Pressure Safety Valve 31",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "PSV",
+        "deviceSystems": ["IG"],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "ig-psv-32",
+        "name": "IG Pressure Safety Valve 32",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "PSV",
+        "deviceSystems": ["IG"],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+    {
+        "id": "ig-psv-42",
+        "name": "IG Pressure Safety Valve 42",
+        "deviceType": "GenericActuator",
+        "deviceGroup": "PSV",
+        "deviceSystems": ["IG"],
+        "address": 0x000,
+        "hasElectricalIO": False,
+        "isControllable": False,
+        "widgetType": "mechanical",
+        "isActive": False,
+    },
+)
+
+
+#
+# Catalog-derived helpers
+#
 
 # Every device descriptor in the ``devices`` tuple must contain these keys.
 REQUIRED_DEVICE_FIELDS = (
@@ -195,17 +536,33 @@ _DEVICE_ID_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 
 def normalize_device_desc(device_desc: dict[str, Any]) -> dict[str, Any]:
-    """Validate and normalize a raw device descriptor from the ``devices`` tuple.
+    """Validate and normalize one raw device descriptor from ``devices``.
 
-    Returns a canonical dict with all required fields plus ``config``.
-    Used by both backend (DeviceRegistry) and GUI (BackendDeviceCatalog).
+    The returned descriptor preserves the shared catalog schema used by the
+    backend device registry and GUI-side presentation catalog. Validation is
+    intentionally strict: required fields must exist, string and boolean fields
+    must have the expected runtime types, ``deviceSystems`` must be an explicit
+    list of strings, and the device ID must match the canonical lowercase-
+    hyphenated format. The returned ``config`` mapping is copied into a plain
+    ``dict`` even when the source descriptor omits it.
+
+    Args:
+        device_desc: Raw device descriptor dictionary from the static
+            ``devices`` catalog.
+
+    Returns:
+        A normalized descriptor containing all required catalog fields plus a
+        copied ``config`` dictionary. ``deviceSystems`` entries are stripped of
+        surrounding whitespace.
 
     Raises:
-        KeyError: if required fields are missing.
-        ValueError: if ``id`` is not a valid lowercase-hyphenated identifier.
-        TypeError: if ``deviceSystems`` is not a list of strings, if
-            string fields are empty/non-string, if boolean fields are not
-            actual ``bool``, or if ``address`` is not a real ``int``.
+        KeyError: One or more required device fields are missing.
+        ValueError: ``id`` is missing, empty, or does not match the canonical
+            lowercase-hyphenated device ID format.
+        TypeError: A required string field is empty or not a string,
+            ``deviceSystems`` is not a list of non-empty strings, a boolean
+            field is not an actual ``bool``, or ``address`` is not a real
+            integer value.
     """
     missing = [key for key in REQUIRED_DEVICE_FIELDS if key not in device_desc]
     if missing:
@@ -216,9 +573,7 @@ def normalize_device_desc(device_desc: dict[str, Any]) -> dict[str, Any]:
     # --- id validation ---
     raw_id = device_desc["id"]
     if not isinstance(raw_id, str) or not raw_id:
-        raise ValueError(
-            f"Device id must be a non-empty string, got {raw_id!r}"
-        )
+        raise ValueError(f"Device id must be a non-empty string, got {raw_id!r}")
     if not _DEVICE_ID_RE.fullmatch(raw_id):
         raise ValueError(
             f"Device id {raw_id!r} does not match the canonical "
@@ -292,396 +647,17 @@ def normalize_device_desc(device_desc: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
-# 
-# Device catalog
-# 
-
-devices = (
-    # =========================================================
-    # Devices with signal
-    # =========================================================
-
-    # Weight cells
-    {
-        'id': 'lc-1',
-        'name': 'Weight Cell 1',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'LC',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'lc-2',
-        'name': 'Weight Cell 2',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'LC',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'lc-3',
-        'name': 'Weight Cell 3',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'LC',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'lc-4',
-        'name': 'Weight Cell 4',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'LC',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-
-    # Pressure transmitters
-    {
-        'id': 'pt-41',
-        'name': 'Pressure Transmitter 41',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'pt-42',
-        'name': 'Pressure Transmitter 42',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'pt-43',
-        'name': 'Pressure Transmitter 43',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-    {
-        'id': 'pt-44',
-        'name': 'Pressure Transmitter 44',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'sensor',
-        'isActive': False,
-    },
-
-    # Temperature transmitters (placeholder; not in SVG yet)
-    {
-        'id': 'tt-1',
-        'name': 'Temperature Transmitter 1',
-        'deviceType': 'Thermocouple',
-        'deviceGroup': 'TT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'thermocouple',
-        'isActive': False,
-    },
-    {
-        'id': 'tt-2',
-        'name': 'Temperature Transmitter 2',
-        'deviceType': 'Thermocouple',
-        'deviceGroup': 'TT',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': True,
-        'isControllable': False,
-        'widgetType': 'thermocouple',
-        'isActive': False,
-    },
-
-    # Solenoid valves
-    {
-        'id': 'ig-xv-24',
-        'name': 'n2_lox (XV-24)',
-        'deviceType': 'Solenoid',
-        'deviceGroup': 'XV',
-        'deviceSystems': ['IG'],
-        'address': 0x77,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-    },
-    {
-        'id': 'ig-xv-27',
-        'name': 'n2_purge (XV-27)',
-        'deviceType': 'Solenoid',
-        'deviceGroup': 'XV',
-        'deviceSystems': ['IG'],
-        'address': 0x70,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-        "config": {"inverted": True}
-    },
-    {
-        'id': 'ipa-xv-23',
-        'name': 'n2_ipa (XV-23)',
-        'deviceType': 'Solenoid',
-        'deviceGroup': 'XV',
-        'deviceSystems': ['IPA'],
-        'address': 0x72,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-    },
-    {
-        'id': 'ipa-xv-25',
-        'name': 'ipa_liquid (XV-25)',
-        'deviceType': 'Solenoid',
-        'deviceGroup': 'XV',
-        'deviceSystems': ['IPA'],
-        'address': 0x71,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-    },
-    {
-        'id': 'lox-xv-26',
-        'name': 'lox_liquid (XV-26)',
-        'deviceType': 'Solenoid',
-        'deviceGroup': 'XV',
-        'deviceSystems': ['LOX'],
-        'address': 0x82,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-    },
-
-    {
-        'id': 'igniter',
-        'name': 'Igniter',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'IGN',
-        'deviceSystems': ['IG'],
-        'address': 0x74,
-        'hasElectricalIO': True,
-        'isControllable': True,
-        'widgetType': 'solenoid',
-        'isActive': True,
-    },
-
-    # =========================================================
-    # Mechanical only (no signal, purely placeholder)
-    # =========================================================
-
-    # Physical watches
-    {
-        'id': 'ig-pc-21',
-        'name': 'IG Physical Watch 21',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PC',
-        'deviceSystems': ['IG'],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'ig-pc-22',
-        'name': 'IG Physical Watch 22',
-        'deviceType': 'GenericSensor',
-        'deviceGroup': 'PC',
-        'deviceSystems': ['IG'],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-
-    # Check valves
-    {
-        'id': 'cv-011',
-        'name': 'Check Valve 011',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'CV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'cv-012',
-        'name': 'Check Valve 012',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'CV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'cv-013',
-        'name': 'Check Valve 013',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'CV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'cv-014',
-        'name': 'Check Valve 014',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'CV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-
-    # Globe valves
-    {
-        'id': 'hv-036',
-        'name': 'Globe Valve 036',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'HV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'hv-039',
-        'name': 'Globe Valve 039',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'HV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'hv-040',
-        'name': 'Globe Valve 040',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'HV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'hv-051',
-        'name': 'Globe Valve 051',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'HV',
-        'deviceSystems': [],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-
-    # Pressure safety valves
-    {
-        'id': 'ig-psv-31',
-        'name': 'IG Pressure Safety Valve 31',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'PSV',
-        'deviceSystems': ['IG'],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'ig-psv-32',
-        'name': 'IG Pressure Safety Valve 32',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'PSV',
-        'deviceSystems': ['IG'],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-    {
-        'id': 'ig-psv-42',
-        'name': 'IG Pressure Safety Valve 42',
-        'deviceType': 'GenericActuator',
-        'deviceGroup': 'PSV',
-        'deviceSystems': ['IG'],
-        'address': 0x000,
-        'hasElectricalIO': False,
-        'isControllable': False,
-        'widgetType': 'mechanical',
-        'isActive': False,
-    },
-)
-
-
-# 
-# Catalog-derived helpers (reference ``devices`` above)
-# 
-
 def get_controllable_valve_ids() -> tuple[str, ...]:
-    """Return IDs of all active, controllable XV devices.
+    """Return canonical IDs for active controllable XV devices.
 
-    These IDs match the SVG element base IDs - append ``-control`` for the
-    SVG group element (e.g. ``ig-xv-24`` -> ``ig-xv-24-control``).
+    The result is derived directly from the static ``devices`` catalog and keeps
+    the catalog declaration order. These IDs are used by SCADA and related GUI
+    code as the base element IDs; interactive SVG control groups append the
+    ``-control`` suffix.
+
+    Returns:
+        A tuple of canonical device IDs for devices whose catalog entries are
+        grouped as ``XV`` and marked both controllable and active.
     """
     return tuple(
         d["id"]

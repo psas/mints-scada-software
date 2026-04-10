@@ -1,5 +1,12 @@
 # backend/telemetry_models.py
 
+"""Telemetry normalization models used by the backend ingest path.
+
+This module defines the immutable normalized telemetry packet shape that the
+backend uses to combine device metadata, packet fields, and runtime adapter
+state before reducing telemetry into backend state or recording raw events.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,15 +15,34 @@ from typing import Any, Mapping
 from historymanager.manager import isoformat_z
 
 
-
 def _copy_sequence_of_ints(value: Any) -> tuple[int, ...]:
+    """Copy a packet-like byte sequence into an integer tuple.
+
+    Args:
+        value: Sequence value to normalize.
+
+    Returns:
+        A tuple of integers. Returns an empty tuple when ``value`` is None.
+    """
     if value is None:
         return ()
     return tuple(int(item) for item in value)
 
 
-
 def _copy_mapping(value: Any) -> Any:
+    """Recursively copy nested mapping and sequence values.
+
+    Mapping keys are coerced to strings. Lists and tuples are copied as new
+    lists so nested runtime and metadata payloads can be detached from their
+    source objects before being stored in the normalized packet.
+
+    Args:
+        value: Value to copy.
+
+    Returns:
+        A recursively copied value for mappings, lists, and tuples. Scalar
+        values are returned unchanged.
+    """
     if isinstance(value, Mapping):
         return {str(key): _copy_mapping(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -28,6 +54,13 @@ def _copy_mapping(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class NormalizedTelemetryPacket:
+    """Immutable normalized view of a telemetry packet and runtime snapshot.
+
+    Instances combine static device metadata, packet-level transport fields, and
+    runtime adapter values into a backend-friendly structure that can be reduced
+    into authoritative state or serialized into canonical raw telemetry events.
+    """
+
     wall_time: str
     source: str
     device_id: str
@@ -66,6 +99,30 @@ class NormalizedTelemetryPacket:
         source: str,
         wall_time: str | None = None,
     ) -> "NormalizedTelemetryPacket":
+        """Build a normalized packet from device metadata, runtime data, and packet data.
+
+        The method snapshots selected fields from the device metadata mapping,
+        the runtime object, and the packet object into an immutable structure.
+        Nested metadata and runtime values are copied so later mutations on the
+        source objects do not affect the normalized packet.
+
+        Args:
+            meta: Device metadata mapping for the packet source. Expected to
+                provide canonical device fields such as ``id``, ``name``,
+                ``deviceType``, and ``deviceGroup``.
+            runtime: Runtime adapter object that may expose ``value``, ``aux``,
+                ``time``, ``state``, ``position``, and ``status`` attributes.
+            packet: Data-packet-like object that may expose ``id``, ``seq``,
+                ``cmd``, ``reply``, ``err``, ``rsvd``, ``timestamp``, and
+                ``data`` attributes.
+            source: Ingest source label to store on the normalized packet.
+            wall_time: Wall-clock timestamp for the observation. Uses the
+                current UTC timestamp when omitted.
+
+        Returns:
+            A normalized telemetry packet containing copied metadata, packet
+            fields, and runtime summaries.
+        """
         packet_data = _copy_sequence_of_ints(getattr(packet, "data", ()) or ())
         packet_data_hex = " ".join(f"{byte:02X}" for byte in packet_data)
 
@@ -76,9 +133,15 @@ class NormalizedTelemetryPacket:
             device_name=str(meta["name"]),
             device_type=str(meta["deviceType"]),
             device_group=str(meta["deviceGroup"]),
-            device_systems=tuple(str(item) for item in list(meta.get("deviceSystems", []))),
-            widget_type=str(meta["widgetType"]) if meta.get("widgetType") is not None else None,
-            bus_address=int(meta["address"]) if meta.get("address") is not None else None,
+            device_systems=tuple(
+                str(item) for item in list(meta.get("deviceSystems", []))
+            ),
+            widget_type=(
+                str(meta["widgetType"]) if meta.get("widgetType") is not None else None
+            ),
+            bus_address=(
+                int(meta["address"]) if meta.get("address") is not None else None
+            ),
             meta={str(key): _copy_mapping(value) for key, value in dict(meta).items()},
             packet_id=int(getattr(packet, "id", 0) or 0),
             packet_seq=int(getattr(packet, "seq", 0) or 0),
@@ -98,6 +161,12 @@ class NormalizedTelemetryPacket:
         )
 
     def packet_summary(self) -> dict[str, Any]:
+        """Build the packet sub-payload used by raw telemetry events.
+
+        Returns:
+            A dictionary containing normalized packet transport fields and both
+            integer-list and hex-string representations of packet data.
+        """
         return {
             "id": self.packet_id,
             "seq": self.packet_seq,
@@ -111,6 +180,12 @@ class NormalizedTelemetryPacket:
         }
 
     def runtime_summary(self) -> dict[str, Any]:
+        """Build the runtime sub-payload used by raw telemetry events.
+
+        Returns:
+            A dictionary containing the copied runtime fields captured on the
+            normalized telemetry packet.
+        """
         return {
             "value": self.runtime_value,
             "aux": self.runtime_aux,
@@ -121,6 +196,12 @@ class NormalizedTelemetryPacket:
         }
 
     def to_raw_event_payload(self) -> dict[str, Any]:
+        """Build the canonical raw telemetry event payload for this packet.
+
+        Returns:
+            A raw-event payload containing the normalized device metadata plus
+            nested ``packet`` and ``runtime`` summaries.
+        """
         return {
             "event_kind": "telemetry_packet",
             "observed_at": self.wall_time,

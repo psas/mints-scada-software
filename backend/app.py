@@ -1,5 +1,12 @@
 # backend/app.py
 
+"""Backend service process bootstrap.
+
+This module parses backend startup arguments, constructs ``BackendService``,
+adopts any persisted gateway runtime status available at startup, and then
+runs the backend IPC server until shutdown.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +16,12 @@ from .service import BackendService
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for the backend service process.
+
+    Returns:
+        The argument parser for backend startup options, including the project
+        root and the backend and gateway Unix domain socket paths.
+    """
     parser = argparse.ArgumentParser(description="Teststand backend service")
     parser.add_argument(
         "--project-root",
@@ -32,6 +45,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Start the backend service process and serve backend IPC until shutdown.
+
+    The startup flow parses command-line arguments, constructs
+    ``BackendService``, adopts any gateway runtime status that survived from an
+    earlier gateway process, logs the adopted state summary, and then starts
+    the backend IPC server. The service is always stopped in the shutdown path.
+
+    Returns:
+        Process exit status code. Returns ``0`` after normal shutdown or a
+        keyboard-interrupt-driven stop.
+    """
     parser = build_arg_parser()
     args = parser.parse_args()
 

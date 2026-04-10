@@ -1,5 +1,12 @@
 # backend/clear_abort_latch_command.py
 
+"""Canonical clear-abort-latch helpers for backend dispatch and event recording.
+
+This module normalizes accepted clear-abort-latch request payloads into the
+backend's canonical dispatch shape, builds the matching structured system
+event, and records the same event through the health publisher path.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -14,6 +21,16 @@ from scripts.script_runtime.abort_flow_contract import (
 
 
 def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
+    """Return a stripped string value from a mapping entry.
+
+    Args:
+        payload: Mapping to read from.
+        key: Mapping key to inspect.
+
+    Returns:
+        The stripped string value, or None when the key is missing, not a
+        string, or only contains whitespace.
+    """
     value = payload.get(key)
     if not isinstance(value, str):
         return None
@@ -22,6 +39,15 @@ def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
 
 
 def is_clear_abort_latch_command_payload(payload: Mapping[str, Any]) -> bool:
+    """Return whether a command request payload targets clear-abort-latch.
+
+    Args:
+        payload: Command request payload to inspect.
+
+    Returns:
+        True when ``command_name`` matches the canonical clear-abort-latch
+        command name.
+    """
     command_name = _optional_string(payload, "command_name")
     return command_name == CLEAR_ABORT_LATCH_COMMAND_NAME
 
@@ -31,6 +57,24 @@ def build_clear_abort_latch_dispatch_info(
     *,
     default_request_source: str = "gui",
 ) -> dict[str, Any]:
+    """Build the canonical dispatch metadata for an accepted clear-abort-latch request.
+
+    This normalizes request identity, request-source metadata, and mode
+    metadata into the backend's canonical clear-abort-latch
+    ``dispatch_info`` shape used by downstream logging and system-event
+    publication.
+
+    Args:
+        payload: Clear-abort-latch request payload received by the backend
+            acceptance path.
+        default_request_source: Fallback request source when the payload does
+            not declare one.
+
+    Returns:
+        A canonical clear-abort-latch ``dispatch_info`` dictionary populated
+        with accepted status, request metadata, source window metadata, and
+        the legacy clear message used by system-event paths.
+    """
     request_id = _optional_string(payload, "request_id") or _optional_string(
         payload, "relay_request_id"
     )
@@ -61,7 +105,20 @@ def build_clear_abort_latch_dispatch_info(
     }
 
 
-def build_clear_abort_latch_structured_event(dispatch_info: Mapping[str, Any]) -> dict[str, Any]:
+def build_clear_abort_latch_structured_event(
+    dispatch_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the canonical structured system event for clear-abort-latch.
+
+    Args:
+        dispatch_info: Canonical clear-abort-latch dispatch metadata produced
+            by ``build_clear_abort_latch_dispatch_info``.
+
+    Returns:
+        A structured ``system_event`` payload that mirrors the accepted
+        clear-abort-latch metadata and preserves the legacy clear message used
+        elsewhere in the backend.
+    """
     return {
         "event_type": "system_event",
         "event_name": CLEAR_ABORT_LATCH_SYSTEM_EVENT_NAME,
@@ -76,7 +133,10 @@ def build_clear_abort_latch_structured_event(dispatch_info: Mapping[str, Any]) -
         "source_window_role": dispatch_info.get("source_window_role"),
         "source_window_kind": dispatch_info.get("source_window_kind"),
         "source_mode": dispatch_info.get("source_mode"),
-        "message": dispatch_info.get("legacy_clear_message", CLEAR_ABORT_LATCH_LEGACY_LOG_MESSAGE),
+        "message": dispatch_info.get(
+            "legacy_clear_message",
+            CLEAR_ABORT_LATCH_LEGACY_LOG_MESSAGE,
+        ),
     }
 
 
@@ -86,9 +146,24 @@ def record_clear_abort_latch_system_event(
     *,
     current_run_id: str | None = None,
 ) -> None:
+    """Record the canonical clear-abort-latch system event through health.
+
+    Args:
+        health: Health publisher object that exposes ``record_system_event``.
+        dispatch_info: Canonical clear-abort-latch dispatch metadata produced
+            by ``build_clear_abort_latch_dispatch_info``.
+        current_run_id: Active run identifier to attach to the system event
+            when one exists.
+
+    Returns:
+        None.
+    """
     event_kwargs: dict[str, Any] = {
         "severity": "warning",
-        "message": dispatch_info.get("legacy_clear_message", CLEAR_ABORT_LATCH_LEGACY_LOG_MESSAGE),
+        "message": dispatch_info.get(
+            "legacy_clear_message",
+            CLEAR_ABORT_LATCH_LEGACY_LOG_MESSAGE,
+        ),
         "command_name": CLEAR_ABORT_LATCH_COMMAND_NAME,
         "request_id": dispatch_info.get("request_id"),
         "relay_request_id": dispatch_info.get("relay_request_id"),

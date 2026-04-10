@@ -1,5 +1,13 @@
 # backend/bus_manager.py
 
+"""Backend-owned bus lifecycle management with reconnect supervision.
+
+This module wraps the live ``nexus.Bus`` instance used by the backend. It
+coordinates bus startup and shutdown, device registration, optional packet
+listener attachment, optional polling-based receive loops, reconnect
+supervision, and status/error fanout callbacks for the rest of the backend.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +32,19 @@ BusErrorCallback = Callable[[dict[str, Any]], None]
 
 @dataclass(slots=True)
 class BusInitResult:
+    """Summarize the outcome of live bus initialization and device registration.
+
+    Attributes:
+        sender: Bus sender identifier used for the connection.
+        bitrate: Bus bitrate used for the connection.
+        registered_ids: Device IDs successfully registered on the live bus.
+        skipped_ids: Device IDs skipped during registration.
+        registered_count: Number of registered devices.
+        skipped_count: Number of skipped devices.
+        already_running: Whether initialization returned a cached result because
+            the bus was already running.
+    """
+
     sender: str
     bitrate: int
     registered_ids: list[str]
@@ -34,24 +55,13 @@ class BusInitResult:
 
 
 class BusManager:
-    """Backend-owned bus lifecycle wrapper with reconnect supervision.
+    """Manage backend-owned live bus lifecycle, packet intake, and reconnects.
 
-    This version keeps the public surface close to the current branch while
-    adding the missing pieces needed for the first backend-first bus commit:
-
-    - explicit lifecycle callbacks for service-side fanout hooks
-    - optional packet hook attachment when the Bus implementation supports it
-    - an optional receive loop when the Bus exposes a pull-style packet API
-    - reconnect supervision with exponential backoff
-
-    The manager is intentionally conservative:
-
-    - it keeps the current initialize_live_hardware()/shutdown_live_hardware()
-      entry points so the IPC handlers do not need a large rewrite
-    - it avoids assuming too much about the Bus implementation
-    - if the Bus already owns its own receive thread, this manager will not try
-      to force a second packet path unless it finds a safe listener or receive
-      method
+    The manager keeps the backend-facing bus API stable while adding service-side
+    supervision hooks. It opens and closes the live bus, registers active
+    devices, optionally attaches listener-based packet callbacks, optionally
+    starts a polling receive loop for pull-style bus implementations, and can
+    reconnect automatically after disconnects or repeated receive failures.
     """
 
     def __init__(
@@ -69,6 +79,22 @@ class BusManager:
         monitor_interval: float = 0.50,
         max_receive_failures_before_reconnect: int = 3,
     ) -> None:
+        """Initialize the bus manager and reconnect policy.
+
+        Args:
+            sender: Bus sender identifier. Falls back to ``settings.sender``.
+            bitrate: Bus bitrate. Falls back to ``settings.bitrate``.
+            packetprinting: Whether to enable packet printing on the bus.
+            packetlogging: Whether to enable packet logging on the bus.
+            auto_reconnect: Whether to reconnect automatically after failures.
+            reconnect_initial_delay: Initial reconnect delay in seconds.
+            reconnect_max_delay: Maximum reconnect delay in seconds.
+            reconnect_backoff: Multiplicative backoff factor for reconnects.
+            receive_poll_interval: Poll interval for pull-style receive loops.
+            monitor_interval: Supervisor loop sleep interval in seconds.
+            max_receive_failures_before_reconnect: Number of consecutive receive
+                failures that triggers a forced disconnect and reconnect path.
+        """
         self.sender = sender if sender is not None else settings.sender
         self.bitrate = bitrate if bitrate is not None else settings.bitrate
         self.packetprinting = packetprinting
@@ -76,11 +102,15 @@ class BusManager:
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_initial_delay = max(0.05, float(reconnect_initial_delay))
-        self.reconnect_max_delay = max(self.reconnect_initial_delay, float(reconnect_max_delay))
+        self.reconnect_max_delay = max(
+            self.reconnect_initial_delay, float(reconnect_max_delay)
+        )
         self.reconnect_backoff = max(1.10, float(reconnect_backoff))
         self.receive_poll_interval = max(0.01, float(receive_poll_interval))
         self.monitor_interval = max(0.05, float(monitor_interval))
-        self.max_receive_failures_before_reconnect = max(1, int(max_receive_failures_before_reconnect))
+        self.max_receive_failures_before_reconnect = max(
+            1, int(max_receive_failures_before_reconnect)
+        )
 
         self._lock = threading.RLock()
         self._bus: Bus | None = None
@@ -104,14 +134,32 @@ class BusManager:
 
     @property
     def bus(self) -> Bus | None:
+        """Return the current live bus instance when one is active.
+
+        Returns:
+            The active ``Bus`` instance, or None when the manager is not
+            connected.
+        """
         return self._bus
 
     @property
     def is_running(self) -> bool:
+        """Return whether the live bus is currently open.
+
+        Returns:
+            True when a bus instance exists and its context manager has been
+            entered successfully.
+        """
         return self._bus is not None and self._entered
 
     @property
     def last_init_result(self) -> BusInitResult | None:
+        """Return the most recent initialization summary.
+
+        Returns:
+            The cached ``BusInitResult`` from the most recent successful live
+            initialization, or None when initialization has not completed yet.
+        """
         return self._last_init_result
 
     def set_event_callbacks(
@@ -121,11 +169,37 @@ class BusManager:
         packet_callback: BusPacketCallback | None = None,
         error_callback: BusErrorCallback | None = None,
     ) -> None:
+        """Register service-side callbacks for bus lifecycle events.
+
+        Args:
+            status_callback: Callback for status messages such as connect,
+                disconnect, receive loop, and reconnect events.
+            packet_callback: Callback invoked for each received packet that
+                reaches the manager.
+            error_callback: Callback invoked when bus lifecycle, listener, or
+                packet-handling errors occur.
+        """
         self._status_callback = status_callback
         self._packet_callback = packet_callback
         self._error_callback = error_callback
 
     def initialize_live_hardware(self, registry: DeviceRegistry) -> BusInitResult:
+        """Open the live bus, register devices, and start supervision.
+
+        If the bus is already running, this returns a cached initialization
+        summary marked as ``already_running=True`` instead of reopening the bus.
+
+        Args:
+            registry: Device registry used to register active devices with the
+                live bus.
+
+        Returns:
+            A summary of device registration and connection parameters.
+
+        Raises:
+            Exception: Propagates bus construction, entry, or registration
+                failures from the underlying bus or registry.
+        """
         with self._lock:
             if self.is_running:
                 if self._last_init_result is not None:
@@ -161,6 +235,11 @@ class BusManager:
             return result
 
     def shutdown_live_hardware(self) -> None:
+        """Stop supervision, close the live bus, and join background threads.
+
+        Returns:
+            None.
+        """
         with self._lock:
             self._manual_shutdown = True
             self._stop_event.set()
@@ -170,6 +249,24 @@ class BusManager:
         self._join_background_threads()
 
     def _open_bus_and_register(self, registry: DeviceRegistry) -> BusInitResult:
+        """Create a live bus connection and register active devices.
+
+        This stores the connected bus, attaches packet intake when supported,
+        resets receive-failure counters, caches the initialization summary, and
+        emits a connected status event.
+
+        Args:
+            registry: Device registry used to register active devices with the
+                new bus instance.
+
+        Returns:
+            A summary of bus connection parameters and registration results.
+
+        Raises:
+            Exception: Propagates failures from bus entry or device registration
+                after emitting an initialization error and shutting down the
+                partially opened bus.
+        """
         bus = Bus(
             self.sender,
             self.bitrate,
@@ -198,7 +295,11 @@ class BusManager:
 
             self._emit_status(
                 "connected",
-                reason="initial_connect" if self._next_reconnect_not_before == 0.0 else "reconnect_success",
+                reason=(
+                    "initial_connect"
+                    if self._next_reconnect_not_before == 0.0
+                    else "reconnect_success"
+                ),
                 sender=result.sender,
                 bitrate=result.bitrate,
                 registered_ids=list(result.registered_ids),
@@ -219,6 +320,11 @@ class BusManager:
             raise
 
     def _start_supervisor_thread_locked(self) -> None:
+        """Start the reconnect supervisor thread when it is not already running.
+
+        Returns:
+            None.
+        """
         if self._supervisor_thread is not None and self._supervisor_thread.is_alive():
             return
 
@@ -230,6 +336,15 @@ class BusManager:
         self._supervisor_thread.start()
 
     def _start_receive_loop_if_supported_locked(self) -> None:
+        """Start a polling receive loop for pull-style bus implementations.
+
+        The receive loop is skipped when a listener-based packet path has
+        already been attached, when the bus does not expose a recognized receive
+        method, or when a receive thread is already active.
+
+        Returns:
+            None.
+        """
         self._receive_stop_event.clear()
 
         if self._packet_listener_attached:
@@ -252,6 +367,19 @@ class BusManager:
         self._emit_status("receive_loop_started", mode="poll")
 
     def _receive_loop(self, receive_callable: Callable[[], Any]) -> None:
+        """Poll packets from a pull-style bus API until stopped or disconnected.
+
+        Consecutive receive failures are counted. Once the failure threshold is
+        reached, the current bus is shut down so the supervisor can reconnect.
+
+        Args:
+            receive_callable: Zero-argument callable that returns the next
+                packet, returns None when no packet is available, or raises on
+                receive failure.
+
+        Returns:
+            None.
+        """
         while not self._receive_stop_event.is_set() and not self._stop_event.is_set():
             if not self.is_running:
                 time.sleep(self.receive_poll_interval)
@@ -286,6 +414,15 @@ class BusManager:
         self._emit_status("receive_loop_stopped")
 
     def _supervisor_loop(self) -> None:
+        """Reconnect the live bus with exponential backoff when it drops.
+
+        The supervisor runs until global shutdown. It only attempts reconnects
+        when automatic reconnect is enabled, shutdown was not manual, a device
+        registry is available, and the bus is currently disconnected.
+
+        Returns:
+            None.
+        """
         backoff = self.reconnect_initial_delay
 
         while not self._stop_event.is_set():
@@ -323,9 +460,23 @@ class BusManager:
                 backoff = self.reconnect_initial_delay
             except Exception:
                 self._next_reconnect_not_before = time.monotonic() + backoff
-                backoff = min(self.reconnect_max_delay, backoff * self.reconnect_backoff)
+                backoff = min(
+                    self.reconnect_max_delay, backoff * self.reconnect_backoff
+                )
 
     def _resolve_receive_callable(self, bus: Bus | None) -> Callable[[], Any] | None:
+        """Resolve a polling receive callable from a bus instance.
+
+        The returned wrapper prefers timeout-aware receive methods when the bus
+        supports them and falls back to zero-argument calls otherwise.
+
+        Args:
+            bus: Active bus instance to inspect.
+
+        Returns:
+            A zero-argument receive callable, or None when the bus does not
+            expose a recognized pull-style receive API.
+        """
         if bus is None:
             return None
 
@@ -351,6 +502,18 @@ class BusManager:
         return None
 
     def _try_attach_packet_listener(self, bus: Bus) -> bool:
+        """Attach a listener-based packet callback when the bus supports it.
+
+        The manager probes several common listener registration method names and
+        binds ``self._handle_packet`` to the first compatible one.
+
+        Args:
+            bus: Active bus instance to configure.
+
+        Returns:
+            True when a listener hook was attached successfully. False when no
+            compatible hook exists or every attempted attachment failed.
+        """
         for attr_name in (
             "set_packet_listener",
             "set_listener",
@@ -374,6 +537,14 @@ class BusManager:
         return False
 
     def _handle_packet(self, packet: Any) -> None:
+        """Forward a received packet to the registered packet callback.
+
+        Args:
+            packet: Packet produced by the live bus listener or receive loop.
+
+        Returns:
+            None.
+        """
         callback = self._packet_callback
         if callback is None:
             return
@@ -384,6 +555,18 @@ class BusManager:
             self._emit_error("bus_packet_callback_failed", exc)
 
     def _safe_shutdown_current_bus_locked(self, *, reason: str) -> None:
+        """Disconnect and clear the currently active bus under the manager lock.
+
+        This clears the active bus state first, stops receive polling, closes
+        the old bus instance safely, and emits a disconnected status event when
+        a bus was present.
+
+        Args:
+            reason: Disconnect reason reported in the emitted status payload.
+
+        Returns:
+            None.
+        """
         bus = self._bus
         self._bus = None
         self._entered = False
@@ -402,6 +585,14 @@ class BusManager:
         )
 
     def _safe_shutdown_specific_bus(self, bus: Bus) -> None:
+        """Close a specific bus instance and report shutdown failures.
+
+        Args:
+            bus: Bus instance to close.
+
+        Returns:
+            None.
+        """
         try:
             bus.__exit__(None, None, None)
         except Exception as exc:
@@ -413,6 +604,11 @@ class BusManager:
             )
 
     def _join_background_threads(self) -> None:
+        """Join the receive and supervisor threads with short timeouts.
+
+        Returns:
+            None.
+        """
         receive_thread = self._receive_thread
         supervisor_thread = self._supervisor_thread
 
@@ -425,6 +621,16 @@ class BusManager:
         self._supervisor_thread = None
 
     def _emit_status(self, event: str, **payload: Any) -> None:
+        """Emit a bus status message through the registered status callback.
+
+        Args:
+            event: Status event name.
+            **payload: Additional status fields to include in the emitted
+                message.
+
+        Returns:
+            None.
+        """
         callback = self._status_callback
         if callback is None:
             return
@@ -440,6 +646,19 @@ class BusManager:
             log.exception("Bus status callback failed")
 
     def _emit_error(self, error_type: str, exc: BaseException, **payload: Any) -> None:
+        """Emit a structured bus error message through the error callback.
+
+        When no error callback is registered, the exception is logged locally.
+
+        Args:
+            error_type: Stable error category name for the emitted message.
+            exc: Exception that triggered the error path.
+            **payload: Additional error fields to include in the emitted
+                message.
+
+        Returns:
+            None.
+        """
         callback = self._error_callback
         if callback is None:
             log.exception("BusManager error without error callback", exc_info=exc)

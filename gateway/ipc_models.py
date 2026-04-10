@@ -1,5 +1,12 @@
 # gateway/ipc_models.py
 
+"""IPC message models and builders for backend/gateway communication.
+
+This module defines the JSON-lines message envelope used on the gateway IPC
+boundary and provides small builders for the canonical message types emitted by
+the gateway service.
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,13 +16,26 @@ from typing import Any, Iterable, Mapping
 
 @dataclass(slots=True)
 class GatewayIPCMessage:
-    """A JSON-lines IPC message for backend/gateway communication."""
+    """Represent a single backend/gateway IPC message.
+
+    Attributes:
+        type: Canonical IPC message type name.
+        payload: JSON-serializable message payload.
+    """
 
     type: str
     payload: dict[str, Any] = field(default_factory=dict)
 
 
 def encode_message(message: GatewayIPCMessage) -> bytes:
+    """Encode an IPC message into canonical JSON-lines bytes.
+
+    Args:
+        message: IPC message to serialize.
+
+    Returns:
+        UTF-8 encoded JSON bytes containing the message type and payload.
+    """
     return json.dumps(
         {
             "type": message.type,
@@ -27,6 +47,18 @@ def encode_message(message: GatewayIPCMessage) -> bytes:
 
 
 def decode_message(raw: bytes | str) -> GatewayIPCMessage:
+    """Decode a raw JSON IPC frame into a typed message object.
+
+    Args:
+        raw: Raw IPC data as UTF-8 bytes or decoded text.
+
+    Returns:
+        The decoded IPC message.
+
+    Raises:
+        ValueError: If the decoded JSON is not an object, if ``type`` is not a
+            non-empty string, or if ``payload`` is not a JSON object.
+    """
     if isinstance(raw, bytes):
         text = raw.decode("utf-8")
     else:
@@ -56,6 +88,17 @@ def hello_ack_message(
     connected_clients: int,
     supported_messages: list[str],
 ) -> GatewayIPCMessage:
+    """Build the gateway hello acknowledgement message.
+
+    Args:
+        service_name: Gateway service name reported to the client.
+        gateway_started_at: Gateway process start timestamp.
+        connected_clients: Number of clients currently connected to the gateway.
+        supported_messages: Message types supported by the gateway IPC server.
+
+    Returns:
+        A ``hello_ack`` IPC message.
+    """
     return GatewayIPCMessage(
         type="hello_ack",
         payload={
@@ -68,6 +111,11 @@ def hello_ack_message(
 
 
 def pong_message() -> GatewayIPCMessage:
+    """Build the gateway ping response message.
+
+    Returns:
+        A ``pong`` IPC message with an empty payload.
+    """
     return GatewayIPCMessage(type="pong", payload={})
 
 
@@ -87,6 +135,31 @@ def hardware_status_message(
     packet_listener_attached: bool | None = None,
     wall_time: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build a gateway hardware status update message.
+
+    The builder canonicalizes registered and skipped device identifiers into
+    lists of strings and fills in the count fields when they are not supplied.
+
+    Args:
+        connected: Whether the live hardware link is currently connected.
+        sender: Backend or bus sender label associated with the status.
+        bitrate: Active bus bitrate when known.
+        registered_ids: Device identifiers successfully registered on the bus.
+        skipped_ids: Device identifiers skipped during registration.
+        reconnecting: Whether the gateway is currently trying to reconnect.
+        status: Explicit status label. Defaults to ``"connected"`` or
+            ``"disconnected"`` based on ``connected``.
+        reason: Optional explanatory status detail.
+        registered_count: Explicit registered-device count override.
+        skipped_count: Explicit skipped-device count override.
+        already_running: Whether live hardware was already running when the
+            request was handled.
+        packet_listener_attached: Whether the packet listener is attached.
+        wall_time: Wall-clock timestamp for the status snapshot.
+
+    Returns:
+        A ``hardware_status`` IPC message.
+    """
     registered_list = [str(x) for x in (registered_ids or [])]
     skipped_list = [str(x) for x in (skipped_ids or [])]
 
@@ -126,6 +199,19 @@ def packet_sent_message(
     sender: str | None = None,
     bitrate: int | None = None,
 ) -> GatewayIPCMessage:
+    """Build a packet-sent notification for an outbound bus command.
+
+    Args:
+        device_id: Canonical target device identifier when known.
+        packet_id: Outbound packet identifier.
+        seq: Outbound packet sequence value.
+        cmd: Outbound packet command value.
+        sender: Sender label associated with the packet.
+        bitrate: Active bus bitrate when known.
+
+    Returns:
+        A ``packet_sent`` IPC message.
+    """
     payload: dict[str, Any] = {
         "packet_id": int(packet_id),
         "seq": int(seq),
@@ -150,6 +236,20 @@ def run_started_message(
     profile_name: str | None = None,
     started_wall_time: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build the gateway raw-run start notification.
+
+    Args:
+        run_id: Active raw run identifier.
+        mode: Run mode reported by the gateway.
+        status: Run status label.
+        test_name: Test name associated with the run.
+        operator: Operator name associated with the run.
+        profile_name: Selected profile name when present.
+        started_wall_time: Wall-clock timestamp for run start.
+
+    Returns:
+        A ``run_started`` IPC message.
+    """
     payload: dict[str, Any] = {
         "run_id": run_id,
         "mode": mode,
@@ -175,6 +275,19 @@ def run_finished_message(
     reason: str | None = None,
     finished_wall_time: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build the gateway raw-run finish notification.
+
+    Args:
+        run_id: Finished raw run identifier.
+        mode: Run mode reported by the gateway.
+        status: Final run status label.
+        test_name: Test name associated with the run.
+        reason: Optional finish reason.
+        finished_wall_time: Wall-clock timestamp for run finish.
+
+    Returns:
+        A ``run_finished`` IPC message.
+    """
     payload: dict[str, Any] = {
         "run_id": run_id,
         "mode": mode,
@@ -196,6 +309,17 @@ def raw_event_recorded_message(
     accepted: bool = True,
     event: Mapping[str, Any] | None = None,
 ) -> GatewayIPCMessage:
+    """Build a raw-event recording result message.
+
+    Args:
+        stream_name: Raw stream name that received the event.
+        run_id: Active raw run identifier when one exists.
+        accepted: Whether the raw event was accepted for recording.
+        event: Recorded event payload when it should be echoed to the caller.
+
+    Returns:
+        A ``raw_event_recorded`` IPC message.
+    """
     payload: dict[str, Any] = {
         "stream_name": stream_name,
         "accepted": bool(accepted),
@@ -218,6 +342,22 @@ def abort_result_message(
     placeholder_message: str | None = None,
     wall_time: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build the gateway abort result message.
+
+    Args:
+        ok: Whether the abort request handling succeeded.
+        abort_latched: Whether the gateway abort latch is set after handling.
+        relay_request_id: Relay request identifier associated with the abort.
+        relay_session_id: Relay session identifier associated with the abort.
+        backend_forwarded: Whether the request was forwarded to the backend.
+        backend_error: Backend forwarding error when one occurred.
+        placeholder_message: Placeholder abort text used by the current gateway
+            abort path when present.
+        wall_time: Wall-clock timestamp for the result.
+
+    Returns:
+        A canonical ``abort_result`` IPC message.
+    """
     payload: dict[str, Any] = {
         "ok": bool(ok),
         "abort_latched": bool(abort_latched),
@@ -233,7 +373,6 @@ def abort_result_message(
     return GatewayIPCMessage(type="abort_result", payload=payload)
 
 
-
 def clear_abort_latch_result_message(
     *,
     ok: bool,
@@ -246,6 +385,22 @@ def clear_abort_latch_result_message(
     message: str | None = None,
     wall_time: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build the gateway clear-abort-latch result message.
+
+    Args:
+        ok: Whether the clear request handling succeeded.
+        abort_latched: Whether the abort latch remains set after handling.
+        was_latched: Whether the abort latch was set before handling.
+        relay_request_id: Relay request identifier associated with the request.
+        relay_session_id: Relay session identifier associated with the request.
+        backend_forwarded: Whether the request was forwarded to the backend.
+        backend_error: Backend forwarding error when one occurred.
+        message: Optional result detail message.
+        wall_time: Wall-clock timestamp for the result.
+
+    Returns:
+        A ``clear_abort_latch_result`` IPC message.
+    """
     payload: dict[str, Any] = {
         "ok": bool(ok),
         "abort_latched": bool(abort_latched),
@@ -284,6 +439,33 @@ def gateway_status_message(
     abort_latched_at: str | None = None,
     abort_relay_request_id: str | None = None,
 ) -> GatewayIPCMessage:
+    """Build a full gateway status snapshot message.
+
+    Args:
+        service_name: Gateway service name.
+        gateway_started_at: Gateway process start timestamp.
+        socket_path: Gateway IPC socket path.
+        connected_clients: Number of currently connected IPC clients.
+        supported_messages: Message types supported by the gateway IPC server.
+        bus_connected: Whether the live bus link is connected.
+        sender: Backend or bus sender label when known.
+        bitrate: Active bus bitrate when known.
+        registered_ids: Device identifiers currently registered on the bus.
+        skipped_ids: Device identifiers skipped during registration.
+        raw_run_active: Whether a raw run is currently active.
+        raw_run_id: Active raw run identifier when one exists.
+        raw_mode: Active raw run mode when one exists.
+        raw_test_name: Active raw run test name when one exists.
+        raw_started_wall_time: Wall-clock timestamp for active raw run start.
+        backend_link_ok: Whether the backend link is currently healthy.
+        abort_latched: Whether the gateway abort latch is set.
+        abort_latched_at: Wall-clock timestamp when the abort latch was set.
+        abort_relay_request_id: Relay request identifier associated with the
+            current abort latch.
+
+    Returns:
+        A ``gateway_status`` IPC message.
+    """
     payload: dict[str, Any] = {
         "service_name": service_name,
         "gateway_started_at": gateway_started_at,
@@ -322,6 +504,16 @@ def error_message(
     message: str,
     details: Mapping[str, Any] | None = None,
 ) -> GatewayIPCMessage:
+    """Build a canonical IPC error message.
+
+    Args:
+        code: Stable error code.
+        message: Human-readable error summary.
+        details: Optional structured error details.
+
+    Returns:
+        An ``error`` IPC message.
+    """
     payload: dict[str, Any] = {
         "code": code,
         "message": message,

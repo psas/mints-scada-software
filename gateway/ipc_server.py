@@ -1,5 +1,13 @@
 # gateway/ipc_server.py
 
+"""Unix socket IPC server for gateway-side JSON-lines message exchange.
+
+This module hosts the gateway-facing IPC server used by peer processes such as
+the backend. It accepts Unix domain socket connections, decodes one JSON-lines
+message at a time, forwards each message to the configured handler, and writes
+zero or more encoded response messages back to the same client.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +23,14 @@ log = logging.getLogger(__name__)
 
 
 class GatewayIPCServer:
-    """Simple JSON-lines Unix socket server for gateway/backend IPC."""
+    """Serve gateway IPC clients over a Unix domain socket.
+
+    The server accepts JSON-lines messages from connected clients, dispatches
+    them through the configured message callback, and streams any returned
+    response messages back to the same client connection. Each client is handled
+    on its own daemon thread, while the main server loop remains responsible for
+    accepting new connections and coordinating shutdown.
+    """
 
     def __init__(
         self,
@@ -25,6 +40,18 @@ class GatewayIPCServer:
         on_client_connected: Callable[[str], None] | None = None,
         on_client_disconnected: Callable[[str], None] | None = None,
     ) -> None:
+        """Initialize the gateway IPC server.
+
+        Args:
+            socket_path: Filesystem path for the Unix domain socket listener.
+            on_message: Callback invoked for each decoded client message. It
+                receives the generated client id and the decoded IPC message,
+                and returns zero or more response messages to write back.
+            on_client_connected: Optional callback invoked after a client is
+                accepted and registered.
+            on_client_disconnected: Optional callback invoked after a client
+                connection is cleaned up and removed from the active registry.
+        """
         self.socket_path = Path(socket_path).expanduser().resolve()
         self.on_message = on_message
         self.on_client_connected = on_client_connected
@@ -36,6 +63,7 @@ class GatewayIPCServer:
         self._connections: dict[str, socket.socket] = {}
 
     def _prepare_socket_path(self) -> None:
+        """Create the socket directory and remove any stale socket file."""
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.socket_path.unlink()
@@ -43,7 +71,20 @@ class GatewayIPCServer:
             pass
 
     def serve_forever(self) -> None:
-        """Serve clients until stopped."""
+        """Accept and serve IPC clients until the server is stopped.
+
+        This method creates the Unix domain listener, accepts client
+        connections, assigns each client a generated id, and starts a daemon
+        thread running ``_handle_client`` for each accepted connection. When the
+        loop exits, it delegates final cleanup to ``stop()``.
+
+        Returns:
+            None.
+
+        Raises:
+            OSError: Propagated when the listener fails unexpectedly while the
+                server is still supposed to be running.
+        """
         self._stop_event.clear()
         self._prepare_socket_path()
 
@@ -86,6 +127,22 @@ class GatewayIPCServer:
             self.stop()
 
     def _handle_client(self, client_id: str, conn: socket.socket) -> None:
+        """Process messages for one connected IPC client.
+
+        The handler reads newline-delimited messages from the client socket,
+        decodes each message, passes it to ``on_message``, and writes any
+        returned response messages back to the same connection. If message
+        handling raises, the server emits a canonical ``gateway_ipc_error``
+        response instead of terminating the client thread immediately. The
+        method also owns final per-client cleanup and disconnect callbacks.
+
+        Args:
+            client_id: Generated identifier for the connected client.
+            conn: Accepted Unix domain socket for that client.
+
+        Returns:
+            None.
+        """
         reader = conn.makefile("rb")
         writer = conn.makefile("wb")
 
@@ -150,7 +207,16 @@ class GatewayIPCServer:
                     log.exception("Gateway on_client_disconnected callback failed")
 
     def stop(self) -> None:
-        """Stop the IPC server and remove the socket file."""
+        """Stop the server, close active connections, and remove the socket path.
+
+        This is the shared shutdown path used by explicit stop requests and by
+        ``serve_forever`` finalization. It closes the listener, closes any
+        tracked client sockets, clears the active connection registry, and
+        unlinks the Unix socket file if it still exists.
+
+        Returns:
+            None.
+        """
         if self._stop_event.is_set():
             return
 

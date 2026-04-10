@@ -1,5 +1,14 @@
 # backend/state_store.py
 
+"""Authoritative backend runtime state and time-format helpers.
+
+This module stores the backend-owned runtime snapshot that is exposed to GUI
+clients and other backend subsystems. It tracks run lifecycle, GUI session
+presence, device runtime shadows, clocks, alarms, script execution state,
+command results, and health summaries, and it computes transient display fields
+when snapshots are requested.
+"""
+
 from __future__ import annotations
 
 import threading
@@ -11,18 +20,21 @@ from .models import BackendRuntimeState
 
 
 class StateStore:
-    """Authoritative backend runtime state.
+    """Own the authoritative backend runtime snapshot.
 
-    This version expands the state model so future GUI work can rely on backend
-    snapshots for:
-    - run metadata
-    - GUI window presence
-    - mission clock vs recording clock vs playback clock
-    - sequence summary
-    - active alarms and faults
+    The store centralizes backend-owned state that GUI clients and other
+    backend subsystems consume through snapshot reads. It also refreshes
+    transient fields such as GUI presence, packet ages, and recording/playback
+    clock display text before snapshots are returned.
     """
 
     def __init__(self, *, service_name: str, backend_started_at: str) -> None:
+        """Initialize the runtime state container.
+
+        Args:
+            service_name: Backend service name recorded in the state snapshot.
+            backend_started_at: ISO wall-clock timestamp for backend startup.
+        """
         self._lock = threading.RLock()
         self._state = BackendRuntimeState(
             service_name=service_name,
@@ -30,6 +42,14 @@ class StateStore:
         )
 
     def set_connected_clients(self, count: int) -> None:
+        """Update the current backend connection count.
+
+        This also mirrors the normalized count into the GUI summary section and
+        marks the GUI summary as recently updated.
+
+        Args:
+            count: Current number of connected backend clients.
+        """
         with self._lock:
             normalized = max(0, int(count))
             self._state.connected_clients = normalized
@@ -37,6 +57,17 @@ class StateStore:
             self._state.gui.last_event_wall_time = isoformat_utc_now()
 
     def upsert_gui_client_session(self, session: Mapping[str, Any]) -> None:
+        """Insert or replace a GUI client session record.
+
+        Missing wall-clock fields are backfilled from the best available session
+        timestamp so GUI presence summaries have stable timing metadata.
+
+        Args:
+            session: GUI session payload keyed by at least ``connection_id``.
+
+        Raises:
+            ValueError: If ``connection_id`` is missing or empty.
+        """
         connection_id = str(session.get("connection_id") or "").strip()
         if not connection_id:
             raise ValueError("GUI client session requires a non-empty connection_id")
@@ -58,6 +89,11 @@ class StateStore:
             self._refresh_gui_presence_locked()
 
     def remove_gui_client_session(self, *, connection_id: str) -> None:
+        """Remove a GUI client session if it exists.
+
+        Args:
+            connection_id: Connection identifier for the session to remove.
+        """
         with self._lock:
             self._state.gui.by_connection_id.pop(connection_id, None)
             self._state.gui.last_event_wall_time = isoformat_utc_now()
@@ -71,6 +107,15 @@ class StateStore:
         message_type: str | None = None,
         is_ping: bool = False,
     ) -> None:
+        """Refresh activity metadata for an existing GUI client session.
+
+        Args:
+            connection_id: Connection identifier for the session to update.
+            wall_time: Event wall-clock timestamp. The current UTC time is used
+                when omitted.
+            message_type: Last backend message type received from the session.
+            is_ping: Whether the activity should also update the last ping time.
+        """
         with self._lock:
             session = self._state.gui.by_connection_id.get(connection_id)
             if session is None:
@@ -87,6 +132,7 @@ class StateStore:
 
     @property
     def recording_session_consumed(self) -> bool:
+        """Return whether the current recording session allowance has been used."""
         with self._lock:
             return self._state.run.recording_session_consumed
 
@@ -102,6 +148,21 @@ class StateStore:
         notes: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
+        """Mark a run as started and initialize run-scoped state.
+
+        This updates run metadata, arms the recording clock for live runs, and
+        initializes playback clock state for playback runs.
+
+        Args:
+            run_id: Active run identifier.
+            mode: Run mode, such as ``live`` or ``playback``.
+            test_name: Human-readable test or run name.
+            operator: Operator name associated with the run.
+            profile_name: Active sequence or profile name.
+            started_wall_time: ISO wall-clock timestamp for run start.
+            notes: Optional run notes.
+            metadata: Additional run metadata stored on the run snapshot.
+        """
         with self._lock:
             self._state.run.active_run_id = run_id
             self._state.run.is_running = True
@@ -118,12 +179,20 @@ class StateStore:
             self._state.run.last_finished_wall_time = None
 
             self._state.recording_clock.active = mode == "live"
-            self._state.recording_clock.status = "recording" if mode == "live" else "idle"
-            self._state.recording_clock.started_wall_time = started_wall_time if mode == "live" else None
+            self._state.recording_clock.status = (
+                "recording" if mode == "live" else "idle"
+            )
+            self._state.recording_clock.started_wall_time = (
+                started_wall_time if mode == "live" else None
+            )
             self._state.recording_clock.stopped_wall_time = None
             self._state.recording_clock.elapsed_seconds = 0.0
-            self._state.recording_clock.display_text = "Recording: 0m 00s" if mode == "live" else "Not Recording"
-            self._state.recording_clock.accent = "recording" if mode == "live" else "neutral"
+            self._state.recording_clock.display_text = (
+                "Recording: 0m 00s" if mode == "live" else "Not Recording"
+            )
+            self._state.recording_clock.accent = (
+                "recording" if mode == "live" else "neutral"
+            )
 
             if mode == "playback":
                 self._state.playback_clock.active = True
@@ -152,6 +221,13 @@ class StateStore:
         finished_wall_time: str,
         reason: str,
     ) -> None:
+        """Mark the active run as finished and finalize clock state.
+
+        Args:
+            run_id: Run identifier being marked finished.
+            finished_wall_time: ISO wall-clock timestamp for run completion.
+            reason: Backend finish reason recorded on the run summary.
+        """
         with self._lock:
             self._state.run.active_run_id = run_id
             self._state.run.is_running = False
@@ -161,7 +237,9 @@ class StateStore:
             self._state.run.last_finish_reason = reason
 
             started_wall_time = self._state.run.last_started_wall_time
-            elapsed_seconds = self._elapsed_seconds_between(started_wall_time, finished_wall_time)
+            elapsed_seconds = self._elapsed_seconds_between(
+                started_wall_time, finished_wall_time
+            )
             if elapsed_seconds is not None:
                 self._state.recording_clock.elapsed_seconds = elapsed_seconds
 
@@ -174,7 +252,11 @@ class StateStore:
             )
             self._state.recording_clock.accent = "neutral"
 
-            self._state.playback_clock.status = "stopped" if self._state.playback_clock.active else self._state.playback_clock.status
+            self._state.playback_clock.status = (
+                "stopped"
+                if self._state.playback_clock.active
+                else self._state.playback_clock.status
+            )
             self._state.playback_clock.updated_wall_time = finished_wall_time
 
     def set_bus_connection_state(
@@ -188,6 +270,20 @@ class StateStore:
         registered_ids: Iterable[str] | None = None,
         skipped_ids: Iterable[str] | None = None,
     ) -> None:
+        """Update the backend bus connection summary.
+
+        Args:
+            connected: Whether the bus is currently connected.
+            reconnecting: Whether the bus is currently reconnecting.
+            wall_time: Wall-clock timestamp for the latest connection-state
+                transition.
+            sender: Optional bus sender name.
+            bitrate: Optional configured bus bitrate.
+            registered_ids: Optional iterable of device IDs registered on the
+                bus.
+            skipped_ids: Optional iterable of device IDs skipped during
+                registration.
+        """
         with self._lock:
             self._state.bus.connected = connected
             self._state.bus.reconnecting = reconnecting
@@ -214,11 +310,20 @@ class StateStore:
         devices: list[Mapping[str, Any]],
         load_errors: list[str] | None = None,
     ) -> None:
+        """Replace the exported device inventory snapshot.
+
+        Args:
+            devices: Normalized device descriptor snapshots.
+            load_errors: Optional device catalog load errors to expose in the
+                backend state.
+        """
         with self._lock:
             self._state.device_registry.devices = [dict(device) for device in devices]
             self._state.device_registry.total_devices = len(devices)
             self._state.device_registry.load_errors = list(load_errors or [])
-            self._state.device_registry.load_error_count = len(self._state.device_registry.load_errors)
+            self._state.device_registry.load_error_count = len(
+                self._state.device_registry.load_errors
+            )
 
     def mark_device_packet(
         self,
@@ -241,6 +346,30 @@ class StateStore:
         runtime_position: Any = None,
         runtime_status: Any = None,
     ) -> None:
+        """Record the latest packet and runtime summary for a device.
+
+        The device runtime entry is replaced with the latest packet metadata and
+        runtime fields while incrementing the packet count.
+
+        Args:
+            device_id: Device identifier.
+            wall_time: ISO wall-clock timestamp for packet receipt.
+            packet_id: Packet device or message identifier.
+            packet_seq: Packet sequence number.
+            packet_cmd: Packet command value.
+            packet_reply: Whether the packet is marked as a reply.
+            packet_err: Whether the packet is marked as an error.
+            packet_rsvd: Whether the packet reserved bit is set.
+            packet_timestamp: Optional packet timestamp from the runtime layer.
+            packet_data: Raw packet payload bytes.
+            runtime_value: Runtime value derived from the packet.
+            runtime_aux: Auxiliary runtime value derived from the packet.
+            runtime_time: Runtime time metadata derived from the packet.
+            source: Runtime source label for this update.
+            runtime_state: Optional normalized runtime state.
+            runtime_position: Optional normalized runtime position.
+            runtime_status: Optional normalized runtime status.
+        """
         with self._lock:
             current = self._state.device_runtime.by_id.get(device_id, {})
             packet_count = int(current.get("packet_count", 0)) + 1
@@ -277,18 +406,37 @@ class StateStore:
         wall_time: str | None = None,
         label: str | None = None,
     ) -> None:
+        """Update the mission clock snapshot.
+
+        Args:
+            seconds: Mission clock value in seconds.
+            state: Mission clock state label.
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+            label: Optional mission clock label override.
+        """
         with self._lock:
             self._state.mission_clock.seconds = max(0.0, float(seconds))
             self._state.mission_clock.state = state
-            self._state.mission_clock.updated_wall_time = wall_time or isoformat_utc_now()
+            self._state.mission_clock.updated_wall_time = (
+                wall_time or isoformat_utc_now()
+            )
             if label is not None:
                 self._state.mission_clock.label = str(label)
 
     def reset_mission_clock(self, *, wall_time: str | None = None) -> None:
+        """Reset the mission clock to its idle zero state.
+
+        Args:
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+        """
         with self._lock:
             self._state.mission_clock.seconds = 0.0
             self._state.mission_clock.state = "idle"
-            self._state.mission_clock.updated_wall_time = wall_time or isoformat_utc_now()
+            self._state.mission_clock.updated_wall_time = (
+                wall_time or isoformat_utc_now()
+            )
 
     def set_playback_clock(
         self,
@@ -299,15 +447,38 @@ class StateStore:
         status: str = "ready",
         wall_time: str | None = None,
     ) -> None:
+        """Update playback clock timing and status fields.
+
+        Args:
+            source_run_id: Source run identifier for the playback session, or
+                None to mark playback inactive.
+            total_duration_seconds: Total playback duration in seconds.
+            position_seconds: Current playback position in seconds.
+            status: Playback status label.
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+        """
         with self._lock:
             self._state.playback_clock.active = source_run_id is not None
             self._state.playback_clock.source_run_id = source_run_id
-            self._state.playback_clock.total_duration_seconds = self._normalize_seconds(total_duration_seconds)
-            self._state.playback_clock.position_seconds = self._normalize_seconds(position_seconds)
+            self._state.playback_clock.total_duration_seconds = self._normalize_seconds(
+                total_duration_seconds
+            )
+            self._state.playback_clock.position_seconds = self._normalize_seconds(
+                position_seconds
+            )
             self._state.playback_clock.status = status
-            self._state.playback_clock.updated_wall_time = wall_time or isoformat_utc_now()
+            self._state.playback_clock.updated_wall_time = (
+                wall_time or isoformat_utc_now()
+            )
 
     def clear_playback_clock(self, *, wall_time: str | None = None) -> None:
+        """Reset playback clock fields to the idle placeholder state.
+
+        Args:
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+        """
         with self._lock:
             self._state.playback_clock.active = False
             self._state.playback_clock.status = "idle"
@@ -317,7 +488,9 @@ class StateStore:
             self._state.playback_clock.display_text = "Playback: --"
             self._state.playback_clock.accent = "neutral"
             self._state.playback_clock.started_wall_time = None
-            self._state.playback_clock.updated_wall_time = wall_time or isoformat_utc_now()
+            self._state.playback_clock.updated_wall_time = (
+                wall_time or isoformat_utc_now()
+            )
 
     def set_sequence_state(
         self,
@@ -331,6 +504,19 @@ class StateStore:
         details: Mapping[str, Any] | None = None,
         wall_time: str | None = None,
     ) -> None:
+        """Update the exported sequence summary.
+
+        Args:
+            current_state: Current sequence state label.
+            current_phase: Optional current phase label.
+            current_step_name: Optional current step name.
+            current_step_index: Optional current step index.
+            hold_state: Optional hold-state label.
+            profile_name: Optional active profile name override.
+            details: Optional additional sequence details.
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+        """
         with self._lock:
             self._state.sequence.current_state = current_state
             self._state.sequence.current_phase = current_phase
@@ -349,6 +535,14 @@ class StateStore:
         active_faults: Iterable[Mapping[str, Any]] | None = None,
         wall_time: str | None = None,
     ) -> None:
+        """Replace the active alarm and fault summaries.
+
+        Args:
+            active_alarms: Current active alarm records.
+            active_faults: Current active fault records.
+            wall_time: Update timestamp. The current UTC time is used when
+                omitted.
+        """
         with self._lock:
             alarm_list = [dict(item) for item in list(active_alarms or [])]
             fault_list = [dict(item) for item in list(active_faults or [])]
@@ -377,6 +571,25 @@ class StateStore:
         is_held: bool = False,
         hold_requested: bool = False,
     ) -> None:
+        """Initialize script-runner state for a newly started script.
+
+        Args:
+            script_id: Backend script identifier.
+            name: Script display name.
+            pid: Process ID for the running script.
+            launch_mode: Script launch mode recorded by the backend.
+            command: Executed command line.
+            cwd: Working directory used to launch the script.
+            started_wall_time: ISO wall-clock timestamp for script start.
+            current_step_index: Optional current plan step index.
+            total_steps: Optional total plan step count.
+            current_step_name: Optional current plan step name.
+            current_step_type: Optional current plan step type.
+            current_step_status: Optional current plan step status.
+            plan_steps_summary: Optional summary of planned script steps.
+            is_held: Whether the script starts in a held state.
+            hold_requested: Whether a hold has already been requested.
+        """
         with self._lock:
             self._state.script_runner.is_running = True
             self._state.script_runner.script_id = script_id
@@ -398,7 +611,9 @@ class StateStore:
             self._state.script_runner.current_step_type = current_step_type
             self._state.script_runner.current_step_status = current_step_status
             self._state.script_runner.last_progress_wall_time = started_wall_time
-            self._state.script_runner.plan_steps_summary = list(plan_steps_summary or [])
+            self._state.script_runner.plan_steps_summary = list(
+                plan_steps_summary or []
+            )
             self._state.script_runner.is_held = is_held
             self._state.script_runner.hold_requested = hold_requested
             self._state.script_runner.last_hold_wall_time = None
@@ -413,6 +628,15 @@ class StateStore:
         failure_message: str | None = None,
         exit_status: str | None = None,
     ) -> None:
+        """Record script completion metadata.
+
+        Args:
+            finished_wall_time: ISO wall-clock timestamp for script completion.
+            return_code: Process exit code, when one exists.
+            reason: Backend stop reason.
+            failure_message: Optional failure message for unsuccessful exits.
+            exit_status: Optional higher-level script exit status label.
+        """
         with self._lock:
             self._state.script_runner.is_running = False
             self._state.script_runner.finished_wall_time = finished_wall_time
@@ -422,10 +646,18 @@ class StateStore:
             self._state.script_runner.last_exit_status = exit_status
 
     def append_script_output(self, text: str, *, max_lines: int = 500) -> None:
+        """Append a script output line and enforce the retained history cap.
+
+        Args:
+            text: Output line to append.
+            max_lines: Maximum number of lines to retain in memory.
+        """
         with self._lock:
             self._state.script_runner.output_lines.append(text)
             if len(self._state.script_runner.output_lines) > max_lines:
-                self._state.script_runner.output_lines = self._state.script_runner.output_lines[-max_lines:]
+                self._state.script_runner.output_lines = (
+                    self._state.script_runner.output_lines[-max_lines:]
+                )
 
     def update_script_progress(
         self,
@@ -440,6 +672,20 @@ class StateStore:
         is_held: bool | None = None,
         hold_requested: bool | None = None,
     ) -> None:
+        """Update script progress and optional hold metadata.
+
+        Args:
+            current_step_index: Current plan step index.
+            total_steps: Total number of plan steps.
+            current_step_name: Current plan step name.
+            current_step_type: Current plan step type.
+            current_step_status: Current plan step status.
+            progress_wall_time: ISO wall-clock timestamp for the progress
+                update.
+            plan_steps_summary: Optional replacement plan summary.
+            is_held: Optional held-state override.
+            hold_requested: Optional hold-requested override.
+        """
         with self._lock:
             self._state.script_runner.current_step_index = current_step_index
             self._state.script_runner.total_steps = total_steps
@@ -463,6 +709,15 @@ class StateStore:
         current_step_name: str | None = None,
         current_step_type: str | None = None,
     ) -> None:
+        """Mark the running script as having a pending hold request.
+
+        Args:
+            wall_time: ISO wall-clock timestamp for the hold request.
+            current_step_index: Optional current step index override.
+            total_steps: Optional total step count override.
+            current_step_name: Optional current step name override.
+            current_step_type: Optional current step type override.
+        """
         with self._lock:
             self._state.script_runner.hold_requested = True
             self._state.script_runner.current_step_status = "hold_requested"
@@ -485,6 +740,15 @@ class StateStore:
         current_step_name: str | None = None,
         current_step_type: str | None = None,
     ) -> None:
+        """Mark the running script as held.
+
+        Args:
+            wall_time: ISO wall-clock timestamp for the held transition.
+            current_step_index: Optional current step index override.
+            total_steps: Optional total step count override.
+            current_step_name: Optional current step name override.
+            current_step_type: Optional current step type override.
+        """
         with self._lock:
             self._state.script_runner.is_held = True
             self._state.script_runner.hold_requested = True
@@ -509,6 +773,15 @@ class StateStore:
         current_step_name: str | None = None,
         current_step_type: str | None = None,
     ) -> None:
+        """Mark the running script as resumed from hold.
+
+        Args:
+            wall_time: ISO wall-clock timestamp for the continue transition.
+            current_step_index: Optional current step index override.
+            total_steps: Optional total step count override.
+            current_step_name: Optional current step name override.
+            current_step_type: Optional current step type override.
+        """
         with self._lock:
             self._state.script_runner.is_held = False
             self._state.script_runner.hold_requested = False
@@ -525,6 +798,11 @@ class StateStore:
                 self._state.script_runner.current_step_type = current_step_type
 
     def clear_script_running_state(self) -> None:
+        """Clear the live script-runner execution fields.
+
+        Persistent completion metadata such as the last exit code and finish
+        time are left untouched.
+        """
         with self._lock:
             self._state.script_runner.is_running = False
             self._state.script_runner.script_id = None
@@ -559,6 +837,23 @@ class StateStore:
         runtime_status: Any = None,
         online: bool | None = None,
     ) -> None:
+        """Merge runtime-only device fields into an existing device shadow.
+
+        Unlike :meth:`mark_device_packet`, this updates runtime-derived fields
+        without replacing packet metadata.
+
+        Args:
+            device_id: Device identifier.
+            wall_time: ISO wall-clock timestamp for the runtime update.
+            source: Runtime source label for this update.
+            runtime_value: Optional runtime value.
+            runtime_aux: Optional auxiliary runtime value.
+            runtime_time: Optional runtime time value.
+            runtime_state: Optional runtime state value.
+            runtime_position: Optional runtime position value.
+            runtime_status: Optional runtime status value.
+            online: Optional online-state override.
+        """
         with self._lock:
             current = dict(self._state.device_runtime.by_id.get(device_id, {}))
             current["device_id"] = device_id
@@ -605,6 +900,27 @@ class StateStore:
         error: str | None = None,
         result_summary: Mapping[str, Any] | None = None,
     ) -> None:
+        """Record the latest command outcome summary.
+
+        Args:
+            request_id: Command request identifier.
+            requested_at: Wall-clock timestamp when the command was requested.
+            request_source: Originating request source.
+            authority_level: Authority level associated with the request.
+            command_name: Command name.
+            device_id: Target device identifier, when applicable.
+            status: Backend command outcome status.
+            dispatched_via: Dispatch path or adapter category.
+            adapter_name: Adapter name used for the command.
+            run_mode: Run mode active when the command was evaluated.
+            rejection_reason: Optional rejection reason.
+            interlock_reason: Optional interlock reason.
+            validation_errors: Optional validation errors.
+            state_reasons: Optional state-based reasons collected during
+                evaluation.
+            error: Optional command error text.
+            result_summary: Optional structured command result summary.
+        """
         with self._lock:
             self._state.last_command.request_id = request_id
             self._state.last_command.requested_at = requested_at
@@ -618,8 +934,12 @@ class StateStore:
             self._state.last_command.run_mode = run_mode
             self._state.last_command.rejection_reason = rejection_reason
             self._state.last_command.interlock_reason = interlock_reason
-            self._state.last_command.validation_errors = [str(item) for item in (validation_errors or [])]
-            self._state.last_command.state_reasons = [str(item) for item in (state_reasons or [])]
+            self._state.last_command.validation_errors = [
+                str(item) for item in (validation_errors or [])
+            ]
+            self._state.last_command.state_reasons = [
+                str(item) for item in (state_reasons or [])
+            ]
             self._state.last_command.error = error
             self._state.last_command.result_summary = dict(result_summary or {})
 
@@ -634,25 +954,51 @@ class StateStore:
         script: Mapping[str, Any],
         gui: Mapping[str, Any],
     ) -> None:
+        """Replace the exported backend health snapshot.
+
+        Args:
+            sampled_at: ISO wall-clock timestamp when health was sampled.
+            overall_status: Aggregate backend health status.
+            active_warnings: Active health warning messages.
+            writers: Writer-health summary keyed by writer name.
+            bus: Bus-health summary payload.
+            script: Script-runner health summary payload.
+            gui: GUI-health summary payload.
+        """
         with self._lock:
             self._state.health.sampled_at = sampled_at
             self._state.health.overall_status = overall_status
             self._state.health.active_warnings = list(active_warnings)
             self._state.health.active_warning_count = len(active_warnings)
             self._state.health.writers = {
-                str(name): dict(value)
-                for name, value in writers.items()
+                str(name): dict(value) for name, value in writers.items()
             }
             self._state.health.bus = dict(bus)
             self._state.health.script = dict(script)
             self._state.health.gui = dict(gui)
 
     def get_snapshot(self) -> dict[str, Any]:
+        """Return a deep-copied backend runtime snapshot.
+
+        Transient fields such as packet ages and clock display text are
+        refreshed before the snapshot is materialized.
+
+        Returns:
+            A deep-copied dictionary representation of the backend runtime
+            state.
+        """
         with self._lock:
             self._refresh_transient_fields_locked()
             return deepcopy(self._state.to_dict())
 
     def get_backend_status(self) -> dict[str, Any]:
+        """Return the compact backend status payload used by status requests.
+
+        Returns:
+            A summary dictionary containing backend startup metadata, run state,
+            clock summaries, health summary fields, and the last command
+            snapshot.
+        """
         with self._lock:
             self._refresh_transient_fields_locked()
             return {
@@ -691,6 +1037,7 @@ class StateStore:
             }
 
     def _refresh_transient_fields_locked(self) -> None:
+        """Refresh derived fields before a snapshot is returned."""
         now_wall_time = isoformat_utc_now()
         self._refresh_gui_presence_locked()
         self._refresh_device_packet_ages_locked(now_wall_time=now_wall_time)
@@ -698,10 +1045,13 @@ class StateStore:
         self._refresh_playback_clock_locked(now_wall_time=now_wall_time)
 
     def _refresh_gui_presence_locked(self) -> None:
+        """Recompute GUI presence summaries from the tracked connection map."""
         now_wall_time = isoformat_utc_now()
         sessions = list(self._state.gui.by_connection_id.values())
         self._state.gui.total_windows = len(sessions)
-        self._state.gui.total_connections = max(self._state.connected_clients, len(sessions))
+        self._state.gui.total_connections = max(
+            self._state.connected_clients, len(sessions)
+        )
         self._state.gui.window_roles = sorted(
             {
                 str(item.get("window_role"))
@@ -718,17 +1068,32 @@ class StateStore:
         )
 
         for session in sessions:
-            age_seconds = self._elapsed_seconds_between(session.get("last_message_wall_time"), now_wall_time)
+            age_seconds = self._elapsed_seconds_between(
+                session.get("last_message_wall_time"), now_wall_time
+            )
             session["last_message_age_seconds"] = age_seconds
 
     def _refresh_device_packet_ages_locked(self, *, now_wall_time: str) -> None:
+        """Update per-device packet ages relative to the current wall time.
+
+        Args:
+            now_wall_time: ISO wall-clock timestamp used as the age reference.
+        """
         for device_state in self._state.device_runtime.by_id.values():
             packet_wall_time = device_state.get("last_packet_wall_time")
             age_seconds = self._elapsed_seconds_between(packet_wall_time, now_wall_time)
             device_state["last_packet_age_seconds"] = age_seconds
 
     def _refresh_recording_clock_locked(self, *, now_wall_time: str) -> None:
-        if self._state.recording_clock.active and self._state.recording_clock.started_wall_time:
+        """Refresh derived recording clock fields.
+
+        Args:
+            now_wall_time: ISO wall-clock timestamp used as the age reference.
+        """
+        if (
+            self._state.recording_clock.active
+            and self._state.recording_clock.started_wall_time
+        ):
             elapsed_seconds = self._elapsed_seconds_between(
                 self._state.recording_clock.started_wall_time,
                 now_wall_time,
@@ -740,9 +1105,17 @@ class StateStore:
             elapsed_seconds=self._state.recording_clock.elapsed_seconds,
             active=self._state.recording_clock.active,
         )
-        self._state.recording_clock.accent = "recording" if self._state.recording_clock.active else "neutral"
+        self._state.recording_clock.accent = (
+            "recording" if self._state.recording_clock.active else "neutral"
+        )
 
     def _refresh_playback_clock_locked(self, *, now_wall_time: str) -> None:
+        """Refresh derived playback clock fields.
+
+        Args:
+            now_wall_time: ISO wall-clock timestamp used to stamp the playback
+                clock update time.
+        """
         total_duration = self._state.playback_clock.total_duration_seconds
         position = self._state.playback_clock.position_seconds
 
@@ -754,26 +1127,55 @@ class StateStore:
         if total_duration is None:
             self._state.playback_clock.display_text = "Duration: --"
         elif position is None:
-            self._state.playback_clock.display_text = f"Duration: {self._format_duration(total_duration)}"
-        else:
             self._state.playback_clock.display_text = (
-                f"Playback: {self._format_duration(position)} / {self._format_duration(total_duration)}"
+                f"Duration: {self._format_duration(total_duration)}"
             )
+        else:
+            self._state.playback_clock.display_text = f"Playback: {self._format_duration(position)} / {self._format_duration(total_duration)}"
 
-        self._state.playback_clock.accent = "playback" if self._state.playback_clock.active else "neutral"
+        self._state.playback_clock.accent = (
+            "playback" if self._state.playback_clock.active else "neutral"
+        )
         self._state.playback_clock.updated_wall_time = now_wall_time
 
     def _format_recording_display(self, *, elapsed_seconds: float, active: bool) -> str:
+        """Format the user-facing recording clock label.
+
+        Args:
+            elapsed_seconds: Recording duration in seconds.
+            active: Whether recording is currently active.
+
+        Returns:
+            The display string for the recording clock.
+        """
         if not active and elapsed_seconds <= 0.0:
             return "Not Recording"
         return f"Recording: {self._format_duration(elapsed_seconds)}"
 
     def _format_duration(self, seconds: float | int | None) -> str:
+        """Format a duration as whole minutes and seconds.
+
+        Args:
+            seconds: Duration in seconds.
+
+        Returns:
+            A ``<minutes>m <seconds>s`` display string rounded to the nearest
+            whole second and clamped to zero or above.
+        """
         normalized = int(max(0, round(float(seconds or 0.0))))
         minutes, remaining_seconds = divmod(normalized, 60)
         return f"{minutes}m {remaining_seconds:02d}s"
 
     def _normalize_seconds(self, value: float | int | None) -> float | None:
+        """Normalize a numeric duration value.
+
+        Args:
+            value: Candidate duration value.
+
+        Returns:
+            A non-negative float when the value can be parsed, or None when the
+            value is missing or invalid.
+        """
         if value is None:
             return None
         try:
@@ -781,7 +1183,19 @@ class StateStore:
         except (TypeError, ValueError):
             return None
 
-    def _elapsed_seconds_between(self, start_wall_time: str | None, end_wall_time: str | None) -> float | None:
+    def _elapsed_seconds_between(
+        self, start_wall_time: str | None, end_wall_time: str | None
+    ) -> float | None:
+        """Compute the non-negative elapsed seconds between two ISO wall times.
+
+        Args:
+            start_wall_time: Start wall-clock timestamp.
+            end_wall_time: End wall-clock timestamp.
+
+        Returns:
+            The elapsed seconds between the parsed timestamps, or None when
+            either timestamp cannot be parsed.
+        """
         start_dt = parse_iso_wall_time(start_wall_time)
         end_dt = parse_iso_wall_time(end_wall_time)
         if start_dt is None or end_dt is None:
@@ -791,6 +1205,18 @@ class StateStore:
 
 
 def parse_iso_wall_time(value: str | None) -> datetime | None:
+    """Parse an ISO wall-clock timestamp into a UTC datetime.
+
+    The parser accepts ``Z`` suffixes and naive datetimes. Naive timestamps are
+    interpreted as UTC.
+
+    Args:
+        value: ISO wall-clock timestamp string.
+
+    Returns:
+        A timezone-aware UTC datetime, or None when the value is empty or
+        invalid.
+    """
     if not value:
         return None
     text = str(value).strip()
@@ -808,4 +1234,9 @@ def parse_iso_wall_time(value: str | None) -> datetime | None:
 
 
 def isoformat_utc_now() -> str:
+    """Return the current UTC time as an ISO string with a ``Z`` suffix.
+
+    Returns:
+        The current UTC time formatted as an ISO 8601 string.
+    """
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

@@ -1,5 +1,14 @@
 # gui/controller_window.py
 
+"""Controller window, device library, and graph-workspace UI for the left screen.
+
+This module defines the controller-side Qt widgets used in both live and
+playback modes. It includes the device library tree views, graph workspace
+cards, telemetry and engine-force visualizers, and the main
+``ControllerWindow`` that binds timeline, graph, console, recording, and
+playback interactions into a single operator-facing window.
+"""
+
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QFont, QPainter, QPen, QColor, QDrag
 from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal, QMimeData, QSize
@@ -33,6 +42,15 @@ _SYSTEM_ORDER_MAP = {system: idx for idx, system in enumerate(SYSTEM_ORDER)}
 
 
 def normalize_systems(device_systems):
+    """Normalize and order a device's declared system memberships.
+
+    Args:
+        device_systems: Iterable of raw system labels from device metadata.
+
+    Returns:
+        A deduplicated list of non-empty system labels sorted by the canonical
+        ``SYSTEM_ORDER`` fallback map and then alphabetically.
+    """
     if not device_systems:
         return []
 
@@ -48,6 +66,17 @@ def normalize_systems(device_systems):
 
 
 def classify_system_bucket(device_systems):
+    """Classify device systems into a tree-bucket label and optional combo label.
+
+    Args:
+        device_systems: Iterable of raw system labels from device metadata.
+
+    Returns:
+        A ``(bucket_label, combo_label)`` tuple. Devices with no systems are
+        placed in ``Unassigned``. Single-system devices use that system name as
+        the bucket. Multi-system devices use ``Cross-System`` plus a joined
+        combination label.
+    """
     systems = normalize_systems(device_systems)
 
     if not systems:
@@ -61,18 +90,41 @@ def classify_system_bucket(device_systems):
 
 @dataclass
 class GraphCardState:
+    """Persistent UI state for one graph workspace card.
+
+    Attributes:
+        title: Display title shown in the card header.
+        device_ids: Device identifiers currently graphed in the card.
+        duration_s: Graph duration window in seconds.
+    """
+
     title: str = "Signal Graph"
     device_ids: list[str] = field(default_factory=list)
     duration_s: int = 60
 
 
 class CollapsibleSection(QFrame):
+    """Collapsible framed section used by the device library panel.
+
+    The section owns a toggleable header and a content widget. It forwards
+    preferred-height changes so the parent panel can redistribute vertical
+    space across multiple collapsible sections.
+    """
+
     expandedChanged = pyqtSignal(bool)
     preferredHeightChanged = pyqtSignal()
 
     def __init__(
         self, title: str, content_widget: QWidget, expanded: bool = True, parent=None
     ):
+        """Initialize the section wrapper.
+
+        Args:
+            title: Header text shown on the toggle button.
+            content_widget: Widget displayed inside the expandable body.
+            expanded: Whether the section starts expanded.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
 
         self.content_widget = content_widget
@@ -141,6 +193,11 @@ class CollapsibleSection(QFrame):
         self._on_toggled(expanded)
 
     def _on_toggled(self, checked: bool):
+        """Apply expanded state changes and notify layout listeners.
+
+        Args:
+            checked: Whether the section should be expanded.
+        """
         self.content_frame.setVisible(checked)
         self.toggle_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self.updateGeometry()
@@ -148,24 +205,55 @@ class CollapsibleSection(QFrame):
         self.preferredHeightChanged.emit()
 
     def set_expanded(self, expanded: bool):
+        """Set the expanded state through the header toggle.
+
+        Args:
+            expanded: Whether the section should be expanded.
+        """
         self.toggle_btn.setChecked(expanded)
 
     def is_expanded(self) -> bool:
+        """Return whether the section is currently expanded.
+
+        Returns:
+            Whether the section is currently expanded.
+        """
         return self.toggle_btn.isChecked()
 
     def header_height(self) -> int:
+        """Return the header button height used during layout calculations.
+
+        Returns:
+            Header button height in pixels.
+        """
         return self.toggle_btn.sizeHint().height()
 
     def content_vertical_padding(self) -> int:
+        """Return the vertical layout padding around the content widget.
+
+        Returns:
+            Combined top and bottom layout padding around the content widget.
+        """
         m = self.content_frame.layout().contentsMargins()
         return m.top() + m.bottom()
 
     def preferred_content_height(self) -> int:
+        """Return the content widget's preferred height.
+
+        Returns:
+            Preferred content height in pixels.
+        """
         if hasattr(self.content_widget, "preferred_height"):
             return int(self.content_widget.preferred_height())
         return int(self.content_widget.sizeHint().height())
 
     def set_content_height_limit(self, max_height=None):
+        """Apply an optional maximum height to the content widget.
+
+        Args:
+            max_height: Maximum content height in pixels, or ``None`` to remove
+                the limit.
+        """
         if hasattr(self.content_widget, "set_height_limit"):
             self.content_widget.set_height_limit(max_height)
         else:
@@ -177,10 +265,26 @@ class CollapsibleSection(QFrame):
 
 
 class DeviceSectionTree(QTreeWidget):
+    """Tree view for grouped device metadata in the device library.
+
+    The tree can optionally support drag-and-drop activation for active signal
+    devices and can dynamically resize to its visible contents so the parent
+    library panel can balance multiple sections without nested scrollbars.
+    """
+
     deviceActivated = pyqtSignal(str)
     preferredHeightChanged = pyqtSignal()
 
     def __init__(self, parent=None, allow_drag=False, include_control_bucket=False):
+        """Initialize the device tree.
+
+        Args:
+            parent: Optional parent widget.
+            allow_drag: Whether tree items can be dragged into the graph
+                workspace.
+            include_control_bucket: Whether the tree should add top-level
+                buckets that separate controllable and monitor-only devices.
+        """
         super().__init__(parent)
         self.allow_drag = allow_drag
         self.include_control_bucket = include_control_bucket
@@ -229,12 +333,29 @@ class DeviceSectionTree(QTreeWidget):
         )
 
     def _append_child(self, parent_item, child_item):
+        """Append a tree item either at the root or under a parent item.
+
+        Args:
+            parent_item: Parent tree item, or ``None`` for a top-level item.
+            child_item: Item to append.
+        """
         if parent_item is None:
             self.addTopLevelItem(child_item)
         else:
             parent_item.addChild(child_item)
 
     def _get_or_create_child(self, parent_item, label: str, cache: dict, bold=False):
+        """Return a cached grouping node or create it when missing.
+
+        Args:
+            parent_item: Parent grouping item, or ``None`` for the root.
+            label: Group label to find or create.
+            cache: Shared cache keyed by parent identity and label.
+            bold: Whether the item label should use a bold font.
+
+        Returns:
+            The existing or newly created grouping item.
+        """
         parent_key = id(parent_item) if parent_item is not None else 0
         key = (parent_key, label)
         if key in cache:
@@ -252,6 +373,15 @@ class DeviceSectionTree(QTreeWidget):
         return item
 
     def _group_chain_for_meta(self, meta: dict, group_mode: str):
+        """Build the grouping path for one device metadata record.
+
+        Args:
+            meta: Normalized device metadata used by the library panel.
+            group_mode: Active grouping mode label from the sort combo box.
+
+        Returns:
+            A list of grouping labels from outermost bucket to innermost bucket.
+        """
         system_label, combo_label = classify_system_bucket(
             meta.get("deviceSystems", [])
         )
@@ -277,6 +407,8 @@ class DeviceSectionTree(QTreeWidget):
         return chain
 
     def _iter_visible_items(self):
+        """Yield tree items that are currently visible under expansion state."""
+
         def walk(item):
             yield item
             if item.isExpanded():
@@ -287,6 +419,11 @@ class DeviceSectionTree(QTreeWidget):
             yield from walk(self.topLevelItem(i))
 
     def preferred_height(self) -> int:
+        """Return the tree height needed to show all visible rows without scrolling.
+
+        Returns:
+            Tree height required to show all visible rows without scrolling.
+        """
         visible_items = list(self._iter_visible_items())
 
         if not visible_items:
@@ -299,6 +436,7 @@ class DeviceSectionTree(QTreeWidget):
         return len(visible_items) * row_h + 8
 
     def _apply_height_limit(self):
+        """Apply the current preferred height and optional maximum height."""
         target = max(8, int(self._preferred_height))
 
         if self._height_limit is None or target <= self._height_limit:
@@ -309,6 +447,7 @@ class DeviceSectionTree(QTreeWidget):
             self.setFixedHeight(max(24, int(self._height_limit)))
 
     def update_height_to_contents(self):
+        """Recompute preferred height and emit layout updates when it changes."""
         new_pref = self.preferred_height()
         if new_pref != self._preferred_height:
             self._preferred_height = new_pref
@@ -317,6 +456,12 @@ class DeviceSectionTree(QTreeWidget):
         self._apply_height_limit()
 
     def set_height_limit(self, max_height=None):
+        """Set an optional maximum height for the tree view.
+
+        Args:
+            max_height: Maximum allowed height in pixels, or ``None`` to remove
+                the limit.
+        """
         normalized = None if max_height is None else max(24, int(max_height))
         if normalized == self._height_limit:
             return
@@ -324,6 +469,12 @@ class DeviceSectionTree(QTreeWidget):
         self._apply_height_limit()
 
     def populate(self, metas: list, group_mode: str):
+        """Populate the tree from device metadata records.
+
+        Args:
+            metas: Device metadata records to display.
+            group_mode: Active grouping mode label.
+        """
         self.clear()
         self._device_items = {}
         cache = {}
@@ -386,6 +537,14 @@ class DeviceSectionTree(QTreeWidget):
         QTimer.singleShot(0, self.update_height_to_contents)
 
     def jump_to_device(self, device_id: str) -> bool:
+        """Expand ancestors and select a device item in the tree.
+
+        Args:
+            device_id: Device identifier to focus.
+
+        Returns:
+            ``True`` when the device exists in the tree, otherwise ``False``.
+        """
         item = self._device_items.get(device_id)
         if item is None:
             return False
@@ -402,6 +561,11 @@ class DeviceSectionTree(QTreeWidget):
         return True
 
     def startDrag(self, supportedActions):
+        """Start a device drag operation when dragging is enabled.
+
+        Args:
+            supportedActions: Qt-supported drag actions.
+        """
         if not self.allow_drag:
             return
 
@@ -421,6 +585,11 @@ class DeviceSectionTree(QTreeWidget):
         drag.exec_(Qt.CopyAction)
 
     def mouseDoubleClickEvent(self, event):
+        """Emit device activation for draggable device entries on double click.
+
+        Args:
+            event: Mouse double-click event.
+        """
         if not self.allow_drag:
             super().mouseDoubleClickEvent(event)
             return
@@ -434,9 +603,22 @@ class DeviceSectionTree(QTreeWidget):
 
 
 class DeviceLibraryPanel(QWidget):
+    """Device-library widget with grouped sections, search, and graph activation.
+
+    The panel maintains three collapsible sections for active signal devices,
+    active mechanical devices, and inactive devices. It owns search results,
+    section reflow, and activation of draggable signal devices into the graph
+    workspace.
+    """
+
     deviceActivated = pyqtSignal(str)
 
     def __init__(self, parent=None):
+        """Initialize the device library panel.
+
+        Args:
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
 
         self._all_meta_by_id = {}
@@ -620,20 +802,32 @@ class DeviceLibraryPanel(QWidget):
         QTimer.singleShot(0, self._reflow_section_heights)
 
     def resizeEvent(self, event):
+        """Schedule a section reflow after the panel is resized.
+
+        Args:
+            event: Qt resize event.
+        """
         super().resizeEvent(event)
         self._schedule_section_reflow()
 
     def _on_section_toggled(self, section):
+        """Remember the last toggled section and schedule a reflow.
+
+        Args:
+            section: Section whose expansion state just changed.
+        """
         self._last_toggled_section = section
         self._schedule_section_reflow()
 
     def _schedule_section_reflow(self):
+        """Coalesce section height recalculation into the next Qt tick."""
         if self._reflow_pending:
             return
         self._reflow_pending = True
         QTimer.singleShot(0, self._reflow_section_heights)
 
     def _reflow_section_heights(self):
+        """Redistribute available height across the three collapsible sections."""
         self._reflow_pending = False
 
         sections = [
@@ -717,11 +911,17 @@ class DeviceLibraryPanel(QWidget):
                 s.set_content_height_limit(None)
 
     def add_device(self, meta: dict):
+        """Add or replace device metadata and rebuild the visible trees.
+
+        Args:
+            meta: Normalized device metadata keyed by canonical device fields.
+        """
         self._all_meta_by_id[meta["id"]] = meta
         self.rebuild_views()
         self._update_search_results()
 
     def rebuild_views(self):
+        """Rebuild all tree sections from the current metadata cache."""
         active_signal = []
         active_mechanical = []
         inactive = []
@@ -740,11 +940,26 @@ class DeviceLibraryPanel(QWidget):
         self._schedule_section_reflow()
 
     def _on_group_mode_changed(self, text: str):
+        """Apply a new grouping mode and refresh search results.
+
+        Args:
+            text: Selected grouping mode label.
+        """
         self._group_mode = text
         self.rebuild_views()
         self._update_search_results()
 
     def _match_meta(self, meta: dict, query: str) -> bool:
+        """Return whether device metadata matches the current search text.
+
+        Args:
+            meta: Device metadata record to inspect.
+            query: User-entered search query.
+
+        Returns:
+            ``True`` when the query matches one of the searchable metadata
+            fields.
+        """
         q = query.lower().strip()
         if not q:
             return False
@@ -759,6 +974,14 @@ class DeviceLibraryPanel(QWidget):
         return any(q in str(field).lower() for field in fields)
 
     def _section_name_for_meta(self, meta: dict) -> str:
+        """Return the visible section label for one device metadata record.
+
+        Args:
+            meta: Device metadata record.
+
+        Returns:
+            The section title that would contain the device.
+        """
         if not meta.get("isActive", False):
             return "Inactive Devices"
         if meta.get("hasElectricalIO", False):
@@ -766,6 +989,7 @@ class DeviceLibraryPanel(QWidget):
         return "Active Mechanical Devices"
 
     def _update_search_results(self):
+        """Refresh the search-results list from the current device cache."""
         query = self.search_input.text().strip()
         self.search_results.clear()
 
@@ -810,6 +1034,7 @@ class DeviceLibraryPanel(QWidget):
         self._schedule_section_reflow()
 
     def _activate_first_search_result(self):
+        """Jump to the first visible search result when Enter is pressed."""
         if self.search_results.isHidden() or self.search_results.count() == 0:
             return
         item = self.search_results.item(0)
@@ -817,11 +1042,21 @@ class DeviceLibraryPanel(QWidget):
             self._jump_to_device(item.data(Qt.UserRole))
 
     def _on_search_result_clicked(self, item: QListWidgetItem):
+        """Jump to a device when a search-result row is clicked.
+
+        Args:
+            item: Selected search-result item.
+        """
         device_id = item.data(Qt.UserRole)
         if device_id:
             self._jump_to_device(device_id)
 
     def _jump_to_device(self, device_id: str):
+        """Expand the correct section and focus the requested device.
+
+        Args:
+            device_id: Device identifier to reveal in the tree views.
+        """
         meta = self._all_meta_by_id.get(device_id)
         if meta is None:
             return
@@ -842,6 +1077,11 @@ class DeviceLibraryPanel(QWidget):
         self._schedule_section_reflow()
 
     def activate_device(self, device_id: str):
+        """Reveal a device and emit activation when it is graphable.
+
+        Args:
+            device_id: Device identifier to reveal and possibly activate.
+        """
         self._jump_to_device(device_id)
         meta = self._all_meta_by_id.get(device_id)
         if meta and meta.get("isActive", False) and meta.get("hasElectricalIO", False):
@@ -849,7 +1089,17 @@ class DeviceLibraryPanel(QWidget):
 
 
 class FlowLayout(QLayout):
+    """Simple wrapping flow layout used for graph legend chips."""
+
     def __init__(self, parent=None, margin=0, h_spacing=8, v_spacing=8):
+        """Initialize the flow layout.
+
+        Args:
+            parent: Optional parent layout owner.
+            margin: Layout margin applied on all sides.
+            h_spacing: Horizontal spacing between items.
+            v_spacing: Vertical spacing between wrapped rows.
+        """
         super().__init__(parent)
         self._items = []
         self._h_spacing = h_spacing
@@ -857,48 +1107,121 @@ class FlowLayout(QLayout):
         self.setContentsMargins(margin, margin, margin, margin)
 
     def addItem(self, item):
+        """Add a layout item to the flow.
+
+        Args:
+            item: Layout item to add or inspect.
+        """
         self._items.append(item)
 
     def count(self):
+        """Return the number of managed layout items.
+
+        Returns:
+            Number of managed layout items.
+        """
         return len(self._items)
 
     def itemAt(self, index):
+        """Return the layout item at an index.
+
+        Args:
+            index: Item index.
+
+        Returns:
+            The layout item when the index is valid, otherwise ``None``.
+        """
         if 0 <= index < len(self._items):
             return self._items[index]
         return None
 
     def takeAt(self, index):
+        """Remove and return the layout item at an index.
+
+        Args:
+            index: Item index.
+
+        Returns:
+            The removed item when the index is valid, otherwise ``None``.
+        """
         if 0 <= index < len(self._items):
             return self._items.pop(index)
         return None
 
     def expandingDirections(self):
+        """Return that the flow layout does not claim expansion directions.
+
+        Returns:
+            An empty Qt orientation set because the layout does not claim
+                expansion directions.
+        """
         return Qt.Orientations(Qt.Orientation(0))
 
     def hasHeightForWidth(self):
+        """Return whether layout height depends on available width.
+
+        Returns:
+            ``True`` because the layout height depends on the available width.
+        """
         return True
 
     def heightForWidth(self, width):
+        """Return the wrapped height required for a given width.
+
+        Args:
+            width: Available layout width.
+
+        Returns:
+            The height required to lay out the items.
+        """
         return self._do_layout(QRect(0, 0, width, 0), True)
 
     def setGeometry(self, rect):
+        """Lay out all child items within a rectangle.
+
+        Args:
+            rect: Target layout rectangle.
+        """
         super().setGeometry(rect)
         self._do_layout(rect, False)
 
     def sizeHint(self):
+        """Return the preferred size for the layout.
+
+        Returns:
+            Preferred size of the flow layout.
+        """
         return self.minimumSize()
 
     def minimumSize(self):
+        """Return the minimum size that fits the managed items.
+
+        Returns:
+            Minimum size that fits the managed layout items.
+        """
         size = QSize()
         for item in self._items:
             size = size.expandedTo(item.minimumSize())
         margins = self.contentsMargins()
-        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        size += QSize(
+            margins.left() + margins.right(), margins.top() + margins.bottom()
+        )
         return size
 
     def _do_layout(self, rect, test_only):
+        """Lay out items with wrapping and optionally skip geometry writes.
+
+        Args:
+            rect: Target layout rectangle.
+            test_only: Whether to compute size without applying geometry.
+
+        Returns:
+            The total layout height consumed.
+        """
         margins = self.contentsMargins()
-        effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        effective = rect.adjusted(
+            margins.left(), margins.top(), -margins.right(), -margins.bottom()
+        )
         x = effective.x()
         y = effective.y()
         line_height = 0
@@ -926,9 +1249,22 @@ class FlowLayout(QLayout):
 
 
 class GraphLegendChip(QFrame):
+    """Clickable legend chip that toggles one graphed device series."""
+
     toggled = pyqtSignal(str, bool)
 
-    def __init__(self, device_id: str, label: str, color: str, enabled: bool = True, parent=None):
+    def __init__(
+        self, device_id: str, label: str, color: str, enabled: bool = True, parent=None
+    ):
+        """Initialize the legend chip.
+
+        Args:
+            device_id: Device identifier associated with the graph series.
+            label: Display label shown on the chip.
+            color: Accent color used for the series dot.
+            enabled: Whether the series starts enabled.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.device_id = device_id
         self._label_text = label
@@ -951,6 +1287,11 @@ class GraphLegendChip(QFrame):
         self.set_series_enabled(self._enabled_state)
 
     def mousePressEvent(self, event):
+        """Toggle the chip and emit the new enabled state on left click.
+
+        Args:
+            event: Mouse press event.
+        """
         if event.button() == Qt.LeftButton:
             self.set_series_enabled(not self._enabled_state)
             self.toggled.emit(self.device_id, self._enabled_state)
@@ -959,6 +1300,11 @@ class GraphLegendChip(QFrame):
         super().mousePressEvent(event)
 
     def set_series_enabled(self, enabled: bool):
+        """Apply enabled styling for the series chip.
+
+        Args:
+            enabled: Whether the series should appear enabled.
+        """
         self._enabled_state = bool(enabled)
         if self._enabled_state:
             self.setStyleSheet(
@@ -968,21 +1314,39 @@ class GraphLegendChip(QFrame):
             self.dot_label.setStyleSheet(
                 f"color: {self._accent_color}; border: none; background: transparent;"
             )
-            self.text_label.setStyleSheet("color: #d9d9d9; border: none; background: transparent;")
+            self.text_label.setStyleSheet(
+                "color: #d9d9d9; border: none; background: transparent;"
+            )
         else:
             self.setStyleSheet(
                 "QFrame { background: #141618; border: 1px solid #2d3134; border-radius: 10px; } "
                 "QLabel { color: #6f7478; border: none; background: transparent; }"
             )
-            self.dot_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
-            self.text_label.setStyleSheet("color: #6f7478; border: none; background: transparent;")
+            self.dot_label.setStyleSheet(
+                "color: #6f7478; border: none; background: transparent;"
+            )
+            self.text_label.setStyleSheet(
+                "color: #6f7478; border: none; background: transparent;"
+            )
 
 
 class GraphWidgetSettingsPanel(QFrame):
+    """Inline settings panel for one graph workspace card.
+
+    The panel edits the set of graphed device inputs and the graph duration.
+    Saving emits the normalized list of device IDs and the selected duration.
+    """
+
     saveRequested = pyqtSignal(list, int)
     cancelRequested = pyqtSignal()
 
     def __init__(self, name_resolver, parent=None):
+        """Initialize the settings panel.
+
+        Args:
+            name_resolver: Callable that maps device IDs to display names.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self._name_resolver = name_resolver
         self._device_ids = []
@@ -1072,18 +1436,32 @@ class GraphWidgetSettingsPanel(QFrame):
         layout.addLayout(button_row)
 
     def set_state(self, state: GraphCardState):
+        """Load graph-card state into the settings UI.
+
+        Args:
+            state: Graph card state to edit.
+        """
         self._device_ids = list(state.device_ids)
         self._duration_s = max(1, int(state.duration_s))
         self.duration_spin.setValue(self._duration_s)
         self._refresh_inputs()
 
     def _device_name(self, device_id: str) -> str:
+        """Resolve a device ID to a display name.
+
+        Args:
+            device_id: Device identifier to resolve.
+
+        Returns:
+            The resolved display name, or the device ID on failure.
+        """
         try:
             return self._name_resolver(device_id)
         except Exception:
             return device_id
 
     def _refresh_inputs(self):
+        """Rebuild the editable input list from the current device IDs."""
         while self.inputs_layout.count():
             item = self.inputs_layout.takeAt(0)
             widget = item.widget()
@@ -1114,7 +1492,9 @@ class GraphWidgetSettingsPanel(QFrame):
 
             remove_button = QPushButton("Delete")
             remove_button.setFixedWidth(78)
-            remove_button.clicked.connect(lambda _=False, d=device_id: self._remove_device(d))
+            remove_button.clicked.connect(
+                lambda _=False, d=device_id: self._remove_device(d)
+            )
             row_layout.addWidget(remove_button, 0)
 
             self.inputs_layout.addWidget(row)
@@ -1122,6 +1502,11 @@ class GraphWidgetSettingsPanel(QFrame):
         self.inputs_layout.addStretch(1)
 
     def _remove_device(self, device_id: str):
+        """Remove one device from the editable input list.
+
+        Args:
+            device_id: Device identifier to remove.
+        """
         try:
             self._device_ids.remove(device_id)
         except ValueError:
@@ -1129,16 +1514,35 @@ class GraphWidgetSettingsPanel(QFrame):
         self._refresh_inputs()
 
     def _emit_save(self):
-        self.saveRequested.emit(list(self._device_ids), max(1, int(self.duration_spin.value())))
+        """Emit the current device list and duration to the owning card."""
+        self.saveRequested.emit(
+            list(self._device_ids), max(1, int(self.duration_spin.value()))
+        )
 
 
 class GraphWidgetCard(QFrame):
+    """One drop-target graph card inside the graph workspace."""
+
     dropDeviceRequested = pyqtSignal(str, object)
     settingsSaved = pyqtSignal(object, list, int)
     moveUpRequested = pyqtSignal(object)
     moveDownRequested = pyqtSignal(object)
 
-    def __init__(self, state: GraphCardState, graph_widget: QWidget | None = None, name_resolver=None, parent=None):
+    def __init__(
+        self,
+        state: GraphCardState,
+        graph_widget: QWidget | None = None,
+        name_resolver=None,
+        parent=None,
+    ):
+        """Initialize the graph card.
+
+        Args:
+            state: Persistent state for the card.
+            graph_widget: Backing graph widget shown in the card body.
+            name_resolver: Callable that maps device IDs to display names.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.state = state
         self.graph_widget = None
@@ -1197,7 +1601,9 @@ class GraphWidgetCard(QFrame):
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
         self.summary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.summary_label.setStyleSheet("color: #aab2bd; border: none; background: transparent;")
+        self.summary_label.setStyleSheet(
+            "color: #aab2bd; border: none; background: transparent;"
+        )
 
         title_block.addWidget(self.title_label)
         title_block.addWidget(self.summary_label)
@@ -1240,7 +1646,9 @@ class GraphWidgetCard(QFrame):
         self.main_layout.addWidget(self.graph_host, 1)
 
         self.legend_row = QWidget()
-        self.legend_layout = FlowLayout(self.legend_row, margin=0, h_spacing=8, v_spacing=8)
+        self.legend_layout = FlowLayout(
+            self.legend_row, margin=0, h_spacing=8, v_spacing=8
+        )
         self.legend_row.setLayout(self.legend_layout)
         self.main_layout.addWidget(self.legend_row, 0)
 
@@ -1250,6 +1658,11 @@ class GraphWidgetCard(QFrame):
         self._set_settings_mode(False)
 
     def _set_graph_widget(self, graph_widget: QWidget | None):
+        """Replace the visible graph widget or show an empty placeholder.
+
+        Args:
+            graph_widget: Graph widget to inspect, attach, or update.
+        """
         while self.graph_layout.count():
             item = self.graph_layout.takeAt(0)
             child = item.widget()
@@ -1260,24 +1673,40 @@ class GraphWidgetCard(QFrame):
         if graph_widget is None:
             placeholder = QLabel("Graph area will appear here when channels are added.")
             placeholder.setAlignment(Qt.AlignCenter)
-            placeholder.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            placeholder.setStyleSheet(
+                "color: #8f98a3; border: none; background: transparent;"
+            )
             self.graph_layout.addWidget(placeholder)
         else:
             self.graph_layout.addWidget(graph_widget)
 
     def sync_from_state(self):
+        """Refresh header labels from the current card state."""
         self.title_label.setText(self.state.title or "Signal Graph")
         count = len(self.state.device_ids)
         input_word = "input" if count == 1 else "inputs"
-        self.summary_label.setText(f"{count} {input_word} · Duration: {int(self.state.duration_s)}s")
+        self.summary_label.setText(
+            f"{count} {input_word} · Duration: {int(self.state.duration_s)}s"
+        )
         self.title_label.updateGeometry()
         self.summary_label.updateGeometry()
 
     def set_reorder_enabled(self, can_move_up: bool, can_move_down: bool):
+        """Enable or disable the reorder buttons.
+
+        Args:
+            can_move_up: Whether the card can be moved earlier in the workspace.
+            can_move_down: Whether the card can be moved later in the workspace.
+        """
         self.move_up_button.setEnabled(bool(can_move_up))
         self.move_down_button.setEnabled(bool(can_move_down))
 
     def sync_legend(self, entries):
+        """Rebuild the legend row from graph-series metadata.
+
+        Args:
+            entries: Legend entries to display for the graph widget.
+        """
         while self.legend_layout.count():
             item = self.legend_layout.takeAt(0)
             child = item.widget()
@@ -1287,7 +1716,9 @@ class GraphWidgetCard(QFrame):
         if not entries:
             label = QLabel("Legend will appear here when channels are graphed.")
             label.setWordWrap(True)
-            label.setStyleSheet("color: #8f98a3; border: none; background: transparent;")
+            label.setStyleSheet(
+                "color: #8f98a3; border: none; background: transparent;"
+            )
             self.legend_layout.addWidget(label)
             return
 
@@ -1299,7 +1730,12 @@ class GraphWidgetCard(QFrame):
                 enabled = bool(entry.get("enabled", True))
             else:
                 if len(entry) >= 4:
-                    device_id, name, color, enabled = entry[0], entry[1], entry[2], bool(entry[3])
+                    device_id, name, color, enabled = (
+                        entry[0],
+                        entry[1],
+                        entry[2],
+                        bool(entry[3]),
+                    )
                 elif len(entry) >= 3:
                     device_id, name, color = entry[0], entry[1], entry[2]
                     enabled = True
@@ -1315,6 +1751,12 @@ class GraphWidgetCard(QFrame):
         self.legend_row.updateGeometry()
 
     def _on_legend_toggled(self, device_id: str, enabled: bool):
+        """Forward a legend toggle to the graph widget when supported.
+
+        Args:
+            device_id: Canonical device identifier.
+            enabled: Whether the series or mode should be enabled.
+        """
         if self.graph_widget is None:
             return
         toggle = getattr(self.graph_widget, "enableChannel", None)
@@ -1325,19 +1767,36 @@ class GraphWidgetCard(QFrame):
                 log.exception("Failed to toggle graph series %s", device_id)
 
     def _device_name(self, device_id: str) -> str:
+        """Resolve a device ID to a display name.
+
+        Args:
+            device_id: Canonical device identifier.
+
+        Returns:
+            Resolved display name, or the device ID fallback when name
+                resolution fails.
+        """
         try:
             return self._name_resolver(device_id)
         except Exception:
             return device_id
 
     def _set_settings_mode(self, enabled: bool):
+        """Toggle between graph display mode and inline settings mode.
+
+        Args:
+            enabled: Whether the series or mode should be enabled.
+        """
         self.settings_panel.setVisible(enabled)
         self.graph_host.setVisible(not enabled)
         self.legend_row.setVisible(not enabled)
-        self.settings_button.setToolTip("Hide graph widget settings" if enabled else "Show graph widget settings")
+        self.settings_button.setToolTip(
+            "Hide graph widget settings" if enabled else "Show graph widget settings"
+        )
         self.settings_button.setText("✕" if enabled else "⚙")
 
     def toggle_settings_panel(self):
+        """Show or hide the inline graph settings panel."""
         if self.settings_panel.isVisible():
             self.close_settings_panel()
             return
@@ -1345,31 +1804,58 @@ class GraphWidgetCard(QFrame):
         self._set_settings_mode(True)
 
     def close_settings_panel(self):
+        """Hide the inline graph settings panel."""
         self._set_settings_mode(False)
 
     def _on_settings_saved(self, device_ids: list[str], duration_s: int):
+        """Emit normalized settings changes to the workspace owner.
+
+        Args:
+            device_ids: Ordered device identifiers for the graph card.
+            duration_s: Graph duration window in seconds.
+        """
         self.close_settings_panel()
         self.settingsSaved.emit(self, list(device_ids), int(duration_s))
 
     def resizeEvent(self, event):
+        """Refresh text geometry after the card is resized.
+
+        Args:
+            event: Qt event object.
+        """
         super().resizeEvent(event)
         self.title_label.updateGeometry()
         self.summary_label.updateGeometry()
         self.legend_row.updateGeometry()
 
     def dragEnterEvent(self, event):
+        """Accept device drags that carry the controller device MIME type.
+
+        Args:
+            event: Qt event object.
+        """
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
+        """Continue accepting supported device drags over the card.
+
+        Args:
+            event: Qt event object.
+        """
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event):
+        """Emit a dropped device request for this card.
+
+        Args:
+            event: Qt event object.
+        """
         if not event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.ignore()
             return
@@ -1383,9 +1869,20 @@ class GraphWidgetCard(QFrame):
 
 
 class GraphWorkspace(QWidget):
+    """Workspace that owns one or more graph cards for active signal devices."""
+
     deviceDropped = pyqtSignal(str, object)
 
     def __init__(self, graph_widget: QWidget, graph_provider=None, parent=None):
+        """Initialize the graph workspace.
+
+        Args:
+            graph_widget: Primary graph widget used for the first workspace
+                card.
+            graph_provider: Graph data provider attached to newly created graph
+                widgets.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.setAcceptDrops(True)
 
@@ -1415,7 +1912,9 @@ class GraphWorkspace(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll_area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
 
         self.scroll_content = QWidget()
         self.scroll_content.setStyleSheet("background: transparent;")
@@ -1434,14 +1933,25 @@ class GraphWorkspace(QWidget):
         self._refresh_empty_state()
 
     def _refresh_empty_state(self):
+        """Toggle the empty-placeholder view based on whether cards exist."""
         has_cards = bool(self._cards)
         self.placeholder.setVisible(not has_cards)
         self.scroll_area.setVisible(has_cards)
 
     def _insert_card(self, card: GraphWidgetCard):
+        """Insert a graph card before the trailing stretch item.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         self.scroll_layout.insertWidget(max(0, self.scroll_layout.count() - 1), card)
 
     def _default_duration(self) -> int:
+        """Return the default graph duration for newly created cards.
+
+        Returns:
+            Default graph duration in seconds for newly created cards.
+        """
         if self._cards:
             first_graph = getattr(self._cards[0], "graph_widget", None)
             try:
@@ -1455,12 +1965,30 @@ class GraphWorkspace(QWidget):
             return 60
 
     def _title_for_ids(self, device_ids: list[str]) -> str:
+        """Build the card title text from graphed device IDs.
+
+        Args:
+            device_ids: Ordered device identifiers for the graph card.
+
+        Returns:
+            Comma-separated title text for the graphed devices.
+        """
         if not device_ids:
             return "Signal Graph"
-        labels = [self._device_names.get(device_id, device_id) for device_id in device_ids]
+        labels = [
+            self._device_names.get(device_id, device_id) for device_id in device_ids
+        ]
         return ", ".join(labels)
 
     def _legend_entries_for(self, graph_widget: QWidget | None):
+        """Read legend metadata from a graph widget.
+
+        Args:
+            graph_widget: Graph widget to inspect, attach, or update.
+
+        Returns:
+            Legend entries derived from the graph widget.
+        """
         if graph_widget is None:
             return []
 
@@ -1491,19 +2019,31 @@ class GraphWorkspace(QWidget):
         return entries
 
     def _wire_card_graph_signals(self, card: GraphWidgetCard):
+        """Connect graph-widget signals that keep card state synchronized.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         graph_widget = card.graph_widget
         if graph_widget is None:
             return
 
         duration_changed = getattr(graph_widget, "durationChanged", None)
         if duration_changed is not None:
-            duration_changed.connect(lambda value, c=card: self._on_card_duration_changed(c, value))
+            duration_changed.connect(
+                lambda value, c=card: self._on_card_duration_changed(c, value)
+            )
 
         series_changed = getattr(graph_widget, "seriesChanged", None)
         if series_changed is not None:
             series_changed.connect(lambda c=card: self._sync_card(c))
 
     def _new_graph_widget(self) -> QWidget:
+        """Return the next graph widget for a new card.
+
+        Returns:
+            Graph widget to use for a newly created card.
+        """
         if not self._primary_graph_claimed:
             self._primary_graph_claimed = True
             return self._primary_graph_widget
@@ -1514,6 +2054,11 @@ class GraphWorkspace(QWidget):
         return widget
 
     def _create_card(self) -> GraphWidgetCard:
+        """Create, wire, and insert a new empty graph card.
+
+        Returns:
+            Newly created graph workspace card.
+        """
         graph_widget = self._new_graph_widget()
         state = GraphCardState(
             title="Signal Graph",
@@ -1528,7 +2073,9 @@ class GraphWorkspace(QWidget):
             except Exception:
                 log.exception("Failed to apply initial duration to graph widget")
 
-        card = GraphWidgetCard(state, graph_widget=graph_widget, name_resolver=self._device_name)
+        card = GraphWidgetCard(
+            state, graph_widget=graph_widget, name_resolver=self._device_name
+        )
         card.dropDeviceRequested.connect(self.deviceDropped.emit)
         card.settingsSaved.connect(self._apply_card_settings)
         card.moveUpRequested.connect(self.move_card_up)
@@ -1543,59 +2090,106 @@ class GraphWorkspace(QWidget):
         return card
 
     def _sync_card(self, card: GraphWidgetCard):
+        """Refresh one card from its graph widget and state.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         if card not in self._cards:
             return
 
         card.state.title = self._title_for_ids(list(card.state.device_ids))
         try:
-            card.state.duration_s = int(getattr(card.graph_widget, "duration", card.state.duration_s))
+            card.state.duration_s = int(
+                getattr(card.graph_widget, "duration", card.state.duration_s)
+            )
         except Exception:
             pass
         card.sync_from_state()
         card.sync_legend(self._legend_entries_for(card.graph_widget))
-        if getattr(card, "settings_panel", None) is not None and card.settings_panel.isVisible():
+        if (
+            getattr(card, "settings_panel", None) is not None
+            and card.settings_panel.isVisible()
+        ):
             card.settings_panel.set_state(card.state)
 
     def _on_card_duration_changed(self, card: GraphWidgetCard, value: int):
+        """Update cached duration state after a graph widget duration change.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+            value: Value to apply.
+        """
         if card not in self._cards:
             return
         card.state.duration_s = int(value)
         card.sync_from_state()
 
     def _device_name(self, device_id: str) -> str:
+        """Return the cached display name for a device ID.
+
+        Args:
+            device_id: Canonical device identifier.
+
+        Returns:
+            Resolved display name, or the device ID fallback when name
+                resolution fails.
+        """
         return self._device_names.get(device_id, device_id)
 
     def _update_reorder_controls(self):
+        """Enable reorder buttons based on the current card order."""
         total = len(self._cards)
         for index, card in enumerate(self._cards):
             card.set_reorder_enabled(index > 0, index < total - 1)
 
     def move_card_up(self, card: GraphWidgetCard):
+        """Move a card one slot earlier in the workspace.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         if card not in self._cards:
             return
         index = self._cards.index(card)
         if index <= 0:
             self._update_reorder_controls()
             return
-        self._cards[index - 1], self._cards[index] = self._cards[index], self._cards[index - 1]
+        self._cards[index - 1], self._cards[index] = (
+            self._cards[index],
+            self._cards[index - 1],
+        )
         insert_at = max(0, self.scroll_layout.count() - 1)
         self.scroll_layout.removeWidget(card)
         self.scroll_layout.insertWidget(index - 1, card)
         self._update_reorder_controls()
 
     def move_card_down(self, card: GraphWidgetCard):
+        """Move a card one slot later in the workspace.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         if card not in self._cards:
             return
         index = self._cards.index(card)
         if index >= len(self._cards) - 1:
             self._update_reorder_controls()
             return
-        self._cards[index], self._cards[index + 1] = self._cards[index + 1], self._cards[index]
+        self._cards[index], self._cards[index + 1] = (
+            self._cards[index + 1],
+            self._cards[index],
+        )
         self.scroll_layout.removeWidget(card)
         self.scroll_layout.insertWidget(index + 1, card)
         self._update_reorder_controls()
 
     def _remove_card(self, card: GraphWidgetCard):
+        """Remove a card and release any primary graph-widget ownership.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+        """
         if card not in self._cards:
             return
 
@@ -1608,7 +2202,9 @@ class GraphWorkspace(QWidget):
                 try:
                     clear_devices()
                 except Exception:
-                    log.exception("Failed to clear primary graph widget during card removal")
+                    log.exception(
+                        "Failed to clear primary graph widget during card removal"
+                    )
             try:
                 graph_widget.setParent(None)
             except Exception:
@@ -1620,7 +2216,16 @@ class GraphWorkspace(QWidget):
         self._refresh_empty_state()
         self._update_reorder_controls()
 
-    def _apply_card_settings(self, card: GraphWidgetCard, device_ids: list[str], duration_s: int):
+    def _apply_card_settings(
+        self, card: GraphWidgetCard, device_ids: list[str], duration_s: int
+    ):
+        """Apply saved graph-card settings to the graph widget and card state.
+
+        Args:
+            card: Graph workspace card to inspect or update.
+            device_ids: Ordered device identifiers for the graph card.
+            duration_s: Graph duration window in seconds.
+        """
         if card not in self._cards:
             return
 
@@ -1638,7 +2243,9 @@ class GraphWorkspace(QWidget):
                     log.exception("Failed to update graph duration from settings")
 
         current_ids = list(card.state.device_ids)
-        removed_ids = [device_id for device_id in current_ids if device_id not in device_ids]
+        removed_ids = [
+            device_id for device_id in current_ids if device_id not in device_ids
+        ]
 
         if graph_widget is not None and removed_ids:
             remove_device = getattr(graph_widget, "remove_device", None)
@@ -1647,7 +2254,9 @@ class GraphWorkspace(QWidget):
                     try:
                         remove_device(device_id)
                     except Exception:
-                        log.exception("Failed to remove device %s from graph widget", device_id)
+                        log.exception(
+                            "Failed to remove device %s from graph widget", device_id
+                        )
 
         card.state.device_ids = list(device_ids)
         card.state.duration_s = duration_s
@@ -1661,6 +2270,17 @@ class GraphWorkspace(QWidget):
         self._update_reorder_controls()
 
     def add_graph_device(self, device, target_card: GraphWidgetCard | None = None):
+        """Add a device to a graph card, creating a card when needed.
+
+        Args:
+            device: GUI device object to add to the graph workspace.
+            target_card: Existing graph card to update, or ``None`` to create a
+                new card.
+
+        Returns:
+            ``True`` when the device was added to a graph card, otherwise
+                ``False``.
+        """
         device_id = getattr(device, "device_id", None)
         if not device_id:
             return False
@@ -1697,18 +2317,33 @@ class GraphWorkspace(QWidget):
         return True
 
     def dragEnterEvent(self, event):
+        """Accept device drags over the empty workspace.
+
+        Args:
+            event: Qt event object.
+        """
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
+        """Continue accepting supported drags over the workspace.
+
+        Args:
+            event: Qt event object.
+        """
         if event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event):
+        """Emit a drop request that creates a new graph card when needed.
+
+        Args:
+            event: Qt event object.
+        """
         if not event.mimeData().hasFormat(DEVICE_MIME_TYPE):
             event.ignore()
             return
@@ -1722,22 +2357,16 @@ class GraphWorkspace(QWidget):
 
 
 class EngineForceWidget(QWidget):
-    """
-    Four-sensor engine thrust visualizer.
-
-    - Total thrust is shown in blue at the top-left.
-      Total is shown only when ALL four sensors are present; otherwise it shows "-- N".
-    - Four sensor readings are shown around the circle: Up / Right / Down / Left.
-      Missing sensor values are shown as:
-          --
-          N
-    - The dot shows whether thrust is centered:
-        dx = (Right - Left) / Total
-        dy = (Up - Down) / Total
-      If any sensor is missing (or Total is ~0), the dot stays centered and is drawn gray.
-    """
+    """Engine-force visualizer driven by four directional sensor values."""
 
     def __init__(self, parent=None, dot_gain=0.92):
+        """Initialize the engine-force widget.
+
+        Args:
+            parent: Optional parent widget.
+            dot_gain: Multiplier used to scale the imbalance-dot offset from the
+                center.
+        """
         super().__init__(parent)
 
         self.up_n = None
@@ -1751,6 +2380,17 @@ class EngineForceWidget(QWidget):
         self.setMinimumHeight(200)
 
     def set_sensors(self, up=None, right=None, down=None, left=None):
+        """Update the four directional sensor values.
+
+        Args:
+            up: Upward sensor value in newtons, or ``None`` when unavailable.
+            right: Rightward sensor value in newtons, or ``None`` when
+                unavailable.
+            down: Downward sensor value in newtons, or ``None`` when
+                unavailable.
+            left: Leftward sensor value in newtons, or ``None`` when
+                unavailable.
+        """
         self.up_n = None if up is None else float(up)
         self.right_n = None if right is None else float(right)
         self.down_n = None if down is None else float(down)
@@ -1759,13 +2399,33 @@ class EngineForceWidget(QWidget):
 
     @staticmethod
     def _clamp(v, lo, hi):
+        """Clamp a numeric value into an inclusive range.
+
+        Args:
+            v: Value used by this method.
+            lo: Value used by this method.
+            hi: Value used by this method.
+
+        Returns:
+            The input value clamped to the inclusive ``[lo, hi]`` range.
+        """
         return lo if v < lo else hi if v > hi else v
 
     def _sum_available(self):
+        """Return the sum of non-missing directional sensor values.
+
+        Returns:
+            Sum of the non-missing directional sensor values.
+        """
         vals = [self.up_n, self.right_n, self.down_n, self.left_n]
         return sum(v for v in vals if v is not None)
 
     def paintEvent(self, _event):
+        """Render the engine-force display for the current sensor values.
+
+        Args:
+            _event: Qt paint event.
+        """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
 
@@ -1796,7 +2456,7 @@ class EngineForceWidget(QWidget):
             and self.left_n is not None
         )
 
-        # --- Total (pinned top-left) ---
+        # Total (pinned top-left)
         total_font = QFont("Arial", total_fs, QFont.Bold)
         p.setFont(total_font)
         p.setPen(QColor("#66aaff"))
@@ -1808,14 +2468,14 @@ class EngineForceWidget(QWidget):
             total = self._sum_available()
             total_text = f"{total:.1f} N"
         else:
-            total = 0.0  # keep a numeric fallback for dot logic
+            # keep a numeric fallback for dot logic
+            total = 0.0
             total_text = "-- N"
 
         p.drawText(total_rect, Qt.AlignLeft | Qt.AlignVCenter, total_text)
 
         top_area = int(pad + total_rect_h + pad * 0.4)
-
-        # --- Compute circle radius ---
+        # Compute circle radius
         max_radius_x = (w - 2.0 * (box_w + gap + pad)) / 2.0
         max_radius_y = (h - top_area - 2.0 * (box_h + gap) - pad) / 2.0
         radius = min(max_radius_x, max_radius_y)
@@ -1830,7 +2490,7 @@ class EngineForceWidget(QWidget):
         cx = w * 0.5
         cy = top_area + y_offset + (box_h + gap) + radius
 
-        # --- Draw circle ---
+        # Draw circle
         p.setPen(QPen(QColor("#d0d0d0"), circle_pen_w))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(
@@ -1843,7 +2503,7 @@ class EngineForceWidget(QWidget):
             int(cx - center_r), int(cy - center_r), int(center_r * 2), int(center_r * 2)
         )
 
-        # --- Draw sensor boxes (two-line: value / N) ---
+        # Draw sensor boxes (two-line: value / N)
         val_font = QFont("Arial", val_fs, QFont.Bold)
         unit_font = QFont("Arial", unit_fs, QFont.Bold)
         p.setPen(QColor("#e0e0e0"))
@@ -1901,8 +2561,7 @@ class EngineForceWidget(QWidget):
         draw_value_box(right_x, right_y, self.right_n)
         draw_value_box(down_x, down_y, self.down_n)
         draw_value_box(left_x, left_y, self.left_n)
-
-        # --- Dot (imbalance) ---
+        # Dot (imbalance)
         eps = 1e-6
         if all_present and total > eps:
             dx = (self.right_n - self.left_n) / total
@@ -1934,17 +2593,18 @@ class EngineForceWidget(QWidget):
 # Fuel Capacity widgets (Tanks)
 # =========================================================
 class TankGaugeWidget(QWidget):
-    """
-    Single tank gauge:
-    - 4 lines of text on top (pressure/temp/level/valve)
-    - tank rectangle with fill
-    - label at bottom (IPA/LOX)
-    - emits clicked(name) when pressed
-    """
+    """Single tank gauge with numeric telemetry, fill level, and tank label."""
 
     clicked = pyqtSignal(str)
 
     def __init__(self, name: str, fill_color: str, parent=None):
+        """Initialize the tank gauge.
+
+        Args:
+            name: Display name or tank name.
+            fill_color: Tank fill color string.
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.name = name
         self.fill_color = QColor(fill_color)
@@ -1961,6 +2621,16 @@ class TankGaugeWidget(QWidget):
     def set_data(
         self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
     ):
+        """Update the gauge telemetry values.
+
+        Args:
+            pressure_psi: Tank pressure in psi, or ``None`` when unavailable.
+            temp_c: Tank temperature in degrees Celsius, or ``None`` when
+                unavailable.
+            level_pct: Tank fill level percentage, or ``None`` when unavailable.
+            valve_open_pct: Flow or valve-open percentage, or ``None`` when
+                unavailable.
+        """
         self.pressure_psi = None if pressure_psi is None else float(pressure_psi)
         self.temp_c = None if temp_c is None else float(temp_c)
         self.level_pct = None if level_pct is None else float(level_pct)
@@ -1969,20 +2639,49 @@ class TankGaugeWidget(QWidget):
 
     @staticmethod
     def _clamp(v, lo, hi):
+        """Clamp a numeric value into an inclusive range.
+
+        Args:
+            v: Value used by this method.
+            lo: Value used by this method.
+            hi: Value used by this method.
+
+        Returns:
+            The input value clamped to the inclusive ``[lo, hi]`` range.
+        """
         return lo if v < lo else hi if v > hi else v
 
     @staticmethod
     def _fmt_num(v, digits0=True):
+        """Format a numeric telemetry value for display.
+
+        Args:
+            v: Value used by this method.
+            digits0: Value used by this method.
+
+        Returns:
+            Formatted display text for the telemetry value.
+        """
         if v is None:
             return "--"
         return f"{v:.0f}" if digits0 else f"{v:.1f}"
 
     def mousePressEvent(self, e):
+        """Emit the tank name when the widget is left-clicked.
+
+        Args:
+            e: Qt mouse event.
+        """
         if e.button() == Qt.LeftButton:
             self.clicked.emit(self.name)
         super().mousePressEvent(e)
 
     def paintEvent(self, _event):
+        """Render the tank gauge for the current telemetry values.
+
+        Args:
+            _event: Qt paint event.
+        """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
 
@@ -2000,13 +2699,12 @@ class TankGaugeWidget(QWidget):
 
         p.fillRect(0, 0, w, h, QColor(0, 0, 0, 0))
 
-        # ---- Top 4 lines ----
+        # Top 4 lines
         p.setFont(txt_font)
         p.setPen(QColor("#e6e6e6"))
 
         # Missing data displays as: "-- <unit>"
         # Standard unit formatting: psi, °C, %
-
         lines = [
             f"Pres: {self._fmt_num(self.pressure_psi)} psi",
             f"Temp: {self._fmt_num(self.temp_c)} °C",
@@ -2024,11 +2722,10 @@ class TankGaugeWidget(QWidget):
             p.drawText(r, Qt.AlignHCenter | Qt.AlignVCenter, s)
             y += line_h + (line_gap if i < 3 else 0)
 
-        # ---- Label area ----
+        # Label area
         p.setFont(label_font)
         label_h = p.fontMetrics().height()
-
-        # ---- Tank geometry ----
+        # Tank geometry
         tank_top = pad + text_block_h + pad * 0.35
         tank_bottom = h - pad - label_h - pad * 0.25
         tank_h = max(80.0, tank_bottom - tank_top)
@@ -2039,13 +2736,13 @@ class TankGaugeWidget(QWidget):
         tank_x = (w - tank_w) * 0.5
         tank_y = tank_top
 
-        # ---- Draw tank body ----
+        # Draw tank bod
         border_w = int(self._clamp(base * 0.012, 2.0, 4.0))
         p.setPen(QPen(QColor("#cfcfcf"), border_w))
         p.setBrush(QColor("#f2f2f2"))
         p.drawRect(int(tank_x), int(tank_y), int(tank_w), int(tank_h))
 
-        # ---- Fill ----
+        # Fill
         inner_pad = border_w + 1
         inner = QRect(
             int(tank_x + inner_pad),
@@ -2072,7 +2769,7 @@ class TankGaugeWidget(QWidget):
         p.setBrush(fill_color)
         p.drawRect(fill_rect)
 
-        # ---- Bottom label ----
+        # Bottom label
         p.setFont(label_font)
         p.setPen(QColor("#e6e6e6"))
         label_rect = QRect(
@@ -2084,14 +2781,16 @@ class TankGaugeWidget(QWidget):
 
 
 class TelemetryWidget(QWidget):
-    """
-    Two-tank telemetry panel (IPA + LOX) with an info label below.
-    Clicking a tank updates info text and emits tank_clicked(name).
-    """
+    """Two-tank telemetry panel for IPA and LOX tank gauges."""
 
     tank_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):
+        """Initialize the two-tank telemetry widget.
+
+        Args:
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
 
         self.ipa = TankGaugeWidget("IPA", "#ff1e1e")
@@ -2117,31 +2816,67 @@ class TelemetryWidget(QWidget):
 
         self.ipa.clicked.connect(self._on_tank_clicked)
         self.lox.clicked.connect(self._on_tank_clicked)
-
         # Default state: no data (shows "-- <unit>" and level fill defaults to 0%)
         self.set_ipa()
         self.set_lox()
 
     def _on_tank_clicked(self, name: str):
+        """Update the info label and forward the clicked tank name.
+
+        Args:
+            name: Display name or tank name.
+        """
         self.info_label.setText(f"{name} tank selected.")
         self.tank_clicked.emit(name)
 
     def set_ipa(
         self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
     ):
+        """Update IPA tank telemetry values.
+
+        Args:
+            pressure_psi: Tank pressure in psi, or ``None`` when unavailable.
+            temp_c: Tank temperature in degrees Celsius, or ``None`` when
+                unavailable.
+            level_pct: Tank fill level percentage, or ``None`` when unavailable.
+            valve_open_pct: Flow or valve-open percentage, or ``None`` when
+                unavailable.
+        """
         self.ipa.set_data(pressure_psi, temp_c, level_pct, valve_open_pct)
 
     def set_lox(
         self, pressure_psi=None, temp_c=None, level_pct=None, valve_open_pct=None
     ):
+        """Update LOX tank telemetry values.
+
+        Args:
+            pressure_psi: Tank pressure in psi, or ``None`` when unavailable.
+            temp_c: Tank temperature in degrees Celsius, or ``None`` when
+                unavailable.
+            level_pct: Tank fill level percentage, or ``None`` when unavailable.
+            valve_open_pct: Flow or valve-open percentage, or ``None`` when
+                unavailable.
+        """
         self.lox.set_data(pressure_psi, temp_c, level_pct, valve_open_pct)
 
     def set_info(self, text: str):
+        """Set the free-form info label text.
+
+        Args:
+            text: Text to display.
+        """
         self.info_label.setText(text)
 
 
-
 class ControllerWindow(QMainWindow):
+    """Main controller window for the operator-side left screen.
+
+    The window composes the device library, graph workspace, timeline,
+    console, script controls, telemetry widgets, and mode-specific controls for
+    live and playback sessions. It also mirrors backend state snapshots and
+    playback seek state into the visible widgets.
+    """
+
     STATUS_STYLE = {
         "idle": ("Idle", "#616161", "#ffffff"),
         "normal": ("Normal", "#2e7d32", "#ffffff"),
@@ -2180,6 +2915,16 @@ class ControllerWindow(QMainWindow):
         test_name=None,
         manager=None,
     ):
+        """Initialize the controller window.
+
+        Args:
+            loghandler: Logging handler passed into the console view.
+            autopoller: Autopoller object used in live mode.
+            playback_mode: Whether the window is being built in playback mode.
+            test_name: Selected run or test name, when available.
+            manager: Owning window or session manager used for close and
+                playback callbacks.
+        """
         super().__init__()
         self.manager = manager
 
@@ -2196,6 +2941,13 @@ class ControllerWindow(QMainWindow):
     # ----- Initialization phases -----
 
     def _init_mode_state(self, autopoller, playback_mode, test_name):
+        """Initialize runtime fields shared across build phases.
+
+        Args:
+            autopoller: Autopoller object used in live mode.
+            playback_mode: Whether the window is being built in playback mode.
+            test_name: Selected run or test name, when available.
+        """
         logging.getLogger("qdarkstyle").setLevel(logging.ERROR)
         self.log = logging.getLogger("controller_window")
 
@@ -2217,34 +2969,49 @@ class ControllerWindow(QMainWindow):
         self._playback_state_manager = None  # set by window_host after construction
         self._playback_time_fallback = 0.0
         self.playback_duration_seconds = None
-        self._playback_running = False       # legacy fallback; manager is authority when set
-        self._playback_speed = 1.0           # legacy fallback
+        self._playback_running = False  # legacy fallback; manager is authority when set
+        self._playback_speed = 1.0  # legacy fallback
         self._playback_speed_steps = (0.25, 0.5, 1.0, 2.0, 4.0)
-        self._playback_anchor = 0.0          # legacy fallback
-        self._playback_mono_start = 0.0      # legacy fallback
+        self._playback_anchor = 0.0  # legacy fallback
+        self._playback_mono_start = 0.0  # legacy fallback
 
     @property
     def playback_time(self) -> float:
-        psm = getattr(self, '_playback_state_manager', None)
+        """Return the current playback position in seconds.
+
+        Returns:
+            Current playback position in seconds.
+        """
+        psm = getattr(self, "_playback_state_manager", None)
         if psm is not None:
             return psm.position_seconds
-        return getattr(self, '_playback_time_fallback', 0.0)
+        return getattr(self, "_playback_time_fallback", 0.0)
 
     @playback_time.setter
     def playback_time(self, value: float) -> None:
+        """Set the current playback position in seconds.
+
+        Args:
+            value: Value to apply.
+
+        Returns:
+            Current playback position in seconds.
+        """
         value = max(0.0, float(value))
-        psm = getattr(self, '_playback_state_manager', None)
+        psm = getattr(self, "_playback_state_manager", None)
         if psm is not None:
             psm.set_position(value)
         self._playback_time_fallback = value
 
     def _init_shared_runtime(self):
+        """Initialize shared Qt window styling and shell state."""
         self.setWindowTitle("minTS Controller - Left Screen")
         QApplication.setStyle("Fusion")
         self.setStyleSheet(qdarkstyle.load_stylesheet(qt_api="pyqt5"))
         self.setFont(QFont("Arial", 10))
 
     def _init_mode_specific_runtime(self):
+        """Initialize live-only or playback-only runtime helpers."""
         if self.playback_mode:
             self.graph_provider = PlaybackGraphDataProvider()
             self.live_telemetry_poller = None
@@ -2253,6 +3020,11 @@ class ControllerWindow(QMainWindow):
             self.live_telemetry_poller = LiveTelemetryPoller(self.autopoller)
 
     def _build_shared_widgets(self, loghandler):
+        """Construct widgets shared by live and playback modes.
+
+        Args:
+            loghandler: Logging handler passed into the console view.
+        """
         self.timeline = TimelineView(
             playback_mode=self.playback_mode,
             show_event_columns=False,
@@ -2276,12 +3048,14 @@ class ControllerWindow(QMainWindow):
         self.telemetry_widget = TelemetryWidget()
 
     def _build_mode_specific_widgets(self):
+        """Construct mode-specific widgets for live or playback."""
         if self.playback_mode:
             self._build_playback_widgets()
         else:
             self._build_live_widgets()
 
     def _build_live_widgets(self):
+        """Construct live-only widgets and start live polling."""
         if self.live_telemetry_poller is not None:
             try:
                 self.live_telemetry_poller.start()
@@ -2296,9 +3070,11 @@ class ControllerWindow(QMainWindow):
         )
 
     def _build_playback_widgets(self):
+        """Construct playback-only widgets."""
         pass
 
     def _build_main_layout(self):
+        """Assemble the main controller layout and split panes."""
         central = QWidget()
         self.setCentralWidget(central)
         central.setStyleSheet("background:#121212;")
@@ -2346,6 +3122,7 @@ class ControllerWindow(QMainWindow):
         self.mainlayout.addWidget(body, 1)
 
     def _connect_shared_signals(self):
+        """Connect mode-independent widget signals and timers."""
         self.timeline.stage_changed.connect(self.set_stages)
         self.workspace.deviceDropped.connect(self._on_device_requested)
         self.device_library.deviceActivated.connect(self._on_device_requested)
@@ -2360,10 +3137,12 @@ class ControllerWindow(QMainWindow):
         self._playback_advance_timer.timeout.connect(self._on_playback_advance)
 
     def _connect_mode_specific_signals(self):
+        """Connect playback-only shortcuts and seek handlers when needed."""
         if self.playback_mode:
             self.timeline.seek_requested.connect(self._on_timeline_seek)
 
             from PyQt5.QtGui import QKeySequence
+
             sc = QShortcut(QKeySequence("P"), self)
             sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(self._on_playback_shortcut)
@@ -2380,6 +3159,7 @@ class ControllerWindow(QMainWindow):
             self._playback_faster_shortcut = faster
 
     def _set_initial_state(self):
+        """Apply initial header badge and stage values."""
         self.set_status("idle" if not self.playback_mode else "hold")
         self.set_health("default" if not self.playback_mode else "ok")
         self.set_mode("playback" if self.playback_mode else "auto")
@@ -2387,6 +3167,11 @@ class ControllerWindow(QMainWindow):
         self.set_stages("Prev", "Current", "Next")
 
     def closeEvent(self, event):
+        """Guard live finalization and stop background helpers on close.
+
+        Args:
+            event: Qt event object.
+        """
         if not self.playback_mode and not getattr(self, "_finalization_bypass", False):
             snapshot = getattr(self, "_last_backend_snapshot", None)
             run = snapshot.get("run", {}) if isinstance(snapshot, dict) else {}
@@ -2434,6 +3219,11 @@ class ControllerWindow(QMainWindow):
     # Header Bar
     # =========================================================
     def _create_header_bar(self) -> QWidget:
+        """Build the top header bar with badges and clocks.
+
+        Returns:
+            Header bar widget.
+        """
         bar = QFrame()
         bar.setObjectName("headerBar")
         bar.setStyleSheet(
@@ -2492,7 +3282,9 @@ class ControllerWindow(QMainWindow):
         self.mission_time_label.setAlignment(Qt.AlignCenter)
         center_clock_lay.addWidget(self.mission_time_label, 0, Qt.AlignCenter)
 
-        self.aux_time_label = QLabel("Total Duration: --" if self.playback_mode else "Not Recording")
+        self.aux_time_label = QLabel(
+            "Total Duration: --" if self.playback_mode else "Not Recording"
+        )
         self.aux_time_label.setFont(QFont("Arial", 11, QFont.Bold))
         self.aux_time_label.setAlignment(Qt.AlignCenter)
         center_clock_lay.addWidget(self.aux_time_label, 0, Qt.AlignCenter)
@@ -2582,6 +3374,14 @@ class ControllerWindow(QMainWindow):
         return bar
 
     def _make_stage_box(self, title: str) -> QWidget:
+        """Build one stage summary box for the header bar.
+
+        Args:
+            title: Stage title shown in the header box.
+
+        Returns:
+            Configured stage-box widget.
+        """
         box = QFrame()
         box.setFixedSize(130, 48)
         box.setStyleSheet(
@@ -2610,10 +3410,12 @@ class ControllerWindow(QMainWindow):
         box._value_label = val
         return box
 
-    # =========================================================
-    # Timeline Bar
-    # =========================================================
     def _create_timeline_bar(self) -> QWidget:
+        """Build the timeline bar container.
+
+        Returns:
+            Timeline-bar widget.
+        """
         frame = QFrame()
         frame.setObjectName("timelineBar")
         frame.setStyleSheet(
@@ -2636,11 +3438,12 @@ class ControllerWindow(QMainWindow):
         lay.addWidget(self.timeline)
         return frame
 
-    # =========================================================
-    # Left area:
-    # Devices | Main View (Graph + AutoPollerRow inside)
-    # =========================================================
     def _create_left_main_area(self) -> QWidget:
+        """Build the left split area with the device library and workspace.
+
+        Returns:
+            Left-side split widget.
+        """
         split = QSplitter(Qt.Horizontal)
         split.setHandleWidth(3)
         split.setChildrenCollapsible(False)
@@ -2667,40 +3470,39 @@ class ControllerWindow(QMainWindow):
         split.setSizes([340, 1000])
         return split
 
-    # =========================================================
-    # Right column (mode-dispatched):
-    #   Live:     Logs | Fuel + Script + Engine | button column
-    #   Playback: Logs | Fuel + Engine (no Script, no buttons)
-    # =========================================================
     def _create_right_controller_area(self) -> QWidget:
+        """Dispatch construction of the right-side area by mode.
+
+        Returns:
+            Right-side controller widget for the current mode.
+        """
         if self.playback_mode:
             return self._create_playback_right_controller_area()
         return self._create_live_right_controller_area()
 
     def _create_live_right_content_stack(self) -> QSplitter:
+        """Build the live-mode logs, telemetry, script, and engine stack.
+
+        Returns:
+            Live-mode content splitter.
+        """
         main_stack = QSplitter(Qt.Vertical)
         main_stack.setHandleWidth(2)
         main_stack.setChildrenCollapsible(False)
 
-        # Top: Logs
         main_stack.addWidget(self._panel("Logs", self.console))
 
-        # Bottom: Fuel Capacity + Script stack
         bottom_row = QSplitter(Qt.Horizontal)
         bottom_row.setHandleWidth(2)
         bottom_row.setChildrenCollapsible(False)
-
-        # Fuel Capacity panel
         bottom_row.addWidget(self._panel("Fuel Capacity", self.telemetry_widget))
 
-        # Script area: top is Script Control, bottom is Engine Force
         script_stack = QSplitter(Qt.Vertical)
         script_stack.setHandleWidth(2)
         script_stack.setChildrenCollapsible(False)
 
         script_stack.addWidget(self._panel("Script Control", self.scripter))
         script_stack.addWidget(self._panel("Engine Force", self.engine_force_widget))
-        # Give the engine widget enough height by default
         script_stack.setSizes([240, 340])
 
         bottom_row.addWidget(script_stack)
@@ -2714,6 +3516,11 @@ class ControllerWindow(QMainWindow):
         return main_stack
 
     def _create_playback_right_content_stack(self) -> QSplitter:
+        """Build the playback-mode logs, telemetry, and engine stack.
+
+        Returns:
+            Playback-mode content splitter.
+        """
         main_stack = QSplitter(Qt.Vertical)
         main_stack.setHandleWidth(2)
         main_stack.setChildrenCollapsible(False)
@@ -2736,6 +3543,11 @@ class ControllerWindow(QMainWindow):
         return main_stack
 
     def _create_button_column(self) -> QFrame:
+        """Build the live-mode operator button column.
+
+        Returns:
+            Live-mode operator-button column widget.
+        """
         btn_col = QFrame()
         btn_col.setFixedWidth(170)
         btn_col.setStyleSheet(
@@ -2806,7 +3618,9 @@ class ControllerWindow(QMainWindow):
             QPushButton:disabled{ background:#555; color:#bbb; }
             """
         )
-        self.btn_stop_recording.setToolTip("Stop the active recording and finish the run")
+        self.btn_stop_recording.setToolTip(
+            "Stop the active recording and finish the run"
+        )
         self.btn_stop_recording.clicked.connect(self._on_stop_recording_clicked)
         self.btn_stop_recording.setEnabled(False)
         blay.addWidget(self.btn_stop_recording)
@@ -2815,6 +3629,11 @@ class ControllerWindow(QMainWindow):
         return btn_col
 
     def _create_live_right_controller_area(self) -> QWidget:
+        """Build the full live-mode right-side area.
+
+        Returns:
+            Live-mode right-side widget.
+        """
         outer = QWidget()
         outer_layout = QHBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -2828,6 +3647,11 @@ class ControllerWindow(QMainWindow):
         return outer
 
     def _create_playback_export_column(self) -> QFrame:
+        """Build the playback export button column.
+
+        Returns:
+            Playback export-column widget.
+        """
         col = QFrame()
         col.setFixedWidth(170)
         col.setStyleSheet(
@@ -2846,7 +3670,9 @@ class ControllerWindow(QMainWindow):
 
         btn_jsonl = QPushButton("Export JSONL")
         btn_jsonl.setMinimumHeight(56)
-        btn_jsonl.setToolTip("Export all playback events to JSONL (one JSON object per line)")
+        btn_jsonl.setToolTip(
+            "Export all playback events to JSONL (one JSON object per line)"
+        )
         btn_jsonl.setStyleSheet(self._btn_export_style())
         btn_jsonl.clicked.connect(lambda: self._on_playback_export("jsonl"))
         lay.addWidget(btn_jsonl)
@@ -2863,6 +3689,11 @@ class ControllerWindow(QMainWindow):
 
     @staticmethod
     def _btn_export_style() -> str:
+        """Return the shared stylesheet for playback export buttons.
+
+        Returns:
+            Stylesheet string for playback export buttons.
+        """
         return """
             QPushButton{
                 background:#1565C0;
@@ -2878,6 +3709,11 @@ class ControllerWindow(QMainWindow):
         """
 
     def _on_playback_export(self, fmt: str) -> None:
+        """Export the current playback run in the requested format.
+
+        Args:
+            fmt: Export format name, such as ``jsonl`` or ``csv``.
+        """
         if not self.playback_mode:
             return
 
@@ -2893,7 +3729,9 @@ class ControllerWindow(QMainWindow):
             default_name = f"{run_id}_export.csv"
             dialog_filter = "CSV Files (*.csv);;All Files (*)"
 
-        path, _ = QFileDialog.getSaveFileName(self, "Export Playback Run", default_name, dialog_filter)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Playback Run", default_name, dialog_filter
+        )
         if not path:
             return
 
@@ -2904,8 +3742,11 @@ class ControllerWindow(QMainWindow):
                 events = psm.context.seek_events
                 metadata = dict(psm.context.metadata)
             else:
-                events = getattr(self.manager, "playback_seek_events",
-                                 getattr(self.manager, "playback_merged_events", []))
+                events = getattr(
+                    self.manager,
+                    "playback_seek_events",
+                    getattr(self.manager, "playback_merged_events", []),
+                )
                 metadata = getattr(self.manager, "playback_metadata", {})
                 if isinstance(metadata, dict):
                     metadata = dict(metadata)
@@ -2922,17 +3763,24 @@ class ControllerWindow(QMainWindow):
 
             self.log.info("Exported %d events (%s) to %s", count, fmt.upper(), path)
             QMessageBox.information(
-                self, "Export Complete",
+                self,
+                "Export Complete",
                 f"Exported {count} events to:\n{path}",
             )
         except Exception as exc:
             self.log.exception("Playback export failed")
             QMessageBox.critical(
-                self, "Export Error",
+                self,
+                "Export Error",
                 f"Failed to export playback data:\n{exc}",
             )
 
     def _create_playback_right_controller_area(self) -> QWidget:
+        """Build the full playback-mode right-side area.
+
+        Returns:
+            Playback-mode right-side widget.
+        """
         outer = QWidget()
         outer.setStyleSheet("background: transparent;")
         outer_layout = QHBoxLayout(outer)
@@ -2947,6 +3795,15 @@ class ControllerWindow(QMainWindow):
         return outer
 
     def _panel(self, title: str, widget: QWidget) -> QWidget:
+        """Wrap a widget in a titled controller panel frame.
+
+        Args:
+            title: Panel title shown in the panel header.
+            widget: Widget to wrap or display.
+
+        Returns:
+            Wrapped panel widget.
+        """
         panel = QFrame()
         panel.setStyleSheet(
             "QFrame{background:#202020; border:1px solid #444; border-radius:10px;}"
@@ -2978,10 +3835,16 @@ class ControllerWindow(QMainWindow):
         v.addWidget(body, 1)
         return panel
 
-    # =========================================================
-    # Badge / Styles
-    # =========================================================
     def _set_badge(self, label: QLabel, text: str, bg: str, fg: str, big: bool):
+        """Apply badge text and color styling.
+
+        Args:
+            label: Label widget to update.
+            text: Text to display inside the badge.
+            bg: Background color string.
+            fg: Foreground color string.
+            big: Whether to use the larger badge style.
+        """
         label.setText(text)
         pad = "6px 12px" if big else "4px 10px"
         fs = "18px" if big else "12px"
@@ -2999,6 +3862,11 @@ class ControllerWindow(QMainWindow):
         )
 
     def _btn_purple(self) -> str:
+        """Return the shared stylesheet for live-mode action buttons.
+
+        Returns:
+            Stylesheet string for the shared live-mode action buttons.
+        """
         return """
             QPushButton{
                 background:#8e24aa;
@@ -3013,41 +3881,74 @@ class ControllerWindow(QMainWindow):
             QPushButton:disabled{ background:#555; color:#bbb; }
         """
 
-    # =========================================================
-    # Public setters
-    # =========================================================
     def set_status(self, key: str):
+        """Update the status badge from a status-style key.
+
+        Args:
+            key: Style key to resolve.
+        """
         text, bg, fg = self.STATUS_STYLE.get(
             key.lower().strip(), self.STATUS_STYLE["idle"]
         )
         self._set_badge(self.status_badge, text, bg, fg, big=True)
 
     def set_health(self, key: str):
+        """Update the health badge from a health-style key.
+
+        Args:
+            key: Style key to resolve.
+        """
         text, bg, fg = self.HEALTH_STYLE.get(
             key.lower().strip(), self.HEALTH_STYLE["default"]
         )
         self._set_badge(self.health_badge, text, bg, fg, big=True)
 
     def set_mode(self, key: str):
+        """Update the mode badge from a mode-style key.
+
+        Args:
+            key: Style key to resolve.
+        """
         text, bg, fg = self.MODE_STYLE.get(key.lower().strip(), self.MODE_STYLE["auto"])
         self._set_badge(self.mode_badge, text, bg, fg, big=False)
 
     def set_script_state(self, key: str):
+        """Update the script badge from a script-style key.
+
+        Args:
+            key: Style key to resolve.
+        """
         text, bg, fg = self.SCRIPT_STYLE.get(
             key.lower().strip(), self.SCRIPT_STYLE["idle"]
         )
         self._set_badge(self.script_badge, text, bg, fg, big=False)
 
     def set_stages(self, prev: str, current: str, next_: str):
+        """Update the three stage summary boxes.
+
+        Args:
+            prev: Previous stage label.
+            current: Current stage label.
+            next_: Next stage label.
+        """
         self.stage_prev._value_label.setText(prev)
         self.stage_curr._value_label.setText(current)
         self.stage_next._value_label.setText(next_)
 
-    # Engine force update API
     def set_engine_sensors(self, up=None, right=None, down=None, left=None):
+        """Forward directional engine-force values to the engine widget.
+
+        Args:
+            up: Upward sensor value in newtons, or ``None`` when unavailable.
+            right: Rightward sensor value in newtons, or ``None`` when
+                unavailable.
+            down: Downward sensor value in newtons, or ``None`` when
+                unavailable.
+            left: Leftward sensor value in newtons, or ``None`` when
+                unavailable.
+        """
         self.engine_force_widget.set_sensors(up, right, down, left)
 
-    # Telemetry update API
     def set_tank_telemetry(
         self,
         tank: str,
@@ -3056,6 +3957,17 @@ class ControllerWindow(QMainWindow):
         level_pct=None,
         valve_open_pct=None,
     ):
+        """Update IPA or LOX telemetry in the tank widget.
+
+        Args:
+            tank: Value used by this method.
+            pressure_psi: Tank pressure in psi, or ``None`` when unavailable.
+            temp_c: Tank temperature in degrees Celsius, or ``None`` when
+                unavailable.
+            level_pct: Tank fill level percentage, or ``None`` when unavailable.
+            valve_open_pct: Flow or valve-open percentage, or ``None`` when
+                unavailable.
+        """
         t = (tank or "").strip().lower()
         if t == "ipa":
             self.telemetry_widget.set_ipa(
@@ -3067,12 +3979,27 @@ class ControllerWindow(QMainWindow):
             )
 
     def set_tank_info(self, text: str):
+        """Update the tank info label.
+
+        Args:
+            text: Text to display.
+        """
         self.telemetry_widget.set_info(text)
 
     def _on_tank_clicked(self, name: str):
+        """Apply the default info text when a tank gauge is clicked.
+
+        Args:
+            name: Display name or tank name.
+        """
         self.set_tank_info(f"{name} tank selected. (put more details here)")
 
     def handle_playback_loaded(self, payload: dict):
+        """Apply run metadata and playback artifacts after a playback load.
+
+        Args:
+            payload: Payload to inspect or apply.
+        """
         if not self.playback_mode:
             return
 
@@ -3099,7 +4026,9 @@ class ControllerWindow(QMainWindow):
                     provider.load_from_payload(payload)
                 except Exception:
                     self.log.exception("Failed to load playback graph provider")
-            self.console.load_playback_run(run_id=run_id, metadata=metadata if isinstance(metadata, dict) else None)
+            self.console.load_playback_run(
+                run_id=run_id, metadata=metadata if isinstance(metadata, dict) else None
+            )
             self.console.set_playback_time(self.playback_time)
             self._refresh_aux_clock_display()
             if isinstance(self.playback_duration_seconds, (int, float)):
@@ -3110,6 +4039,11 @@ class ControllerWindow(QMainWindow):
         self._refresh_aux_clock_display()
 
     def handle_backend_status(self, payload: dict):
+        """Apply a lightweight backend status payload to controller clocks.
+
+        Args:
+            payload: Payload to inspect or apply.
+        """
         if not isinstance(payload, dict):
             return
 
@@ -3117,9 +4051,21 @@ class ControllerWindow(QMainWindow):
         recording = payload.get("recording")
         playback_clock = payload.get("playback_clock")
 
-        self._backend_mission_clock = dict(mission_clock) if isinstance(mission_clock, dict) else self._backend_mission_clock
-        self._backend_recording_clock = dict(recording) if isinstance(recording, dict) else self._backend_recording_clock
-        self._backend_playback_clock = dict(playback_clock) if isinstance(playback_clock, dict) else self._backend_playback_clock
+        self._backend_mission_clock = (
+            dict(mission_clock)
+            if isinstance(mission_clock, dict)
+            else self._backend_mission_clock
+        )
+        self._backend_recording_clock = (
+            dict(recording)
+            if isinstance(recording, dict)
+            else self._backend_recording_clock
+        )
+        self._backend_playback_clock = (
+            dict(playback_clock)
+            if isinstance(playback_clock, dict)
+            else self._backend_playback_clock
+        )
 
         run_mode = payload.get("run_mode")
         if isinstance(run_mode, str) and run_mode.strip().lower() == "playback":
@@ -3127,14 +4073,23 @@ class ControllerWindow(QMainWindow):
 
         self._update_time_displays()
 
-
     def handle_script_status(self, payload: dict):
+        """Forward backend script status updates to the script view.
+
+        Args:
+            payload: Payload to inspect or apply.
+        """
         scripter = getattr(self, "scripter", None)
         handler = getattr(scripter, "handle_script_status", None)
         if callable(handler):
             handler(dict(payload))
 
     def apply_backend_state_snapshot(self, snapshot: dict):
+        """Apply a full backend state snapshot to the controller UI.
+
+        Args:
+            snapshot: Backend state snapshot to apply.
+        """
         if not isinstance(snapshot, dict):
             return
         self._last_backend_snapshot = dict(snapshot)
@@ -3150,9 +4105,21 @@ class ControllerWindow(QMainWindow):
         recording_clock = snapshot.get("recording_clock")
         playback_clock = snapshot.get("playback_clock")
 
-        self._backend_mission_clock = dict(mission_clock) if isinstance(mission_clock, dict) else self._backend_mission_clock
-        self._backend_recording_clock = dict(recording_clock) if isinstance(recording_clock, dict) else self._backend_recording_clock
-        self._backend_playback_clock = dict(playback_clock) if isinstance(playback_clock, dict) else self._backend_playback_clock
+        self._backend_mission_clock = (
+            dict(mission_clock)
+            if isinstance(mission_clock, dict)
+            else self._backend_mission_clock
+        )
+        self._backend_recording_clock = (
+            dict(recording_clock)
+            if isinstance(recording_clock, dict)
+            else self._backend_recording_clock
+        )
+        self._backend_playback_clock = (
+            dict(playback_clock)
+            if isinstance(playback_clock, dict)
+            else self._backend_playback_clock
+        )
 
         self._recording_started_dt = self._parse_recording_start_time(recording_clock)
 
@@ -3162,17 +4129,11 @@ class ControllerWindow(QMainWindow):
                 self.playback_duration_seconds = max(0.0, float(total_duration_seconds))
                 self.timeline.set_total_duration(self.playback_duration_seconds)
 
-            # Skip position write when manager is active — the seek handler
-            # sets position authoritatively via psm.update_after_seek() and
-            # _apply_exact_playback_seek_state runs right after this method.
             if self._playback_state_manager is None:
                 position_seconds = playback_clock.get("position_seconds")
                 if isinstance(position_seconds, (int, float)):
                     self.playback_time = max(0.0, float(position_seconds))
 
-        # With the manager, seek/advance handlers drive UI sync through
-        # _apply_exact_playback_seek_state → set_playback_time.  Calling
-        # _update_time_displays and graph sync here would duplicate that work.
         if self._playback_state_manager is not None and self.playback_mode:
             pass
         else:
@@ -3182,11 +4143,18 @@ class ControllerWindow(QMainWindow):
         self._sync_recording_buttons(snapshot)
 
         scripter = getattr(self, "scripter", None)
-        script_snapshot_handler = getattr(scripter, "apply_backend_state_snapshot", None)
+        script_snapshot_handler = getattr(
+            scripter, "apply_backend_state_snapshot", None
+        )
         if callable(script_snapshot_handler):
             script_snapshot_handler(dict(snapshot))
 
     def handle_structured_event(self, payload: dict):
+        """Apply a structured event to live graphs or playback replay state.
+
+        Args:
+            payload: Payload to inspect or apply.
+        """
         if not isinstance(payload, dict):
             return
         if self.playback_mode:
@@ -3200,36 +4168,49 @@ class ControllerWindow(QMainWindow):
         except Exception:
             self.log.exception("Failed to ingest live graph structured event")
 
-    # -- Playback event state tracking --
-    # These event_type values are the only system_event transitions
-    # processed during playback replay.  They update the controller's
-    # _last_backend_snapshot sections so that _build_reconstructed_playback_state
-    # sees the true post-replay state rather than the snapshot baseline.
-    _PLAYBACK_RUN_START_TYPES = frozenset({
-        "run_started", "run_archive_initialized",
-    })
-    _PLAYBACK_RUN_FINISH_TYPES = frozenset({
-        "run_finish_requested", "run_archive_finalizing",
-    })
-    _PLAYBACK_SCRIPT_START_TYPES = frozenset({
-        "script_started",
-    })
-    _PLAYBACK_SCRIPT_STOP_TYPES = frozenset({
-        "script_stopped", "script_finished",
-    })
-    _PLAYBACK_SCRIPT_HOLD_TYPES = frozenset({
-        "script_held",
-    })
-    _PLAYBACK_SCRIPT_CONTINUE_TYPES = frozenset({
-        "script_continued",
-    })
+    _PLAYBACK_RUN_START_TYPES = frozenset(
+        {
+            "run_started",
+            "run_archive_initialized",
+        }
+    )
+    _PLAYBACK_RUN_FINISH_TYPES = frozenset(
+        {
+            "run_finish_requested",
+            "run_archive_finalizing",
+        }
+    )
+    _PLAYBACK_SCRIPT_START_TYPES = frozenset(
+        {
+            "script_started",
+        }
+    )
+    _PLAYBACK_SCRIPT_STOP_TYPES = frozenset(
+        {
+            "script_stopped",
+            "script_finished",
+        }
+    )
+    _PLAYBACK_SCRIPT_HOLD_TYPES = frozenset(
+        {
+            "script_held",
+        }
+    )
+    _PLAYBACK_SCRIPT_CONTINUE_TYPES = frozenset(
+        {
+            "script_continued",
+        }
+    )
 
     def _apply_playback_event_state(self, payload: dict) -> None:
-        """Update controller state containers from a replayed structured event.
+        """Update replay-aware snapshot sections from one structured event.
 
-        Only processes system_event transitions that change run, script, or
-        alarm state visible in the reconstructed playback state.  Does NOT
-        touch the live graph provider or trigger live-mode display updates.
+        Only system-event transitions that affect reconstructed run, script, or
+        backend-health state are applied here. Live graph ingestion and other
+        live-only side effects are intentionally skipped.
+
+        Args:
+            payload: Structured playback event payload.
         """
         stream = str(payload.get("stream") or payload.get("event_kind") or "")
         if stream != "system_event":
@@ -3292,16 +4273,27 @@ class ControllerWindow(QMainWindow):
                     health["active_warning_count"] = len(warnings)
 
     def handle_playback_seek_bootstrap(self, payload: dict):
+        """Refresh playback graph windows after an initial seek bootstrap.
+
+        Args:
+            payload: Payload to inspect or apply.
+        """
         if not self.playback_mode:
             return
         self._sync_playback_graph_provider_window()
 
     def _playback_graph_window_bounds(self) -> tuple[float, float]:
+        """Return the graph provider's visible playback time window.
+
+        Returns:
+            Tuple of ``(start_ts, end_ts)`` playback-window bounds in seconds.
+        """
         end_ts = max(0.0, float(self.playback_time))
         start_ts = max(0.0, end_ts - float(self.graph.duration))
         return start_ts, end_ts
 
     def _sync_playback_graph_provider_window(self) -> None:
+        """Push the current playback window and cursor into the graph provider."""
         if not self.playback_mode:
             return
         provider = getattr(self, "graph_provider", None)
@@ -3317,13 +4309,7 @@ class ControllerWindow(QMainWindow):
             cursor_setter(end_ts)
 
     def _apply_reconstructed_playback_badges(self) -> None:
-        """Update controller badges from the reconstructed playback state.
-
-        This reads the single authoritative reconstructed state dict that
-        window_host builds after seek/advance completes.  Fields that are
-        not present (e.g. during initial load before the first seek) are
-        silently skipped so existing fallback behavior is preserved.
-        """
+        """Update header badges from reconstructed playback state."""
         if not self.playback_mode:
             return
         psm = self._playback_state_manager
@@ -3350,10 +4336,6 @@ class ControllerWindow(QMainWindow):
         elif script_running is not None:
             self.set_script_state("idle")
 
-        # Health badge: driven from replay-aware overall_health_status
-        # (updated by backend_health_changed system events during replay).
-        # NOT driven from active_alarm_count/active_fault_count which are
-        # snapshot-baseline-only and always 0 in practice.
         health_status = rs.get("overall_health_status")
         if isinstance(health_status, str) and health_status:
             key = health_status.strip().lower()
@@ -3365,6 +4347,12 @@ class ControllerWindow(QMainWindow):
                 self.set_health("ok")
 
     def _set_aux_clock_display(self, text: str, *, accent: str = "neutral"):
+        """Update the auxiliary subtitle clock text and styling.
+
+        Args:
+            text: Text to display.
+            accent: Value used by this method.
+        """
         fg, bg = self.AUX_CLOCK_STYLE.get(accent, self.AUX_CLOCK_STYLE["neutral"])
         self.aux_time_label.setText(text)
         self.aux_time_label.setStyleSheet(
@@ -3372,6 +4360,14 @@ class ControllerWindow(QMainWindow):
         )
 
     def _format_short_duration(self, total_seconds: float | None) -> str:
+        """Format a duration for the live recording subtitle.
+
+        Args:
+            total_seconds: Value used by this method.
+
+        Returns:
+            Human-readable duration string for the live recording subtitle.
+        """
         if total_seconds is None:
             return "--"
 
@@ -3385,6 +4381,14 @@ class ControllerWindow(QMainWindow):
         return f"{minutes:d}m {seconds:02d}s"
 
     def _format_precise_duration(self, total_seconds: float | None) -> str:
+        """Format a duration for playback time displays.
+
+        Args:
+            total_seconds: Value used by this method.
+
+        Returns:
+            Precise duration string for playback time displays.
+        """
         if total_seconds is None:
             return "--:--.---"
 
@@ -3399,6 +4403,7 @@ class ControllerWindow(QMainWindow):
         return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
     def _refresh_aux_clock_display(self) -> None:
+        """Refresh the auxiliary subtitle clock for live or playback mode."""
         if self.playback_mode:
             current_text = self._format_precise_duration(self.playback_time)
             total_text = self._format_precise_duration(self.playback_duration_seconds)
@@ -3408,14 +4413,18 @@ class ControllerWindow(QMainWindow):
             )
             return
 
-        recording_clock = self._backend_recording_clock if isinstance(self._backend_recording_clock, dict) else {}
+        recording_clock = (
+            self._backend_recording_clock
+            if isinstance(self._backend_recording_clock, dict)
+            else {}
+        )
         active = bool(recording_clock.get("active"))
 
-        # When recording is active and we have an authoritative start time,
-        # compute elapsed locally so the 100ms display timer advances smoothly
-        # between backend snapshot polls (~3s).
         if active and self._recording_started_dt is not None:
-            elapsed = (datetime.now(self._recording_started_dt.tzinfo) - self._recording_started_dt).total_seconds()
+            elapsed = (
+                datetime.now(self._recording_started_dt.tzinfo)
+                - self._recording_started_dt
+            ).total_seconds()
             elapsed = max(0.0, elapsed)
             self._set_aux_clock_display(
                 f"Recording: {self._format_short_duration(elapsed)}",
@@ -3423,8 +4432,6 @@ class ControllerWindow(QMainWindow):
             )
             return
 
-        # Fallback: use backend-provided display_text for non-active states
-        # (stopped/completed/idle).
         display_text = recording_clock.get("display_text")
         if isinstance(display_text, str) and display_text.strip():
             self._set_aux_clock_display(
@@ -3435,10 +4442,8 @@ class ControllerWindow(QMainWindow):
 
         self._set_aux_clock_display("Not Recording", accent="neutral")
 
-    # =========================================================
-    # Timer update
-    # =========================================================
     def _update_time_displays(self):
+        """Refresh wall-clock, mission-clock, and playback UI time displays."""
         self.clock_label.setText(datetime.now().strftime("%H:%M:%S"))
 
         mission_seconds = None
@@ -3449,23 +4454,20 @@ class ControllerWindow(QMainWindow):
 
         if self.playback_mode:
             if self._playback_state_manager is not None:
-                # Manager-driven playback: seek/advance handlers push all UI
-                # updates via set_playback_time.  The display timer only needs
-                # to keep the wall clock and aux clock fresh — touching
-                # timeline/console/graph here would duplicate that work and
-                # risk overwriting the manager's authoritative position from
-                # stale _backend_playback_clock data.
                 pass
             else:
-                # Legacy path (no manager): display timer drives all updates.
                 playback_seconds = self.playback_time
                 if isinstance(self._backend_playback_clock, dict):
-                    backend_position = self._backend_playback_clock.get("position_seconds")
+                    backend_position = self._backend_playback_clock.get(
+                        "position_seconds"
+                    )
                     if isinstance(backend_position, (int, float)):
                         playback_seconds = max(0.0, float(backend_position))
                         self.playback_time = playback_seconds
 
-                    backend_total = self._backend_playback_clock.get("total_duration_seconds")
+                    backend_total = self._backend_playback_clock.get(
+                        "total_duration_seconds"
+                    )
                     if isinstance(backend_total, (int, float)):
                         self.playback_duration_seconds = max(0.0, float(backend_total))
                         self.timeline.set_total_duration(self.playback_duration_seconds)
@@ -3490,6 +4492,11 @@ class ControllerWindow(QMainWindow):
         self._refresh_aux_clock_display()
 
     def _update_mission_time_label(self, total_seconds: float):
+        """Update the large mission clock label.
+
+        Args:
+            total_seconds: Value used by this method.
+        """
         abs_seconds = abs(float(total_seconds))
         hours = int(abs_seconds // 3600)
         minutes = int((abs_seconds % 3600) // 60)
@@ -3497,8 +4504,6 @@ class ControllerWindow(QMainWindow):
         milliseconds = int((abs_seconds % 1) * 1000)
 
         if self.playback_mode:
-            # Playback keeps the script clock as a placeholder for now;
-            # duration lives in the blue subtitle instead.
             self.mission_time_label.setText("00:00:00.000")
             return
 
@@ -3508,16 +4513,26 @@ class ControllerWindow(QMainWindow):
         )
 
     def _on_playback_shortcut(self):
+        """Toggle playback with the keyboard shortcut when focus allows it."""
         if not self.playback_mode:
             return
         focus = QApplication.focusWidget()
         if isinstance(focus, (QSpinBox, QDoubleSpinBox)):
             return
-        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)) and not focus.isReadOnly():
+        if (
+            isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit))
+            and not focus.isReadOnly()
+        ):
             return
         self._toggle_playback()
 
     def _step_playback_speed(self, direction: int) -> None:
+        """Move playback speed one step slower or faster.
+
+        Args:
+            direction: Playback speed step direction, where negative slows down
+                and positive speeds up.
+        """
         psm = self._playback_state_manager
         if psm is not None:
             new_speed = psm.step_speed(direction)
@@ -3533,6 +4548,7 @@ class ControllerWindow(QMainWindow):
         self.log.info("Playback speed set to %.2fx", self._playback_speed)
 
     def _toggle_playback(self):
+        """Start or pause playback using the active playback authority."""
         if not self.playback_mode:
             return
         psm = self._playback_state_manager
@@ -3546,12 +4562,13 @@ class ControllerWindow(QMainWindow):
                 self._playback_advance_timer.stop()
             else:
                 if not psm.start_playing():
-                    return  # at end
+                    return
                 self._playback_advance_timer.start()
             return
-        # Legacy fallback (no manager)
         if self._playback_running:
-            exact_time = self._playback_anchor + (time.monotonic() - self._playback_mono_start)
+            exact_time = self._playback_anchor + (
+                time.monotonic() - self._playback_mono_start
+            )
             duration = self.playback_duration_seconds
             if isinstance(duration, (int, float)) and duration > 0:
                 exact_time = min(exact_time, duration)
@@ -3564,7 +4581,11 @@ class ControllerWindow(QMainWindow):
             self._playback_advance_timer.stop()
         else:
             duration = self.playback_duration_seconds
-            if isinstance(duration, (int, float)) and duration > 0 and self.playback_time >= duration:
+            if (
+                isinstance(duration, (int, float))
+                and duration > 0
+                and self.playback_time >= duration
+            ):
                 return
             self._playback_anchor = self.playback_time
             self._playback_mono_start = time.monotonic()
@@ -3572,6 +4593,7 @@ class ControllerWindow(QMainWindow):
             self._playback_advance_timer.start()
 
     def _on_playback_advance(self):
+        """Advance playback by one timer tick and propagate seek state."""
         psm = self._playback_state_manager
         if psm is not None:
             if not psm.is_playing:
@@ -3591,9 +4613,6 @@ class ControllerWindow(QMainWindow):
                 advance_handler(previous_time, new_time)
                 return
 
-            # No advance handler — fall back to seek handler (full state
-            # reconstruction) or set_playback_time (UI-only).  Only one
-            # path runs to avoid duplicate widget updates.
             psm.set_position(new_time)
             handler = getattr(self.manager, "playback_seek_handler", None)
             if callable(handler):
@@ -3602,7 +4621,6 @@ class ControllerWindow(QMainWindow):
                 self.set_playback_time(new_time)
             return
 
-        # Legacy fallback (no manager)
         if not self._playback_running:
             self._playback_advance_timer.stop()
             return
@@ -3633,7 +4651,11 @@ class ControllerWindow(QMainWindow):
             handler(new_time)
 
     def _on_timeline_seek(self, seek_time: float):
-        # Manual scrub pauses playback so the timer doesn't fight the user
+        """Pause playback and seek to a user-scrubbed timeline position.
+
+        Args:
+            seek_time: Requested playback position in seconds.
+        """
         psm = self._playback_state_manager
         if psm is not None and psm.is_playing:
             psm.pause()
@@ -3654,6 +4676,11 @@ class ControllerWindow(QMainWindow):
         self._refresh_aux_clock_display()
 
     def set_playback_time(self, seek_time: float):
+        """Apply a playback time to all playback-facing widgets.
+
+        Args:
+            seek_time: Requested playback position in seconds.
+        """
         self.playback_time = max(0.0, float(seek_time))
         self.timeline.set_current_time(self.playback_time)
         self._update_mission_time_label(self.playback_time)
@@ -3662,22 +4689,22 @@ class ControllerWindow(QMainWindow):
         self._sync_playback_graph_provider_window()
         self._apply_reconstructed_playback_badges()
 
-    # =========================================================
-    # Buttons (placeholder behavior)
-    # =========================================================
     def _on_continue_clicked(self):
+        """Apply placeholder continue behavior for live mode."""
         if self.playback_mode:
             return
         self.set_status("normal")
         self.set_script_state("running")
 
     def _on_hold_clicked(self):
+        """Apply placeholder hold behavior for live mode."""
         if self.playback_mode:
             return
         self.set_status("hold")
         self.set_script_state("pause")
 
     def _on_abort_clicked(self):
+        """Apply placeholder abort behavior and trigger the abort hook."""
         if self.playback_mode:
             return
         self.set_status("abort")
@@ -3685,12 +4712,14 @@ class ControllerWindow(QMainWindow):
         self.abort()
 
     def _on_manual_auto_clicked(self):
+        """Toggle the mode badge between manual and auto in live mode."""
         if self.playback_mode:
             return
         cur = self.mode_badge.text().lower()
         self.set_mode("manual" if cur == "auto" else "auto")
 
     def _on_start_recording_clicked(self):
+        """Request backend ``start_run`` through the attached bridge."""
         if self.playback_mode:
             return
         start = getattr(self, "start_backend_run", None)
@@ -3703,9 +4732,12 @@ class ControllerWindow(QMainWindow):
                 self.log.exception("Failed to request backend start_run")
                 self.btn_start_recording.setEnabled(True)
         else:
-            self.log.warning("start_backend_run not available - backend bridge may not be attached")
+            self.log.warning(
+                "start_backend_run not available - backend bridge may not be attached"
+            )
 
     def _on_stop_recording_clicked(self):
+        """Request backend ``finish_run`` through the attached bridge."""
         if self.playback_mode:
             return
         finish = getattr(self, "finish_backend_run", None)
@@ -3718,10 +4750,16 @@ class ControllerWindow(QMainWindow):
                 self.log.exception("Failed to request backend finish_run")
                 self.btn_stop_recording.setEnabled(True)
         else:
-            self.log.warning("finish_backend_run not available - backend bridge may not be attached")
+            self.log.warning(
+                "finish_backend_run not available - backend bridge may not be attached"
+            )
 
     def _sync_recording_buttons(self, snapshot: dict) -> None:
-        """Update Start/Stop Recording button states from backend run state."""
+        """Update recording-button enable state from backend run state.
+
+        Args:
+            snapshot: Backend state snapshot to apply.
+        """
         btn_start = getattr(self, "btn_start_recording", None)
         btn_stop = getattr(self, "btn_stop_recording", None)
         if btn_start is None or btn_stop is None:
@@ -3740,12 +4778,15 @@ class ControllerWindow(QMainWindow):
 
     @staticmethod
     def _parse_recording_start_time(recording_clock) -> datetime | None:
-        """Extract and parse the authoritative recording start time from a
-        backend recording_clock snapshot section.
+        """Parse the authoritative recording start time from a clock snapshot.
 
-        Returns a timezone-aware datetime if ``recording_clock.active`` is
-        truthy and ``started_wall_time`` is a valid ISO-8601 timestamp, or
-        ``None`` otherwise.
+        Args:
+            recording_clock: ``recording_clock`` snapshot section from backend
+                state.
+
+        Returns:
+            Parsed timezone-aware recording start time, or ``None`` when
+                unavailable or invalid.
         """
         if not isinstance(recording_clock, dict):
             return None
@@ -3763,6 +4804,13 @@ class ControllerWindow(QMainWindow):
             return None
 
     def _on_device_requested(self, device_id: str, target_card=None):
+        """Validate a device request and add graphable devices to the workspace.
+
+        Args:
+            device_id: Canonical device identifier.
+            target_card: Existing graph card to update, or ``None`` to create a
+                new card.
+        """
         meta = self.device_meta.get(device_id)
         device = self.devices.get(device_id)
 
@@ -3780,16 +4828,23 @@ class ControllerWindow(QMainWindow):
 
         if self.workspace.add_graph_device(device, target_card=target_card):
             if target_card is None:
-                self.log.info(f"Added active signal device to new graph widget: {device_id}")
+                self.log.info(
+                    f"Added active signal device to new graph widget: {device_id}"
+                )
             else:
-                self.log.info(f"Added active signal device to existing graph widget: {device_id}")
+                self.log.info(
+                    f"Added active signal device to existing graph widget: {device_id}"
+                )
         else:
             self.log.info(f"Workspace request was ignored for device: {device_id}")
 
-    # =========================================================
-    # Device hooks
-    # =========================================================
     def addDevice(self, device, meta: dict):
+        """Register a GUI device object and its metadata with the window.
+
+        Args:
+            device: GUI device object registered with the controller window.
+            meta: Normalized metadata record for ``device``.
+        """
         device_id = meta["id"]
 
         self.devices[device_id] = device
@@ -3801,4 +4856,5 @@ class ControllerWindow(QMainWindow):
         self.device_library.add_device(meta)
 
     def abort(self):
+        """Emit the controller's local abort log message hook."""
         self.log.fatal("Abort triggered! Slap the big red button NOW!")
