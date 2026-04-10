@@ -37,42 +37,30 @@ PRESERVE_HISTORY_RUN_PATTERNS := \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup wsl-usb usb-status run run-direct run-gateway run-backend run-gui stop restart status \
-	clear-all-history clean clean-dev \
+.PHONY: help setup wsl-usb run stop status \
+	_usb-status _run-gateway _run-backend _restart \
+	_clear-all-history _clean _clean-dev \
 	_ensure-dev-dirs _ensure-venv _ensure-history-dirs
 
 
+#  User-facing commands 
+
+
 help:
-	@echo "MINTS SCADA Software - Available Commands"
+	@echo "MINTS SCADA Software"
 	@echo ""
-	@echo "Setup:"
-	@echo "  make setup              - Create venv, install deps, and print USB setup notes"
-	@echo "  make wsl-usb            - Configure USB device forwarding (WSL only)"
+	@echo "Linux:"
+	@echo "  make setup"
+	@echo "  make run"
 	@echo ""
-	@echo "Run:"
-	@echo "  make run                - Show USB/serial status, then start the GUI launcher"
-	@echo "  make run-direct         - Start the GUI launcher immediately, skip USB check"
-	@echo "  make run-gateway        - Start gateway only"
-	@echo "  make run-backend        - Start backend only"
-	@echo "  make run-gui            - Start the GUI launcher only"
-	@echo "  make usb-status         - Show current USB and serial device status"
+	@echo "WSL:"
+	@echo "  make setup"
+	@echo "  make wsl-usb"
+	@echo "  make run"
 	@echo ""
-	@echo "Control:"
-	@echo "  make stop               - Stop processes started by this Makefile / launcher"
-	@echo "  make restart            - Stop all app processes, then run full startup again"
-	@echo "  make status             - Show gateway, backend, watcher, socket, and local history status"
-	@echo ""
-	@echo "Dev cleanup:"
-	@echo "  These are for software dev only and will be removed. Please do not use."
-	@echo "  make clear-all-history  - Clear history contents but preserve .gitkeep and preserved demo runs"
-	@echo "  make clean-dev          - Remove dev pid/socket files"
-	@echo "  make clean              - Full dev reset: history + .dev + GUI metadata (preserves demo runs)"
-	@echo ""
-	@echo "Notes:"
-	@echo "  'make run' no longer prompts during startup."
-	@echo "  On WSL, use 'make wsl-usb' separately if you need USB forwarding."
-	@echo "  The GUI launcher now starts mode-specific services after the checklist."
-	@echo "  Demo integrity runs are preserved during cleanup."
+	@echo "Other commands:"
+	@echo "  make stop     - Stop the application"
+	@echo "  make status   - Show application status"
 
 
 # Create venv and install dependencies
@@ -105,44 +93,26 @@ wsl-usb:
 	@./install-system-deps.sh
 
 
-usb-status:
-	@echo "=== Current USB/Serial Port Status ==="
-	@echo ""
-	@if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
-		echo "USB Devices:"; \
-		echo "  (WSL detected: skipping lsusb to avoid startup hangs)"; \
-		echo "  Run 'make wsl-usb' if you need USB forwarding."; \
-	else \
-		if command -v lsusb > /dev/null 2>&1; then \
-			echo "USB Devices:"; \
-			lsusb 2>/dev/null || echo "  (lsusb failed)"; \
-		else \
-			echo "USB Devices:"; \
-			echo "  (lsusb not available)"; \
-		fi; \
-	fi
-	@echo ""
-	@echo "Serial Ports:"
-	@ports=$$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true); \
-	if [ -n "$$ports" ]; then \
-		echo "$$ports"; \
-	else \
-		echo "  (none found)"; \
-	fi
-	@echo ""
-
-
-run: usb-status run-direct
-
-
-run-direct:
+# Start the application
+run:
 	@if [ ! -d "$(VENV)" ]; then \
-		echo "Error: Virtual environment not found. Run 'make setup' first."; \
+		echo "[ERROR] Virtual environment not found. Run 'make setup' first."; \
 		exit 1; \
 	fi
 	@mkdir -p "$(DEV_DIR)"
 	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
 	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
+	@echo "=== Serial Ports ==="
+	@ports=$$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true); \
+	if [ -n "$$ports" ]; then \
+		echo "$$ports"; \
+	else \
+		echo "  (none detected)"; \
+		if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
+			echo "  WSL: run 'make wsl-usb' if USB forwarding is needed"; \
+		fi; \
+	fi
+	@echo ""
 	@set -eu; \
 	cleanup() { \
 		gui_code=$$?; \
@@ -197,77 +167,6 @@ run-direct:
 	echo "$$watcher_pid shutdown_watcher" >> "$(APPLICATION_PID_FILE)"; \
 	echo "[INFO] Starting GUI launcher..."; \
 	. "$(VENV_ACTIVATE)" && $(PYTHON) $(GUI)
-
-
-run-gateway:
-	@if [ ! -d "$(VENV)" ]; then \
-		echo "Error: Virtual environment not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@mkdir -p "$(DEV_DIR)"
-	@set -eu; \
-	if [ -f "$(GATEWAY_PID_FILE)" ]; then \
-		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-			echo "[INFO] Gateway already running with pid=$$pid"; \
-			exit 0; \
-		else \
-			echo "[INFO] Removing stale gateway pid file"; \
-			rm -f "$(GATEWAY_PID_FILE)"; \
-		fi; \
-	fi; \
-	if [ -S "$(GATEWAY_SOCKET)" ]; then \
-		echo "[INFO] Removing stale gateway socket $(GATEWAY_SOCKET)"; \
-		rm -f "$(GATEWAY_SOCKET)"; \
-	fi; \
-	echo "[INFO] Starting gateway..."; \
-	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
-	echo $$! > "$(GATEWAY_PID_FILE)"; \
-	echo "[INFO] Waiting for gateway socket $(GATEWAY_SOCKET)..."; \
-	for i in $$(seq 1 80); do \
-		if [ -S "$(GATEWAY_SOCKET)" ]; then \
-			echo "[OK] Gateway started with pid=$$(cat "$(GATEWAY_PID_FILE)")"; \
-			exit 0; \
-		fi; \
-		sleep 0.25; \
-	done; \
-	echo "[ERROR] Gateway socket did not appear."; \
-	pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
-	if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
-	rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
-	exit 1
-
-
-run-backend:
-	@if [ ! -d "$(VENV)" ]; then \
-		echo "Error: Virtual environment not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@mkdir -p "$(DEV_DIR)"
-	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
-	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
-	@set -eu; \
-	if [ -f "$(BACKEND_PID_FILE)" ]; then \
-		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-			echo "[INFO] Backend already running with pid=$$pid"; \
-			exit 0; \
-		else \
-			echo "[INFO] Removing stale backend pid file"; \
-			rm -f "$(BACKEND_PID_FILE)"; \
-		fi; \
-	fi; \
-	if [ -S "$(BACKEND_SOCKET)" ]; then \
-		echo "[INFO] Removing stale backend socket $(BACKEND_SOCKET)"; \
-		rm -f "$(BACKEND_SOCKET)"; \
-	fi; \
-	echo "[INFO] Starting backend..."; \
-	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(BACKEND)' >/dev/null 2>&1 & \
-	echo $$! > "$(BACKEND_PID_FILE)"; \
-	echo "[OK] Backend started with pid=$$(cat "$(BACKEND_PID_FILE)")"
-
-
-run-gui: run-direct
 
 
 stop:
@@ -326,9 +225,6 @@ stop:
 	else \
 		echo "[INFO] No running application processes found"; \
 	fi
-
-
-restart: stop run
 
 
 status:
@@ -393,7 +289,108 @@ status:
 	done
 
 
-clear-all-history:
+#  Development-only commands (not shown in help) 
+
+
+_usb-status:
+	@echo "=== Current USB/Serial Port Status ==="
+	@echo ""
+	@if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
+		echo "USB Devices:"; \
+		echo "  (WSL detected: skipping lsusb to avoid startup hangs)"; \
+		echo "  Run 'make wsl-usb' if you need USB forwarding."; \
+	else \
+		if command -v lsusb > /dev/null 2>&1; then \
+			echo "USB Devices:"; \
+			lsusb 2>/dev/null || echo "  (lsusb failed)"; \
+		else \
+			echo "USB Devices:"; \
+			echo "  (lsusb not available)"; \
+		fi; \
+	fi
+	@echo ""
+	@echo "Serial Ports:"
+	@ports=$$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true); \
+	if [ -n "$$ports" ]; then \
+		echo "$$ports"; \
+	else \
+		echo "  (none found)"; \
+	fi
+	@echo ""
+
+
+_run-gateway:
+	@if [ ! -d "$(VENV)" ]; then \
+		echo "Error: Virtual environment not found. Run 'make setup' first."; \
+		exit 1; \
+	fi
+	@mkdir -p "$(DEV_DIR)"
+	@set -eu; \
+	if [ -f "$(GATEWAY_PID_FILE)" ]; then \
+		pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "[INFO] Gateway already running with pid=$$pid"; \
+			exit 0; \
+		else \
+			echo "[INFO] Removing stale gateway pid file"; \
+			rm -f "$(GATEWAY_PID_FILE)"; \
+		fi; \
+	fi; \
+	if [ -S "$(GATEWAY_SOCKET)" ]; then \
+		echo "[INFO] Removing stale gateway socket $(GATEWAY_SOCKET)"; \
+		rm -f "$(GATEWAY_SOCKET)"; \
+	fi; \
+	echo "[INFO] Starting gateway..."; \
+	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(GATEWAY)' >/dev/null 2>&1 & \
+	echo $$! > "$(GATEWAY_PID_FILE)"; \
+	echo "[INFO] Waiting for gateway socket $(GATEWAY_SOCKET)..."; \
+	for i in $$(seq 1 80); do \
+		if [ -S "$(GATEWAY_SOCKET)" ]; then \
+			echo "[OK] Gateway started with pid=$$(cat "$(GATEWAY_PID_FILE)")"; \
+			exit 0; \
+		fi; \
+		sleep 0.25; \
+	done; \
+	echo "[ERROR] Gateway socket did not appear."; \
+	pid=$$(cat "$(GATEWAY_PID_FILE)" 2>/dev/null || true); \
+	if [ -n "$$pid" ]; then kill "$$pid" 2>/dev/null || true; fi; \
+	rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
+	exit 1
+
+
+_run-backend:
+	@if [ ! -d "$(VENV)" ]; then \
+		echo "Error: Virtual environment not found. Run 'make setup' first."; \
+		exit 1; \
+	fi
+	@mkdir -p "$(DEV_DIR)"
+	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
+	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
+	@set -eu; \
+	if [ -f "$(BACKEND_PID_FILE)" ]; then \
+		pid=$$(cat "$(BACKEND_PID_FILE)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "[INFO] Backend already running with pid=$$pid"; \
+			exit 0; \
+		else \
+			echo "[INFO] Removing stale backend pid file"; \
+			rm -f "$(BACKEND_PID_FILE)"; \
+		fi; \
+	fi; \
+	if [ -S "$(BACKEND_SOCKET)" ]; then \
+		echo "[INFO] Removing stale backend socket $(BACKEND_SOCKET)"; \
+		rm -f "$(BACKEND_SOCKET)"; \
+	fi; \
+	echo "[INFO] Starting backend..."; \
+	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) $(BACKEND)' >/dev/null 2>&1 & \
+	echo $$! > "$(BACKEND_PID_FILE)"; \
+	echo "[OK] Backend started with pid=$$(cat "$(BACKEND_PID_FILE)")"
+
+
+_restart: stop run
+
+
+_clear-all-history:
 	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
 	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
 	@echo "[WARN] Clearing dev history contents but preserving .gitkeep and preserved demo runs..."
@@ -425,7 +422,7 @@ clear-all-history:
 	@echo "[OK] Cleared history contents and preserved .gitkeep + demo runs"
 
 
-clean: stop clear-all-history
+_clean: stop _clear-all-history
 	@echo "[WARN] Removing local dev-only metadata and scratch directories..."
 	@rm -f $(LOCAL_DEV_FILES)
 	@rm -rf $(LOCAL_DEV_DIRS)
@@ -433,11 +430,14 @@ clean: stop clear-all-history
 	@echo "[OK] Full dev cleanup complete"
 
 
-clean-dev:
+_clean-dev:
 	@echo "[INFO] Cleaning dev artifacts..."
 	@rm -f "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)" "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(APPLICATION_PID_FILE)" .shutdown_signal
 	@rmdir "$(DEV_DIR)" 2>/dev/null || true
 	@echo "[OK] Dev artifacts cleaned"
+
+
+#  Internal helpers 
 
 
 _ensure-dev-dirs:
