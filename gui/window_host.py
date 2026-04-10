@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
 )  # noqa: E402
 
 import settings  # noqa: E402
-from gui import QLoggingHandler  # noqa: E402
+from gui.qlogginghandler import QLoggingHandler  # noqa: E402
 from gui.abort_relay import (
     send_abort_request,
     send_clear_abort_latch_request,

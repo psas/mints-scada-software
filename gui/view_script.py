@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from gui import MintsScriptAPI
+from .mintsscriptapi import MintsScriptAPI
 
 
 class ScriptView(QWidget):

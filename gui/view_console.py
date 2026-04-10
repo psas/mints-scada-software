@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 from PyQt5.QtWidgets import QPlainTextEdit, QVBoxLayout, QWidget
 
-from gui import QLoggingHandler
+from .qlogginghandler import QLoggingHandler
 
 
 HISTORY_ROOT_DIRNAME = "ignitionhistory"

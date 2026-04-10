@@ -8,7 +8,9 @@ identity, last update time, serial lookup state, and the packet/event flow
 used by polling subclasses.
 """
 
-from nexus import DataPacket, Bus, BusCommands
+from .datapacket import DataPacket
+from .bus import Bus
+from .buscommands import BusCommands
 import threading
 
 # Message send format

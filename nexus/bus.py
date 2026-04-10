@@ -4,7 +4,7 @@
 
 import can
 import threading
-from nexus import DataPacket
+from .datapacket import DataPacket
 import os.path as path
 import time
 import logging

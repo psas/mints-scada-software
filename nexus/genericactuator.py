@@ -7,7 +7,9 @@ This module provides a generic actuator implementation that reuses
 handling for actuator state updates and simulated-device replies.
 """
 
-from nexus import DataPacket, BusCommands, GenericSensor
+from .datapacket import DataPacket
+from .buscommands import BusCommands
+from .genericsensor import GenericSensor
 import struct
 
 

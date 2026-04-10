@@ -11,7 +11,9 @@ time/value history for graphing or diagnostics.
 from typing import Callable
 import struct
 import random
-from nexus import DataPacket, BusRider, BusCommands
+from .datapacket import DataPacket
+from .busrider import BusRider
+from .buscommands import BusCommands
 import numpy as np
 import logging
 

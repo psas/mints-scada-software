@@ -4,7 +4,8 @@
 
 from PyQt5.QtWidgets import QPushButton, QLabel, QHBoxLayout
 from PyQt5.QtCore import QTimer, pyqtSignal
-from gui import AutoPoller, DecadeSpinBox
+from .autopoller import AutoPoller
+from .decadespinbox import DecadeSpinBox
 
 import logging
 

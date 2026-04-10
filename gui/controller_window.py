@@ -21,18 +21,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from logging import log
 
-from gui import (
-    GraphView,
-    ExportView,
-    ConsoleView,
-    ScriptView,
-    MintsScriptAPI,
-    AutoPollerRow,
-    LiveGraphDataProvider,
-    PlaybackGraphDataProvider,
-    LiveTelemetryPoller,
-)
-from gui.timelineview import TimelineView
+from .view_graph import GraphView
+from .view_export import ExportView
+from .view_console import ConsoleView
+from .view_script import ScriptView
+from .mintsscriptapi import MintsScriptAPI
+from .autopollerrow import AutoPollerRow
+from .live_graph_provider import LiveGraphDataProvider
+from .playback_graph_provider import PlaybackGraphDataProvider
+from .live_telemetry_poller import LiveTelemetryPoller
+from .timelineview import TimelineView
 from nexus import BusRider
 from settings import SYSTEM_ORDER
 
