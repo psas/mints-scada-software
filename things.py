@@ -1,1 +1,0 @@
-# This file describes the things (senors and actuators) available to the program
