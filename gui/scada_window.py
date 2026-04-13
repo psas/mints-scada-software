@@ -100,8 +100,7 @@ class ScadaWindow(QMainWindow):
 
         The SVG diagram is loaded into a ``QWebEngineView`` with a
         ``QWebChannel`` bridge so SVG clicks can be forwarded into Python. In
-        live mode a side button column is also added for manual valve control,
-        abort relay actions, and debug helpers.
+        live mode a side button column provides abort and clear-abort actions.
         """
         central = QWidget()
         self.setCentralWidget(central)
@@ -188,25 +187,6 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             blay.setContentsMargins(16, 16, 16, 16)
             blay.setSpacing(14)
 
-            self.open_26_button = QPushButton("Open LOX-XV-26")
-            self.open_26_button.setMinimumHeight(72)
-            self.open_26_button.clicked.connect(
-                lambda: self._on_manual_button("lox-xv-26", "open")
-            )
-            blay.addWidget(self.open_26_button)
-
-            self.close_26_button = QPushButton("Close LOX-XV-26")
-            self.close_26_button.setMinimumHeight(72)
-            self.close_26_button.clicked.connect(
-                lambda: self._on_manual_button("lox-xv-26", "closed")
-            )
-            blay.addWidget(self.close_26_button)
-
-            self.reset_button = QPushButton("Reset XV")
-            self.reset_button.setMinimumHeight(72)
-            self.reset_button.clicked.connect(self.reset_all_xv)
-            blay.addWidget(self.reset_button)
-
             self.btn_abort = QPushButton("Abort")
             self.btn_abort.setMinimumHeight(72)
             self.btn_abort.clicked.connect(self._on_abort_clicked)
@@ -217,19 +197,7 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             self.btn_clear_abort.clicked.connect(self._on_clear_abort_clicked)
             blay.addWidget(self.btn_clear_abort)
 
-            self.debug_button = QPushButton("Print States")
-            self.debug_button.setMinimumHeight(72)
-            self.debug_button.clicked.connect(self.print_states)
-            blay.addWidget(self.debug_button)
-
-            for button in (
-                self.open_26_button,
-                self.close_26_button,
-                self.reset_button,
-                self.btn_abort,
-                self.btn_clear_abort,
-                self.debug_button,
-            ):
+            for button in (self.btn_abort, self.btn_clear_abort):
                 button.setStyleSheet(
                     """
                     QPushButton{
@@ -566,24 +534,6 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
         """
         self.web_view.page().runJavaScript(js)
 
-    def _on_manual_button(self, valve_id: str, state: str) -> None:
-        """Handle a live-mode side-button valve action.
-
-        Args:
-            valve_id: Target valve identifier.
-            state: Requested target state from the button action.
-        """
-        logger.info("[SCADA] Manual button pressed: %s -> %s", valve_id, state)
-        if self.playback_mode:
-            logger.info(
-                "[SCADA] Ignoring manual button click in playback mode: %s -> %s",
-                valve_id,
-                state,
-            )
-            return
-        self._request_xv_command(valve_id, state, source="scada_manual_button")
-        # self.set_xv_state(valve_id, state)
-
     def on_valve_clicked(self, valve_id: str) -> None:
         """Toggle a clicked SVG valve and request the matching backend command.
 
@@ -818,19 +768,6 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             payload.get("state_reasons"),
         )
         self.pending_xv_commands.pop(valve_id, None)
-
-    def reset_all_xv(self) -> None:
-        """Reset all tracked valve display states to ``"default"`` in live mode."""
-        if self.playback_mode:
-            logger.info("[SCADA] Ignoring reset in playback mode")
-            return
-        logger.info("[SCADA] Reset all XV to default")
-        for valve_id in list(self.xv_states.keys()):
-            self.set_xv_state(valve_id, "default")
-
-    def print_states(self) -> None:
-        """Log the current cached valve display states for debugging."""
-        logger.info("[SCADA] XV states: %s", self.xv_states)
 
     def _on_abort_clicked(self) -> None:
         """Route the abort button through the relay callback when available."""

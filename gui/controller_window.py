@@ -3557,14 +3557,16 @@ class ControllerWindow(QMainWindow):
 
         self.btn_continue = QPushButton("Continue")
         self.btn_continue.setMinimumHeight(76)
-        self.btn_continue.setStyleSheet(self._btn_purple())
-        self.btn_continue.clicked.connect(self._on_continue_clicked)
+        self.btn_continue.setStyleSheet(self._btn_disabled())
+        self.btn_continue.setEnabled(False)
+        self.btn_continue.setToolTip("Not ready yet")
         blay.addWidget(self.btn_continue)
 
         self.btn_hold = QPushButton("Hold")
         self.btn_hold.setMinimumHeight(76)
-        self.btn_hold.setStyleSheet(self._btn_purple())
-        self.btn_hold.clicked.connect(self._on_hold_clicked)
+        self.btn_hold.setStyleSheet(self._btn_disabled())
+        self.btn_hold.setEnabled(False)
+        self.btn_hold.setToolTip("Not ready yet")
         blay.addWidget(self.btn_hold)
 
         self.btn_abort = QPushButton("Abort")
@@ -3575,8 +3577,9 @@ class ControllerWindow(QMainWindow):
 
         self.btn_manual_auto = QPushButton("Manual/Auto")
         self.btn_manual_auto.setMinimumHeight(76)
-        self.btn_manual_auto.setStyleSheet(self._btn_purple())
-        self.btn_manual_auto.clicked.connect(self._on_manual_auto_clicked)
+        self.btn_manual_auto.setStyleSheet(self._btn_disabled())
+        self.btn_manual_auto.setEnabled(False)
+        self.btn_manual_auto.setToolTip("Not ready yet")
         blay.addWidget(self.btn_manual_auto)
 
         self.btn_start_recording = QPushButton("Start Recording")
@@ -3858,6 +3861,23 @@ class ControllerWindow(QMainWindow):
             }}
         """
         )
+
+    def _btn_disabled(self) -> str:
+        """Return the stylesheet for permanently disabled operator buttons.
+
+        Returns:
+            Stylesheet string that renders buttons visibly greyed out.
+        """
+        return """
+            QPushButton{
+                background:#555;
+                color:#999;
+                border:none;
+                border-radius:10px;
+                font-size:16px;
+                font-weight:800;
+            }
+        """
 
     def _btn_purple(self) -> str:
         """Return the shared stylesheet for live-mode action buttons.
