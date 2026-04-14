@@ -25,6 +25,8 @@ HISTORY_DIRS := .ignitionraw .ignitionrawbak ignitionhistory
 LOCAL_DEV_FILES := .guiworkspace.json
 LOCAL_DEV_DIRS := .guimetadata
 
+BOOTSTRAP := bootstrap
+
 # Preserve demo/example runs generated for playback/integrity testing.
 # These match timestamped run_ids like:
 #   2026-03-14_12-34-56_demo_integrity_green
@@ -37,13 +39,13 @@ PRESERVE_HISTORY_RUN_PATTERNS := \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup wsl-usb run stop status \
+.PHONY: help setup wsl-usb run stop status doctor \
 	_usb-status _run-gateway _run-backend _restart \
 	_clear-all-history _clean _clean-dev \
 	_ensure-dev-dirs _ensure-venv _ensure-history-dirs
 
 
-#  User-facing commands 
+#  User-facing commands
 
 
 help:
@@ -63,110 +65,24 @@ help:
 	@echo "  make status   - Show application status"
 
 
-# Create venv and install dependencies
+# Full setup: system deps + Python venv
 setup:
-	@echo "Creating virtual environment..."
-	$(PYTHON) -m venv $(VENV)
-	@echo "Installing dependencies..."
-	@. $(VENV_ACTIVATE) && pip install -r $(REQUIREMENTS)
-	@echo ""
-	@echo "[OK] Python setup complete!"
-	@echo ""
-	@if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
-		echo "=== WSL USB Setup (Optional) ==="; \
-		echo ""; \
-		echo "Detected WSL environment."; \
-		echo "Run 'make wsl-usb' if you need to forward a USB device from Windows to WSL."; \
-	else \
-		echo "Detected native Linux - USB devices should be available directly."; \
-		echo "No USB forwarding needed."; \
-		echo "Make sure you connected the COM switch to your computer."; \
-	fi
-	@echo ""
-	@echo "[OK] Setup complete!"
-	@echo "To run: make run"
-	@echo ""
+	@bash $(BOOTSTRAP)/setup.sh
 
 
 # WSL USB port forwarding setup (optional, WSL users only)
 wsl-usb:
-	@./install-system-deps.sh
+	@bash $(BOOTSTRAP)/wsl-usb.sh
 
 
 # Start the application
 run:
-	@if [ ! -d "$(VENV)" ]; then \
-		echo "[ERROR] Virtual environment not found. Run 'make setup' first."; \
-		exit 1; \
-	fi
-	@mkdir -p "$(DEV_DIR)"
-	@mkdir -p .ignitionraw .ignitionrawbak ignitionhistory
-	@touch .ignitionraw/.gitkeep .ignitionrawbak/.gitkeep ignitionhistory/.gitkeep
-	@echo "=== Serial Ports ==="
-	@ports=$$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true); \
-	if [ -n "$$ports" ]; then \
-		echo "$$ports"; \
-	else \
-		echo "  (none detected)"; \
-		if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then \
-			echo "  WSL: run 'make wsl-usb' if USB forwarding is needed"; \
-		fi; \
-	fi
-	@echo ""
-	@set -eu; \
-	cleanup() { \
-		gui_code=$$?; \
-		echo "[INFO] Launcher cleanup starting..."; \
-		if [ -f .shutdown_signal ]; then \
-			echo "[INFO] Detected shutdown signal; waiting for shutdown_watcher..."; \
-			for i in $$(seq 1 20); do \
-				if [ ! -f .shutdown_signal ] && [ ! -f "$(APPLICATION_PID_FILE)" ]; then \
-					echo "[OK] shutdown_watcher completed cleanup"; \
-					exit "$$gui_code"; \
-				fi; \
-				sleep 0.25; \
-			done; \
-			echo "[WARN] shutdown_watcher did not finish in time; falling back to manual cleanup"; \
-		fi; \
-		if [ -f "$(APPLICATION_PID_FILE)" ]; then \
-			while IFS= read -r pid_line; do \
-				pid=$$(echo "$$pid_line" | awk '{print $$1}'); \
-				label=$$(echo "$$pid_line" | cut -d' ' -f2-); \
-				if [ "$$label" = "shutdown_watcher" ]; then \
-					continue; \
-				fi; \
-				if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-					echo "[INFO] Terminating $$label (pid=$$pid)"; \
-					kill "$$pid" 2>/dev/null || true; \
-				fi; \
-			done < "$(APPLICATION_PID_FILE)"; \
-			sleep 1.5; \
-			while IFS= read -r pid_line; do \
-				pid=$$(echo "$$pid_line" | awk '{print $$1}'); \
-				label=$$(echo "$$pid_line" | cut -d' ' -f2-); \
-				if [ "$$label" = "shutdown_watcher" ]; then \
-					continue; \
-				fi; \
-				if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-					echo "[WARN] Force killing $$label (pid=$$pid)"; \
-					kill -9 "$$pid" 2>/dev/null || true; \
-				fi; \
-			done < "$(APPLICATION_PID_FILE)"; \
-			rm -f "$(APPLICATION_PID_FILE)"; \
-		fi; \
-		rm -f "$(BACKEND_PID_FILE)" "$(BACKEND_SOCKET)" "$(GATEWAY_PID_FILE)" "$(GATEWAY_SOCKET)"; \
-		rm -f .shutdown_signal; \
-		echo "[OK] Launcher session ended"; \
-		exit "$$gui_code"; \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	rm -f "$(APPLICATION_PID_FILE)" .shutdown_signal; \
-	echo "[INFO] Starting shutdown watcher..."; \
-	nohup bash -lc 'source "$(VENV_ACTIVATE)" && exec $(PYTHON) gui/shutdown_watcher.py' >/dev/null 2>&1 & \
-	watcher_pid=$$!; \
-	echo "$$watcher_pid shutdown_watcher" >> "$(APPLICATION_PID_FILE)"; \
-	echo "[INFO] Starting GUI launcher..."; \
-	. "$(VENV_ACTIVATE)" && $(PYTHON) $(GUI)
+	@bash $(BOOTSTRAP)/run.sh
+
+
+# Environment diagnostics
+doctor:
+	@bash $(BOOTSTRAP)/doctor.sh
 
 
 stop:
@@ -289,7 +205,7 @@ status:
 	done
 
 
-#  Development-only commands (not shown in help) 
+#  Development-only commands (not shown in help)
 
 
 _usb-status:
@@ -437,7 +353,7 @@ _clean-dev:
 	@echo "[OK] Dev artifacts cleaned"
 
 
-#  Internal helpers 
+#  Internal helpers
 
 
 _ensure-dev-dirs:
