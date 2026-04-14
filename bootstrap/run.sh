@@ -10,31 +10,15 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-#  Configuration 
+#  Configuration
 
-PYTHON="${PYTHON:-python3}"
 GUI_MODULE="gui.main"
 
-DEV_DIR="$REPO_ROOT/.dev"
-HISTORY_DIRS=(".ignitionraw" ".ignitionrawbak" "ignitionhistory")
-
-GATEWAY_PID_FILE="$DEV_DIR/gateway.pid"
-BACKEND_PID_FILE="$DEV_DIR/backend.pid"
-GATEWAY_SOCKET="$REPO_ROOT/.gateway_service.sock"
-BACKEND_SOCKET="$REPO_ROOT/.backend_service.sock"
-APPLICATION_PID_FILE="$REPO_ROOT/.applicationpid"
-SHUTDOWN_SIGNAL="$REPO_ROOT/.shutdown_signal"
-VENV_ACTIVATE_PATH="$REPO_ROOT/.venv/bin/activate"
-
-#  Preflight 
+#  Preflight
 
 require_venv
-
-mkdir -p "$DEV_DIR"
-for d in "${HISTORY_DIRS[@]}"; do
-    mkdir -p "$REPO_ROOT/$d"
-    touch "$REPO_ROOT/$d/.gitkeep"
-done
+ensure_dev_dir
+ensure_history_dirs
 
 #  Serial port status 
 
@@ -96,8 +80,7 @@ cleanup() {
         rm -f "$APPLICATION_PID_FILE"
     fi
 
-    rm -f "$BACKEND_PID_FILE" "$BACKEND_SOCKET" "$GATEWAY_PID_FILE" "$GATEWAY_SOCKET"
-    rm -f "$SHUTDOWN_SIGNAL"
+    clean_runtime_files
     ok "Launcher session ended"
     exit "$gui_code"
 }
@@ -109,11 +92,10 @@ trap cleanup EXIT INT TERM
 rm -f "$APPLICATION_PID_FILE" "$SHUTDOWN_SIGNAL"
 
 info "Starting shutdown watcher..."
-nohup bash -lc "source \"$VENV_ACTIVATE_PATH\" && exec $PYTHON gui/shutdown_watcher.py" >/dev/null 2>&1 &
+nohup "$VENV_PYTHON" "$REPO_ROOT/gui/shutdown_watcher.py" >/dev/null 2>&1 &
 watcher_pid=$!
 echo "$watcher_pid shutdown_watcher" >> "$APPLICATION_PID_FILE"
 
 info "Starting GUI launcher..."
-activate_venv
 cd "$REPO_ROOT"
-$PYTHON -m "$GUI_MODULE"
+"$VENV_PYTHON" -m "$GUI_MODULE"

@@ -57,10 +57,9 @@ main() {
         check_pass ".venv exists"
 
         # Check pip and key imports inside venv.
-        local venv_python="$VENV_DIR/bin/python"
-        if [[ -x "$venv_python" ]]; then
+        if [[ -x "$VENV_PYTHON" ]]; then
             for mod in serial can numpy PyQt5 PyQt5.QtWebEngineWidgets matplotlib qdarkstyle; do
-                if "$venv_python" -c "import $mod" 2>/dev/null; then
+                if "$VENV_PYTHON" -c "import $mod" 2>/dev/null; then
                     check_pass "import $mod"
                 else
                     check_fail "import $mod"
