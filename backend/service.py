@@ -669,6 +669,7 @@ class BackendService:
         if message.type == "command_request":
             abort_system_event = None
             clear_abort_latch_system_event = None
+            abort_script_stopped_message = None
             try:
                 payload = self._normalize_mapping_payload(message.payload)
                 if is_abort_command_payload(payload):
@@ -689,6 +690,54 @@ class BackendService:
                     legacy_abort_message = dispatch_info.get("legacy_abort_message")
                     if isinstance(legacy_abort_message, str):
                         log.warning("%s", legacy_abort_message)
+
+                    # --- backend-authoritative abort: latch + stop script ---
+                    self.state_store.mark_abort_latched(
+                        latched_by=dispatch_info.get("request_source") or "gui",
+                        request_id=dispatch_info.get("request_id")
+                        or dispatch_info.get("relay_request_id"),
+                        wall_time=isoformat_z(),
+                    )
+
+                    if self.script_runner.is_running:
+                        try:
+                            abort_stop_result = self.script_runner.stop_script(
+                                reason="abort",
+                            )
+                            self.state_store.mark_script_finished(
+                                finished_wall_time=isoformat_z(),
+                                return_code=abort_stop_result.get("returncode"),
+                                reason="abort",
+                                exit_status="stopped",
+                            )
+                            self.state_store.clear_script_running_state()
+                            self.health.record_system_event(
+                                "script_stopped",
+                                severity="warning",
+                                script_id=abort_stop_result.get("script_id"),
+                                name=abort_stop_result.get("name"),
+                                pid=abort_stop_result.get("pid"),
+                                reason="abort",
+                                returncode=abort_stop_result.get("returncode"),
+                                stopped_via="abort_command",
+                            )
+                            abort_script_stopped_message = script_status_message(
+                                status="stopped",
+                                script_id=abort_stop_result.get("script_id"),
+                                name=abort_stop_result.get("name"),
+                                pid=abort_stop_result.get("pid"),
+                                returncode=abort_stop_result.get("returncode"),
+                                reason="abort",
+                                is_held=False,
+                                hold_requested=False,
+                            )
+                        except Exception:
+                            log.exception(
+                                "Failed to stop script runner during abort"
+                            )
+
+                    self.health_monitor.sample_once()
+
                 elif is_clear_abort_latch_command_payload(payload):
                     dispatch_info = build_clear_abort_latch_dispatch_info(
                         payload,
@@ -706,6 +755,7 @@ class BackendService:
                             else None
                         ),
                     )
+                    self.state_store.clear_abort_latch(wall_time=isoformat_z())
                     self._reset_runtime_after_clear_abort_latch(dispatch_info)
                     legacy_clear_message = dispatch_info.get("legacy_clear_message")
                     if isinstance(legacy_clear_message, str):
@@ -752,6 +802,9 @@ class BackendService:
 
             if abort_system_event is not None:
                 yield structured_event_message(abort_system_event)
+
+            if abort_script_stopped_message is not None:
+                yield abort_script_stopped_message
 
             if clear_abort_latch_system_event is not None:
                 yield structured_event_message(clear_abort_latch_system_event)
@@ -827,7 +880,8 @@ class BackendService:
                     else None
                 ),
             )
-            # yield state_snapshot_message(self.state_store.get_snapshot())
+            if abort_system_event is not None or clear_abort_latch_system_event is not None:
+                yield state_snapshot_message(self.state_store.get_snapshot())
             return
 
         if message.type == "start_script":

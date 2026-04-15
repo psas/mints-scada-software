@@ -375,6 +375,30 @@ class CommandRuntimeState:
 
 
 @dataclass
+class AbortState:
+    """Track backend-authoritative abort latch state.
+
+    The abort latch is set when an abort command is accepted by the backend and
+    cleared when the operator issues a clear-abort-latch command.  Both GUI
+    windows derive their abort status rendering from this state through backend
+    snapshots.
+    """
+
+    abort_latched: bool = False
+    latched_at: str | None = None
+    latched_by: str | None = None
+    latched_request_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary snapshot of the abort state.
+
+        Returns:
+            A dictionary copy of the current abort latch state.
+        """
+        return asdict(self)
+
+
+@dataclass
 class BackendRuntimeState:
     """Compose the backend's full authoritative runtime state snapshot."""
 
@@ -394,6 +418,7 @@ class BackendRuntimeState:
     script_runner: ScriptRunnerState = field(default_factory=ScriptRunnerState)
     health: HealthRuntimeState = field(default_factory=HealthRuntimeState)
     last_command: CommandRuntimeState = field(default_factory=CommandRuntimeState)
+    abort: AbortState = field(default_factory=AbortState)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a dictionary snapshot of the full backend runtime state.
@@ -418,4 +443,5 @@ class BackendRuntimeState:
             "script_runner": self.script_runner.to_dict(),
             "health": self.health.to_dict(),
             "last_command": self.last_command.to_dict(),
+            "abort": self.abort.to_dict(),
         }

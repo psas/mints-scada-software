@@ -2897,6 +2897,9 @@ class ControllerWindow(QMainWindow):
         "idle": ("Idle", "#616161", "#ffffff"),
         "running": ("Running", "#EF6C00", "#ffffff"),
         "pause": ("Paused", "#1565C0", "#ffffff"),
+        "stopped": ("Stopped", "#616161", "#ffffff"),
+        "completed": ("Done", "#2e7d32", "#ffffff"),
+        "failed": ("Failed", "#C62828", "#ffffff"),
     }
     AUX_CLOCK_STYLE = {
         "neutral": ("#f5f5f5", "transparent"),
@@ -3941,6 +3944,61 @@ class ControllerWindow(QMainWindow):
         )
         self._set_badge(self.script_badge, text, bg, fg, big=False)
 
+    def _refresh_badges_from_snapshot(self, snapshot: dict) -> None:
+        """Recompute header badges from an authoritative backend state snapshot.
+
+        This method is the single reconciliation point for live-mode header
+        badges.  It reads abort, run, script, and health state from the
+        backend snapshot and updates the corresponding badge widgets so they
+        reflect backend truth.
+
+        In playback mode this method is intentionally skipped - playback has
+        its own reconstruction logic in ``_apply_reconstructed_playback_badges``.
+
+        Args:
+            snapshot: Full backend state snapshot dictionary.
+        """
+        if self.playback_mode:
+            return
+
+        # --- Status badge ---
+        abort_section = snapshot.get("abort")
+        if isinstance(abort_section, dict) and abort_section.get("abort_latched"):
+            self.set_status("abort")
+        else:
+            run = snapshot.get("run")
+            if isinstance(run, dict) and run.get("is_running"):
+                self.set_status("normal")
+            else:
+                self.set_status("idle")
+
+        # --- Script badge ---
+        sr = snapshot.get("script_runner")
+        if isinstance(sr, dict):
+            if sr.get("is_held"):
+                self.set_script_state("pause")
+            elif sr.get("is_running"):
+                self.set_script_state("running")
+            else:
+                last_exit = sr.get("last_exit_status")
+                if last_exit == "failed":
+                    self.set_script_state("failed")
+                else:
+                    self.set_script_state("idle")
+
+        # --- Health badge ---
+        health = snapshot.get("health")
+        if isinstance(health, dict):
+            overall = str(health.get("overall_status") or "unknown").strip().lower()
+            if overall in ("error", "failed", "critical"):
+                self.set_health("alarm")
+            elif overall in ("warning", "degraded"):
+                self.set_health("attention")
+            elif overall in ("ok", "healthy"):
+                self.set_health("ok")
+            else:
+                self.set_health("default")
+
     def set_stages(self, prev: str, current: str, next_: str):
         """Update the three stage summary boxes.
 
@@ -4094,6 +4152,10 @@ class ControllerWindow(QMainWindow):
     def handle_script_status(self, payload: dict):
         """Forward backend script status updates to the script view.
 
+        Also updates the header script badge as an incremental responsiveness
+        hint.  The next full backend snapshot will reconcile authoritative
+        state, so this update is best-effort.
+
         Args:
             payload: Payload to inspect or apply.
         """
@@ -4101,6 +4163,17 @@ class ControllerWindow(QMainWindow):
         handler = getattr(scripter, "handle_script_status", None)
         if callable(handler):
             handler(dict(payload))
+
+        if not self.playback_mode and isinstance(payload, dict):
+            status = str(payload.get("status") or "").strip().lower()
+            if status in ("started", "running"):
+                self.set_script_state("running")
+            elif status in ("held", "hold_requested"):
+                self.set_script_state("pause")
+            elif status == "failed":
+                self.set_script_state("failed")
+            elif status in ("stopped", "finished", "completed", "exited", "idle"):
+                self.set_script_state("idle")
 
     def apply_backend_state_snapshot(self, snapshot: dict):
         """Apply a full backend state snapshot to the controller UI.
@@ -4166,6 +4239,8 @@ class ControllerWindow(QMainWindow):
         )
         if callable(script_snapshot_handler):
             script_snapshot_handler(dict(snapshot))
+
+        self._refresh_badges_from_snapshot(snapshot)
 
     def handle_structured_event(self, payload: dict):
         """Apply a structured event to live graphs or playback replay state.

@@ -823,6 +823,43 @@ class StateStore:
             self._state.script_runner.last_hold_wall_time = None
             self._state.script_runner.last_continue_wall_time = None
 
+    def mark_abort_latched(
+        self,
+        *,
+        latched_by: str | None = None,
+        request_id: str | None = None,
+        wall_time: str | None = None,
+    ) -> None:
+        """Latch the backend-authoritative abort state.
+
+        This marks the abort as active so that subsequent snapshots expose the
+        latched flag to GUI consumers.
+
+        Args:
+            latched_by: Source identifier describing who triggered the abort.
+            request_id: Request or relay request identifier for traceability.
+            wall_time: ISO wall-clock timestamp for the latch event.  The
+                current UTC time is used when omitted.
+        """
+        with self._lock:
+            self._state.abort.abort_latched = True
+            self._state.abort.latched_at = wall_time or isoformat_utc_now()
+            self._state.abort.latched_by = latched_by
+            self._state.abort.latched_request_id = request_id
+
+    def clear_abort_latch(self, *, wall_time: str | None = None) -> None:
+        """Clear the backend-authoritative abort latch.
+
+        Args:
+            wall_time: ISO wall-clock timestamp for the clear event (unused
+                in the current model but accepted for API symmetry).
+        """
+        with self._lock:
+            self._state.abort.abort_latched = False
+            self._state.abort.latched_at = None
+            self._state.abort.latched_by = None
+            self._state.abort.latched_request_id = None
+
     def upsert_device_runtime_shadow(
         self,
         *,

@@ -3089,11 +3089,6 @@ def _make_clear_abort_latch_trigger(
         setattr(facade, "last_clear_abort_latch_reply", dict(reply))
 
         if _clear_abort_result_ok(reply):
-            if hasattr(actual_window, "handle_script_status"):
-                try:
-                    actual_window.handle_script_status({"status": "idle"})
-                except Exception:
-                    pass
             log.warning("Clear abort latch accepted via AbortRelay for %s", window_role)
             return
 
@@ -3150,14 +3145,11 @@ def _make_abort_trigger(
 
         window_role = _workspace_role(mode, window_kind)
 
+        # Optimistic UI hint - the backend snapshot will confirm or correct
+        # this within the next snapshot cycle.
         if hasattr(actual_window, "set_status"):
             try:
                 actual_window.set_status("abort")
-            except Exception:
-                pass
-        if hasattr(actual_window, "set_script_state"):
-            try:
-                actual_window.set_script_state("pause")
             except Exception:
                 pass
 
