@@ -177,7 +177,7 @@ class DataPacket:
         # while len(self.data) < 6:
         #     self.data.append(0x00)
         if len(self.data) > 6:
-            self.data = self.data[0:5]
+            self.data = self.data[0:6]
 
     def __str__(self):
         """Return the legacy human-readable packet summary string.

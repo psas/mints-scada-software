@@ -259,7 +259,7 @@ class Bus:
         # Removes the rider only if it exists
         if rider in self._riders:
             self._riders.remove(rider)
-            rider._setBus(None)
+            rider._connectBus(None)
 
     def send(self, message: DataPacket):
         """Send a packet on the CAN bus and log it when packet logging is enabled.
