@@ -1,6 +1,7 @@
-# nexus/bus.py
+"""nexus/bus.py
 
-"""CAN bus wrapper with rider callbacks, optional packet logging, and lifecycle helpers."""
+CAN bus wrapper with rider callbacks, optional packet logging, and lifecycle helpers.
+"""
 
 import can
 import threading

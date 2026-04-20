@@ -1,6 +1,6 @@
-# backend/command_router.py
+"""backend/command_router.py
 
-"""Backend command routing, interlock checks, and runtime dispatch helpers.
+Backend command routing, interlock checks, and runtime dispatch helpers.
 
 This module validates command request payloads against backend-owned authority,
 run-mode, bus, script-runner, and device-state guards, then dispatches accepted

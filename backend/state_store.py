@@ -1,6 +1,6 @@
-# backend/state_store.py
+"""backend/state_store.py
 
-"""Authoritative backend runtime state and time-format helpers.
+Authoritative backend runtime state and time-format helpers.
 
 This module stores the backend-owned runtime snapshot that is exposed to GUI
 clients and other backend subsystems. It tracks run lifecycle, GUI session
@@ -132,7 +132,11 @@ class StateStore:
 
     @property
     def recording_session_consumed(self) -> bool:
-        """Return whether the current recording session allowance has been used."""
+        """Return whether the current recording session allowance has been used.
+
+        Returns:
+            True if the session's one-time recording token has been consumed.
+        """
         with self._lock:
             return self._state.run.recording_session_consumed
 

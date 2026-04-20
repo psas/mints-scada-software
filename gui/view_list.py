@@ -1,6 +1,7 @@
-# gui/view_list.py
+"""gui/view_list.py
 
-"""List-view widget container used by the GUI view layer."""
+List-view widget container used by the GUI view layer.
+"""
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
 from PyQt5.QtCore import Qt

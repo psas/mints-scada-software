@@ -1,6 +1,7 @@
-# gui/playback_catalog.py
+"""gui/playback_catalog.py
 
-"""Discover and summarize recorded runs available for playback selection."""
+Discover and summarize recorded runs available for playback selection.
+"""
 
 from __future__ import annotations
 

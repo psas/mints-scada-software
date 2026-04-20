@@ -1,6 +1,6 @@
-# gui/abort_relay.py
+"""gui/abort_relay.py
 
-"""Local relay process for abort and clear-abort-latch gateway requests.
+Local relay process for abort and clear-abort-latch gateway requests.
 
 This module exposes a small Unix-domain-socket server that accepts GUI-side
 abort relay messages, enriches them with relay session metadata, forwards them
@@ -257,8 +257,9 @@ class AbortRelayServer:
         dispatches each connection to a daemon thread that processes JSONL
         requests until the server is asked to stop.
 
-        Returns:
-            None.
+        Raises:
+            OSError: When the socket cannot be bound or an unexpected socket
+                error occurs outside of a clean shutdown.
         """
         self.relay_socket.parent.mkdir(parents=True, exist_ok=True)
         if self.relay_socket.exists():
@@ -315,8 +316,9 @@ class AbortRelayServer:
         Args:
             conn: Accepted Unix-domain socket connection.
 
-        Returns:
-            None.
+        Raises:
+            ValueError: When the decoded JSON payload is not a valid request
+                object or contains an unsupported message type.
         """
         with conn:
             conn.settimeout(2.0)

@@ -1,10 +1,15 @@
-# backend/run_controller.py
+"""backend/run_controller.py
+
+Run lifecycle controller for the backend service.
+
+Manages recording session start/finish, periodic snapshot emission, and
+history archive finalization.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Mapping
 
 from historymanager import HistoryManager

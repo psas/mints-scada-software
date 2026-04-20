@@ -1,6 +1,6 @@
-# gui/view_script.py
+"""gui/view_script.py
 
-"""Script selection and backend runtime control widget.
+Script selection and backend runtime control widget.
 
 This module provides the script-control panel used by the controller window.
 The widget lets the operator choose a Python script, start it through the

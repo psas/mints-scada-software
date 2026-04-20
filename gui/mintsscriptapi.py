@@ -1,6 +1,6 @@
-# gui/mintsscriptapi.py
+"""gui/mintsscriptapi.py
 
-"""GUI-facing metadata for the legacy-compatible script surface.
+GUI-facing metadata for the legacy-compatible script surface.
 
 This module exposes the minimal ``mints`` API description used by the GUI
 script editor. It does not execute scripts in the GUI thread. Instead, it

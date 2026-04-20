@@ -1,6 +1,6 @@
-# gui/graph_data.py
+"""gui/graph_data.py
 
-"""Shared graph data models and channel-key helpers.
+Shared graph data models and channel-key helpers.
 
 This module defines the small transport-agnostic record types used by live and
 playback graph providers. It also provides helpers for building and splitting

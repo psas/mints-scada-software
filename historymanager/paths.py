@@ -1,6 +1,6 @@
-# historymanager/paths.py
+"""historymanager/paths.py
 
-"""Path helpers for raw, backup, and structured history directories.
+Path helpers for raw, backup, and structured history directories.
 
 This module resolves the project root used by the history subsystem, derives
 the three archive root directories, ensures they exist when requested, and

@@ -1,6 +1,6 @@
-# gateway/main.py
+"""gateway/main.py
 
-"""Gateway process entrypoint.
+Gateway process entrypoint.
 
 This module preserves ``python -m gateway.main`` style launching by delegating
 directly to ``gateway.app.main`` and exiting with the returned process status

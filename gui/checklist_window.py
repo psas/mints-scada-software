@@ -1,6 +1,6 @@
-# gui/checklist_window.py
+"""gui/checklist_window.py
 
-"""Startup checklist and mode-selection window for launcher entry.
+Startup checklist and mode-selection window for launcher entry.
 
 This module provides the pre-launch dialog used by the root launcher. It keeps
 initial startup checks lightweight, collects required live-run metadata, and

@@ -1,6 +1,6 @@
-# scripts/script_runtime/script_proxy.py
+"""scripts/script_runtime/script_proxy.py
 
-"""Backend-side proxy for the isolated legacy script host subprocess.
+Backend-side proxy for the isolated legacy script host subprocess.
 
 This module manages the backend-owned subprocess that runs ``script_host.py``.
 It starts the host with the project root on ``PYTHONPATH``, exchanges JSONL

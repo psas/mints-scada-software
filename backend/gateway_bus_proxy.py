@@ -1,6 +1,6 @@
-# backend/gateway_bus_proxy.py
+"""backend/gateway_bus_proxy.py
 
-"""Gateway-backed bus proxy for backend outbound packet dispatch.
+Gateway-backed bus proxy for backend outbound packet dispatch.
 
 This module provides a small bus-like adapter that lets backend command paths
 send ``DataPacket`` instances through the gateway service while preserving a

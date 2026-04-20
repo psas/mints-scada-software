@@ -1,6 +1,6 @@
-# gui/window_host.py
+"""gui/window_host.py
 
-"""Launch and synchronize a single minTS GUI window process.
+Launch and synchronize a single minTS GUI window process.
 
 This module boots one controller or SCADA window in either live or playback
 mode. In live mode it binds a window to the backend IPC contract, supervisor
@@ -2478,8 +2478,9 @@ def _load_ignitionhistory_playback(window: Any, selected_test: str) -> None:
         window: Window facade or window object.
         selected_test: Playback selection string.
 
-    Returns:
-        None.
+    Raises:
+        FileNotFoundError: When the playback directory or metadata file
+            cannot be located.
     """
     selected_run_ref, playback_source = _parse_playback_selection(selected_test)
     run_dir = _resolve_ignitionhistory_run_dir(selected_run_ref)

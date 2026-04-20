@@ -1,6 +1,6 @@
-# backend/reducer.py
+"""backend/reducer.py
 
-"""Reducer for translating normalized telemetry into backend state updates.
+Reducer for translating normalized telemetry into backend state updates.
 
 This module accepts normalized telemetry envelopes, derives lightweight
 domain-specific semantic summaries, and records per-device packet metadata into

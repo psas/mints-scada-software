@@ -1,6 +1,6 @@
-# gui/workspace_metadata.py
+"""gui/workspace_metadata.py
 
-"""Persist and restore GUI workspace metadata for top-level windows.
+Persist and restore GUI workspace metadata for top-level windows.
 
 This module stores per-window geometry, Qt state blobs, screen placement, and
 optional window-specific extras in ``.guiworkspace.json`` under the project

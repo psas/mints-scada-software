@@ -1,6 +1,6 @@
-# gateway/service.py
+"""gateway/service.py
 
-"""Gateway-owned live ingest service and IPC boundary.
+Gateway-owned live ingest service and IPC boundary.
 
 This module hosts the gateway process that owns live hardware initialization,
 packet ingest, raw/rawbak history recording, and gateway-side IPC handling. It
@@ -921,6 +921,11 @@ class GatewayService:
             Gateway IPC reply messages for the request. Most request types yield
             exactly one reply, while ``hello`` yields both a hello-ack and a
             status message.
+
+        Raises:
+            ValueError: When a request payload is malformed or invalid.
+            RuntimeError: When a required precondition is not met (e.g. live
+                bus not connected).
         """
         if message.type == "hello":
             yield hello_ack_message(

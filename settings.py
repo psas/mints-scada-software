@@ -1,6 +1,6 @@
-# settings.py
+"""settings.py
 
-"""Define the static device catalog and shared device-schema helpers.
+Define the static device catalog and shared device-schema helpers.
 
 This module is the single source of truth for device metadata that is shared
 across backend and GUI code. It provides:

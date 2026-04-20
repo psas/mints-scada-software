@@ -1,6 +1,6 @@
-# backend/clear_abort_latch_command.py
+"""backend/clear_abort_latch_command.py
 
-"""Canonical clear-abort-latch helpers for backend dispatch and event recording.
+Canonical clear-abort-latch helpers for backend dispatch and event recording.
 
 This module normalizes accepted clear-abort-latch request payloads into the
 backend's canonical dispatch shape, builds the matching structured system

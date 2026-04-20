@@ -1,6 +1,6 @@
-# backend/ipc_models.py
+"""backend/ipc_models.py
 
-"""Backend IPC message models and outbound message builders.
+Backend IPC message models and outbound message builders.
 
 This module defines the line-delimited JSON message envelope used by the
 backend IPC server and provides small builders for the canonical message types

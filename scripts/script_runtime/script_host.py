@@ -1,6 +1,6 @@
-# scripts/script_runtime/script_host.py
+"""scripts/script_runtime/script_host.py
 
-"""Subprocess stdio host for legacy minTS script execution.
+Subprocess stdio host for legacy minTS script execution.
 
 This module runs a JSONL-based script host process that executes legacy script
 text inside an isolated runtime facade. The host exposes a small request/response

@@ -1,6 +1,6 @@
-# gateway/backend_client.py
+"""gateway/backend_client.py
 
-"""Persistent gateway-side IPC client for backend JSONL requests.
+Persistent gateway-side IPC client for backend JSONL requests.
 
 This module provides the gateway's long-lived Unix-socket client for talking to
 the backend service. It handles connection reuse, one retry after transport or

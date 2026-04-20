@@ -1,6 +1,6 @@
-# gui/timelineview.py
+"""gui/timelineview.py
 
-"""Timeline widgets for live and playback timeline navigation.
+Timeline widgets for live and playback timeline navigation.
 
 This module provides the high-level ``TimelineView`` wrapper used by controller
 UI code and the ``TimelineBar`` painting/interaction widget that renders script
@@ -94,6 +94,15 @@ class TimelineView(QWidget):
         """
 
         def bind(seq, fn):
+            """Create a global application shortcut for the given key sequence.
+
+            Args:
+                seq: Key sequence string (e.g. "Alt+=").
+                fn: Callable to invoke when the shortcut fires.
+
+            Returns:
+                The created QShortcut instance.
+            """
             sc = QShortcut(QKeySequence(seq), self, activated=fn)
             sc.setContext(Qt.ApplicationShortcut)  # Global shortcut (focus-independent)
             return sc

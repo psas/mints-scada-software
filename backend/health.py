@@ -1,6 +1,6 @@
-# backend/health.py
+"""backend/health.py
 
-"""Backend health publication and watchdog snapshot helpers.
+Backend health publication and watchdog snapshot helpers.
 
 This module records backend lifecycle and health-related system events into
 history and maintains a polling monitor that summarizes writer, bus, script,

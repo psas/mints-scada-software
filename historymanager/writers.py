@@ -1,6 +1,6 @@
-# historymanager/writers.py
+"""historymanager/writers.py
 
-"""Worker-process entrypoints for raw and structured history writers.
+Worker-process entrypoints for raw and structured history writers.
 
 This module builds the multiprocessing runtimes used by ``HistoryManager`` and
 implements the long-lived worker loops that persist raw-side streams,
@@ -150,8 +150,10 @@ def raw_side_writer_main(
         fsync_every_event: Whether to fsync each file after individual event
             writes and flush operations.
 
-    Returns:
-        None.
+    Raises:
+        RuntimeError: When a write or start-run command fails due to
+            inconsistent state.
+        ValueError: When an unrecognized command message type is received.
     """
     handles: dict[str, Any] = {}
     current_run_id: str | None = None
@@ -302,8 +304,10 @@ def structured_side_writer_main(
         fsync_every_event: Whether to fsync each file after individual writes
             and flush operations.
 
-    Returns:
-        None.
+    Raises:
+        RuntimeError: When a write, snapshot, or lifecycle command fails due
+            to inconsistent state.
+        ValueError: When an unrecognized command message type is received.
     """
     stream_handles: dict[str, Any] = {}
     merged_handle: Any | None = None

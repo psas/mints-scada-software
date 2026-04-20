@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# gui/shutdown_watcher.py
+"""gui/shutdown_watcher.py
 
-"""Watch for launcher shutdown signals and tear down tracked application processes.
+Watch for launcher shutdown signals and tear down tracked application processes.
 
 This module runs as a small background process that waits for the project-root
 ``.shutdown_signal`` file. When the signal appears, it terminates the processes

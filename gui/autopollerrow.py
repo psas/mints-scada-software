@@ -1,6 +1,7 @@
-# gui/autopollerrow.py
+"""gui/autopollerrow.py
 
-"""Qt layout row for controlling and observing an AutoPoller instance."""
+Qt layout row for controlling and observing an AutoPoller instance.
+"""
 
 from PyQt5.QtWidgets import QPushButton, QLabel, QHBoxLayout
 from PyQt5.QtCore import QTimer, pyqtSignal
@@ -60,6 +61,7 @@ class AutoPollerRow(QHBoxLayout):
         self.intervalbox.setFixedWidth(80)
 
         def onSpinBoxChange():
+            """Update the poller interval when the spin box value changes."""
             self.poller.setInterval(self.intervalbox.value())
 
         self.intervalbox.valueChanged.connect(onSpinBoxChange)
@@ -77,6 +79,7 @@ class AutoPollerRow(QHBoxLayout):
 
         # Update interval statistics every 100ms
         def updateAverages():
+            """Refresh the displayed polling interval and processing time statistics."""
             self.measuredLabel.setText(
                 f"avg: {f'{self.poller.getAveragePollTime():0.6f}s' if self.poller.avgBuffFilled else f'calc {self.poller._avgBuffIndex}/{self.poller.avgBuffSize}'}"
             )

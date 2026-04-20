@@ -1,6 +1,6 @@
-# historymanager/manager.py
+"""historymanager/manager.py
 
-"""History run lifecycle and archive writer coordination.
+History run lifecycle and archive writer coordination.
 
 This module owns run-scoped history setup, first-order event materialization,
 writer process orchestration, snapshot enqueueing, and writer health

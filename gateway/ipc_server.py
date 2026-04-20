@@ -1,6 +1,6 @@
-# gateway/ipc_server.py
+"""gateway/ipc_server.py
 
-"""Unix socket IPC server for gateway-side JSON-lines message exchange.
+Unix socket IPC server for gateway-side JSON-lines message exchange.
 
 This module hosts the gateway-facing IPC server used by peer processes such as
 the backend. It accepts Unix domain socket connections, decodes one JSON-lines

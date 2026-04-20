@@ -1,6 +1,6 @@
-# gui/controller_window.py
+"""gui/controller_window.py
 
-"""Controller window, device library, and graph-workspace UI for the left screen.
+Controller window, device library, and graph-workspace UI for the left screen.
 
 This module defines the controller-side Qt widgets used in both live and
 playback modes. It includes the device library tree views, graph workspace
@@ -405,9 +405,22 @@ class DeviceSectionTree(QTreeWidget):
         return chain
 
     def _iter_visible_items(self):
-        """Yield tree items that are currently visible under expansion state."""
+        """Yield tree items that are currently visible under expansion state.
+
+        Yields:
+            QTreeWidgetItem instances currently visible (expanded parents
+            and their children).
+        """
 
         def walk(item):
+            """Recursively yield a tree item and its expanded children.
+
+            Args:
+                item: The tree widget item to start from.
+
+            Yields:
+                Visible tree items in depth-first order.
+            """
             yield item
             if item.isExpanded():
                 for i in range(item.childCount()):
@@ -2507,6 +2520,13 @@ class EngineForceWidget(QWidget):
         p.setPen(QColor("#e0e0e0"))
 
         def draw_value_box(x, y, v):
+            """Draw a sensor value box with a numeric reading and unit label.
+
+            Args:
+                x: Horizontal pixel position of the box.
+                y: Vertical pixel position of the box.
+                v: Sensor value to display, or None for missing data.
+            """
             rect = QRect(int(x), int(y), int(box_w), int(box_h))
             upper = QRect(rect.x(), rect.y(), rect.width(), rect.height() // 2)
             lower = QRect(
@@ -2538,6 +2558,15 @@ class EngineForceWidget(QWidget):
         right_y = cy - box_h / 2.0
 
         def nudge_into_view(x, y):
+            """Clamp box coordinates so the box remains visible within padding.
+
+            Args:
+                x: Proposed horizontal position.
+                y: Proposed vertical position.
+
+            Returns:
+                Tuple of clamped (x, y) coordinates.
+            """
             nx = x
             ny = y
             if nx < pad:
@@ -3189,6 +3218,11 @@ class ControllerWindow(QMainWindow):
                 )
 
                 def _check() -> bool:
+                    """Return whether the backend reports archive finalization complete.
+
+                    Returns:
+                        True if the backend snapshot indicates archive_complete.
+                    """
                     s = getattr(self, "_last_backend_snapshot", None)
                     r = s.get("run", {}) if isinstance(s, dict) else {}
                     return bool(r.get("archive_complete"))

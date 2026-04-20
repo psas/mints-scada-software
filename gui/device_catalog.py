@@ -1,6 +1,6 @@
-# gui/device_catalog.py
+"""gui/device_catalog.py
 
-"""GUI-side device presentation catalog backed by backend snapshots.
+GUI-side device presentation catalog backed by backend snapshots.
 
 This module builds presentation metadata from the shared settings device schema
 and exposes lightweight proxy objects that mirror backend-owned inventory and

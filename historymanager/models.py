@@ -1,10 +1,15 @@
-# historymanager/models.py
+"""historymanager/models.py
 
-"""Shared path and state models for history archives and writer runtime state.
+Shared path and state models for history archives and writer runtime state.
 
 This module defines canonical filenames, stream-name groupings, per-run path
 containers, and mutable writer statistics objects used by the history manager
 and writer processes.
+
+``SHARED_STREAM_NAMES`` lists streams that appear in both raw and structured
+archives (used for identity alignment and cross-archive integrity).
+``wire_command_out`` (raw) and ``command_out`` (structured) are intentionally
+separate — they record different data and are not cross-comparable.
 """
 
 from __future__ import annotations
@@ -27,10 +32,6 @@ STRUCTURED_STREAM_FILENAMES: dict[str, str] = {
     "system_event": "system_event.jsonl",
 }
 
-# Streams that appear in both raw and structured archives (used for identity
-# alignment and cross-archive integrity).  wire_command_out (raw) and
-# command_out (structured) are intentionally separate - they record different
-# data and are not cross-comparable.
 SHARED_STREAM_NAMES: tuple[str, ...] = (
     "telemetry_in",
     "operator_action",

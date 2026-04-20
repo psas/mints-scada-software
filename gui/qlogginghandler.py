@@ -1,6 +1,7 @@
-# gui/qlogginghandler.py
+"""gui/qlogginghandler.py
 
-"""Qt logging handler that buffers records until a log widget is requested."""
+Qt logging handler that buffers records until a log widget is requested.
+"""
 
 import logging
 from PyQt5.QtWidgets import QPlainTextEdit

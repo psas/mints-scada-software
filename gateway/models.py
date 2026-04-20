@@ -1,6 +1,6 @@
-# gateway/models.py
+"""gateway/models.py
 
-"""Gateway runtime data models.
+Gateway runtime data models.
 
 This module defines small typed containers shared by the gateway bootstrap and
 service layers to carry resolved runtime configuration.

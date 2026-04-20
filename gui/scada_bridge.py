@@ -1,6 +1,7 @@
-# gui/scada_bridge.py
+"""gui/scada_bridge.py
 
-"""Qt bridge that forwards SCADA SVG click events into the PyQt signal layer."""
+Qt bridge that forwards SCADA SVG click events into the PyQt signal layer.
+"""
 
 import logging
 

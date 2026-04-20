@@ -1,6 +1,6 @@
-# backend/gateway_client.py
+"""backend/gateway_client.py
 
-"""Persistent backend-to-gateway IPC client.
+Persistent backend-to-gateway IPC client.
 
 This module provides the backend-side Unix socket client used to talk to the
 gateway service. It keeps a reusable request/response connection open across

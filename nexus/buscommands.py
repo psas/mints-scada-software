@@ -1,6 +1,7 @@
-# nexus/buscommands.py
+"""nexus/buscommands.py
 
-"""Canonical bus command identifiers used by Nexus packet helpers."""
+Canonical bus command identifiers used by Nexus packet helpers.
+"""
 
 
 class BusCommands():

@@ -1,6 +1,6 @@
-# gui/window_manager.py
+"""gui/window_manager.py
 
-"""Manage the controller and SCADA top-level windows.
+Manage the controller and SCADA top-level windows.
 
 This module provides the two-window GUI coordinator used by legacy startup
 paths. It owns the paired controller and SCADA windows, forwards a small set

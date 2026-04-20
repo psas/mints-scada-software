@@ -1,6 +1,7 @@
-# gui/live_graph_provider.py
+"""gui/live_graph_provider.py
 
-"""Live graph data provider backed by backend snapshots and structured events."""
+Live graph data provider backed by backend snapshots and structured events.
+"""
 
 from __future__ import annotations
 

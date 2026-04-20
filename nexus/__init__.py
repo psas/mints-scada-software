@@ -1,6 +1,6 @@
-# nexus/__init__.py
+"""nexus/__init__.py
 
-"""Expose the Nexus bus-layer public API.
+Expose the Nexus bus-layer public API.
 
 This package re-exports the core bus, packet, rider, actuator, sensor, and
 debug utility modules so higher-level code can import them from ``nexus``.

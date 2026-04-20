@@ -1,6 +1,7 @@
-# gui/scada_webpage.py
+"""gui/scada_webpage.py
 
-"""SCADA-specific web page wrapper for JavaScript console logging."""
+SCADA-specific web page wrapper for JavaScript console logging.
+"""
 
 import logging
 

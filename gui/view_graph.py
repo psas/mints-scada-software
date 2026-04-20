@@ -1,6 +1,6 @@
-# gui/view_graph.py
+"""gui/view_graph.py
 
-"""Matplotlib-backed graph widget for live and playback sensor history.
+Matplotlib-backed graph widget for live and playback sensor history.
 
 The widget renders one line per registered device, pulls history either from
 the device object itself or from an attached graph data provider, and keeps the

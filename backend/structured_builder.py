@@ -1,6 +1,6 @@
-# backend/structured_builder.py
+"""backend/structured_builder.py
 
-"""Build first-order and structured telemetry event payloads.
+Build first-order and structured telemetry event payloads.
 
 This module converts normalized telemetry packets into the backend's raw
 first-order telemetry event shape and the replay-oriented structured telemetry

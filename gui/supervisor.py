@@ -1,6 +1,6 @@
-# gui/supervisor.py
+"""gui/supervisor.py
 
-"""Supervise split GUI windows for live and playback sessions.
+Supervise split GUI windows for live and playback sessions.
 
 This module launches the controller and SCADA window-host processes, monitors
 their lifetime, and applies the session shutdown policy. In live mode, it also

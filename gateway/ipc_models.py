@@ -1,6 +1,6 @@
-# gateway/ipc_models.py
+"""gateway/ipc_models.py
 
-"""IPC message models and builders for backend/gateway communication.
+IPC message models and builders for backend/gateway communication.
 
 This module defines the JSON-lines message envelope used on the gateway IPC
 boundary and provides small builders for the canonical message types emitted by

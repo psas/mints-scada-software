@@ -1,6 +1,6 @@
-# scripts/script_runtime/script_compat.py
+"""scripts/script_runtime/script_compat.py
 
-"""Compatibility facades for legacy script execution in the subprocess host.
+Compatibility facades for legacy script execution in the subprocess host.
 
 This module exposes the minimal legacy ``mints`` surface that older scripts can
 use when they are executed through the subprocess-based script runtime. It
@@ -63,6 +63,12 @@ class LegacyDeviceProxy:
             raise AttributeError(name)
 
         def call_device_method(*args: Any, **kwargs: Any) -> None:
+            """Dispatch a device command through the legacy proxy callback.
+
+            Args:
+                *args: Positional arguments forwarded as command_args.
+                **kwargs: Keyword arguments forwarded as command_kwargs.
+            """
             self.command_callback(
                 device_id=self.device_id,
                 command_name=name,

@@ -1,6 +1,6 @@
-# gui/main.py
+"""gui/main.py
 
-"""GUI compatibility entrypoint that delegates startup to the root launcher.
+GUI compatibility entrypoint that delegates startup to the root launcher.
 
 This module preserves ``python -m gui.main`` and ``make run-gui`` as stable
 entrypoints while keeping the real session orchestration in the project-root

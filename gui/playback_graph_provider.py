@@ -1,6 +1,6 @@
-# gui/playback_graph_provider.py
+"""gui/playback_graph_provider.py
 
-"""Playback graph provider backed by ignitionhistory artifacts.
+Playback graph provider backed by ignitionhistory artifacts.
 
 This module loads playback graph samples from structured ignition history
 artifacts and exposes them through the in-memory graph provider interface used

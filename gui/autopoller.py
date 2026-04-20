@@ -1,6 +1,6 @@
-# gui/autopoller.py
+"""gui/autopoller.py
 
-"""Background bus polling for live device riders.
+Background bus polling for live device riders.
 
 This module defines ``AutoPoller``, a thread-based polling loop that repeatedly
 calls ``poll()`` on every rider registered on a ``nexus.Bus``. It also tracks
@@ -71,6 +71,13 @@ class AutoPoller():
 
         # Stop the autopoller if there is an error on the bus.
         def onBusException(bus, err, fatal):
+            """Stop the autopoller when a fatal bus error occurs.
+
+            Args:
+                bus: The bus instance that raised the exception.
+                err: The exception that occurred.
+                fatal: Whether the error is fatal to the bus.
+            """
             if fatal:
                 self.stop()
 

@@ -1,6 +1,6 @@
-# backend/service.py
+"""backend/service.py
 
-"""Backend runtime service and GUI-facing IPC coordinator.
+Backend runtime service and GUI-facing IPC coordinator.
 
 This module defines :class:`BackendService`, the backend-first system-of-record
 process for the teststand application. The service owns authoritative runtime
@@ -365,6 +365,11 @@ class BackendService:
 
         Yields:
             IPC responses produced for the request.
+
+        Raises:
+            RuntimeError: When a conflicting state prevents an operation from
+                proceeding (e.g. orphaned gateway run, gateway communication
+                failure).
         """
         with self._lock:
             if self._client_first_message_type.get(client_id) is None:
@@ -1154,7 +1159,11 @@ class BackendService:
 
     @property
     def connected_client_count(self) -> int:
-        """Return the number of currently connected backend IPC clients."""
+        """Return the number of currently connected backend IPC clients.
+
+        Returns:
+            Count of active client connections.
+        """
         with self._lock:
             return len(self._connected_clients)
 
@@ -1782,7 +1791,11 @@ class BackendService:
         return self._mirror_raw_event_to_gateway("operator_action", action_event)
 
     def _all_device_ids(self) -> list[str]:
-        """Return all non-empty device IDs currently exposed to the GUI."""
+        """Return all non-empty device IDs currently exposed to the GUI.
+
+        Returns:
+            List of canonical device ID strings.
+        """
         device_ids: list[str] = []
         for device in self.device_registry.get_gui_device_presentations():
             device_id = str(device.get("id") or "").strip()
@@ -2718,7 +2731,11 @@ class BackendService:
         return event
 
     def _build_backend_status_message(self) -> IPCMessage:
-        """Build the canonical backend status IPC message from state-store data."""
+        """Build the canonical backend status IPC message from state-store data.
+
+        Returns:
+            An IPC message containing the current backend status fields.
+        """
         status = self.state_store.get_backend_status()
         return backend_status_message(
             backend_started_at=status["backend_started_at"],

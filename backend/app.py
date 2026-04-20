@@ -1,6 +1,6 @@
-# backend/app.py
+"""backend/app.py
 
-"""Backend service process bootstrap.
+Backend service process bootstrap.
 
 This module parses backend startup arguments, constructs ``BackendService``,
 adopts any persisted gateway runtime status available at startup, and then

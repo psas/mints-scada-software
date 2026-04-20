@@ -1,6 +1,7 @@
-# gui/decadespinbox.py
+"""gui/decadespinbox.py
 
-"""Engineering-style spin box with decade-based stepping and SI-prefix parsing."""
+Engineering-style spin box with decade-based stepping and SI-prefix parsing.
+"""
 
 import math
 import re

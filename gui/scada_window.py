@@ -1,6 +1,6 @@
-# gui/scada_window.py
+"""gui/scada_window.py
 
-"""SCADA window for live control and playback visualization.
+SCADA window for live control and playback visualization.
 
 This module provides the right-screen SCADA window that renders the SVG-based
 process diagram, mirrors valve state from backend snapshots and structured
@@ -645,8 +645,6 @@ new QWebChannel(qt.webChannelTransport, function(channel) {{
             states: Mapping from valve ids to normalized or raw state values.
         """
         for valve_id, state in states.items():
-            # if valve_id in self.pending_xv_commands:
-            #     continue
             self.set_xv_state(valve_id, state)
 
     def handle_playback_loaded(self, payload: dict[str, Any]) -> None:

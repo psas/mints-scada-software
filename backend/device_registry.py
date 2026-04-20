@@ -1,6 +1,6 @@
-# backend/device_registry.py
+"""backend/device_registry.py
 
-"""Backend-owned device inventory and live bus registration helpers.
+Backend-owned device inventory and live bus registration helpers.
 
 This module loads normalized device descriptors from ``settings.py`` into
 runtime device instances, tracks them in a backend registry, and optionally
@@ -381,6 +381,11 @@ class DeviceRegistry:
         def wrapped_on_packet(
             packet, _original=original_on_packet, _meta=meta, _runtime=runtime
         ):
+            """Forward packet to original handler then notify the registry listener.
+
+            Args:
+                packet: The incoming data packet from the bus.
+            """
             _original(packet)
 
             listener = self._packet_listener

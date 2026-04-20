@@ -1,6 +1,6 @@
-# backend/main.py
+"""backend/main.py
 
-"""Backend process entrypoint.
+Backend process entrypoint.
 
 This module preserves the ``python -m backend.main`` entry path by delegating to
 ``backend.app.main`` and exiting with its returned process status code.

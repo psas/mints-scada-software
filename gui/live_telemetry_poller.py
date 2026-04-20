@@ -1,6 +1,6 @@
-# gui/live_telemetry_poller.py
+"""gui/live_telemetry_poller.py
 
-"""Compatibility wrapper for live telemetry polling lifecycle.
+Compatibility wrapper for live telemetry polling lifecycle.
 
 This module keeps the existing GUI autopoller usable from the newer live graph
 and controller paths without redesigning the polling stack. It exposes a small

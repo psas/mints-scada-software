@@ -1,10 +1,14 @@
-# gui/finalization_guard.py
+"""gui/finalization_guard.py
 
-"""Guard application shutdown while archive finalization is still running.
+Guard application shutdown while archive finalization is still running.
 
 This module provides the shared finalization-wait dialog and the background
 auto-close timer used by GUI windows that must stay open until archive
 finalization has written the completion marker.
+
+Module-level constants ``RESULT_KEEP_WAITING``, ``RESULT_COMPLETED``, and
+``RESULT_FORCE_CLOSE`` are the dialog result codes returned via
+``FinalizationWaitDialog.result_code``.
 """
 from __future__ import annotations
 
@@ -16,7 +20,6 @@ from PyQt5.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayo
 
 log = logging.getLogger(__name__)
 
-# Dialog result codes returned via FinalizationWaitDialog.result_code
 RESULT_KEEP_WAITING = 0
 RESULT_COMPLETED = 1
 RESULT_FORCE_CLOSE = 2

@@ -1,6 +1,6 @@
-# nexus/genericactuator.py
+"""nexus/genericactuator.py
 
-"""Generic actuator primitive built on the Nexus sensor packet model.
+Generic actuator primitive built on the Nexus sensor packet model.
 
 This module provides a generic actuator implementation that reuses
 ``GenericSensor`` transport and listener behavior while adding WRITE_VALUE

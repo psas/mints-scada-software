@@ -1,33 +1,33 @@
-# nexus/datapacket.py
+"""nexus/datapacket.py
 
-"""CAN packet wrapper used throughout the Nexus bus layer.
+CAN packet wrapper used throughout the Nexus bus layer.
 
 This module defines ``DataPacket``, a small convenience wrapper around the
 project's 11-bit CAN packet format. The wrapper can be created either from raw
 packet fields or from a ``python-can`` ``Message`` and exposes helpers for
 legacy log formatting, reply construction, and conversion back into a CAN
 message.
+
+11-bit arbitration ID layout::
+
+    [10]   reply — 0 = addressed to device, 1 = sent from device
+    [9]    error
+    [8]    reserved
+    [7:0]  device ID
+
+8-byte data field layout::
+
+    Byte 0: sequence number (echoed in replies to correlate request/response)
+    Byte 1: command (echoed in replies so listeners know the reply type)
+    Bytes 2-7: payload data or command arguments
 """
 
-# Keep your syntax highlighter happy when you return a DataPacket from a function in DataPacket
 from __future__ import annotations
 
-# Regular imports
 import can
 import time
 import random
 import struct
-
-# ID bits
-# [10]  reply 0=to id, 1=from id
-# [9]   error
-# [8]   reserved
-# [7:0] Device ID
-
-# The data field of the CAN messages:
-#   First byte is the sequence number. It must be included in a reply so the sender knows this is the reply to that query.
-#   Second byte is the command. It must be included in a reply so that other devices know what the reply is about.
-#   The remaining 6 bytes are the payload data or command and arguments.
 
 
 class DataPacket:

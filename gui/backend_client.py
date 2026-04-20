@@ -1,6 +1,6 @@
-# gui/backend_client.py
+"""gui/backend_client.py
 
-"""Qt backend client and semantic GUI action wrapper for backend-first mode.
+Qt backend client and semantic GUI action wrapper for backend-first mode.
 
 This module provides the GUI-side Unix-socket client used to talk to the
 backend service and fan backend IPC messages into Qt signals. It also exposes

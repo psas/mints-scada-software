@@ -1,6 +1,6 @@
-# scripts/script_runtime/script_contract.py
+"""scripts/script_runtime/script_contract.py
 
-"""Shared contract for legacy script compatibility and unified abort plumbing.
+Shared contract for legacy script compatibility and unified abort plumbing.
 
 This module defines the dependency-light script contract shared by GUI,
 backend, and script-runtime code. It centralizes the legacy script surface,

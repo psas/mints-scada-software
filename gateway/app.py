@@ -1,6 +1,6 @@
-# gateway/app.py
+"""gateway/app.py
 
-"""Gateway service process bootstrap and signal wiring.
+Gateway service process bootstrap and signal wiring.
 
 This module configures process-level logging, parses the gateway CLI, installs
 shutdown signal handlers, and runs the gateway service loop for the live

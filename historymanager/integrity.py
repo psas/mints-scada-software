@@ -1,11 +1,19 @@
-# historymanager/integrity.py
+"""historymanager/integrity.py
 
-"""Archive integrity scanning and report-writing helpers for recorded runs.
+Archive integrity scanning and report-writing helpers for recorded runs.
 
 This module compares raw, raw-backup, and structured history artifacts for a
 run, summarizes identity and sequence consistency per stream, and writes the
 stable ``integrity_report.json`` artifact that playback and catalog code can
 consume after run finalization.
+
+``SHARED_STREAM_NAMES`` contains streams present in both raw and structured
+archives with the same name, suitable for cross-archive identity/hash
+comparison. ``wire_command_out`` (raw) and ``command_out`` (structured) are
+intentionally separate. ``system_event`` is excluded because raw system_events
+are written by the gateway process while structured system_events are written by
+the backend — they use independent sequence counters and carry different event
+subsets.
 """
 
 from __future__ import annotations
@@ -30,12 +38,6 @@ STRUCTURED_STREAM_FILES: dict[str, str] = {
     "system_event": "system_event.jsonl",
 }
 
-# Streams present in both raw and structured with the same name, suitable for
-# cross-archive identity/hash comparison.  wire_command_out (raw) and
-# command_out (structured) are intentionally separate.  system_event is also
-# excluded because raw system_events are written by the gateway process while
-# structured system_events are written by the backend -- they use independent
-# sequence counters and carry different event subsets.
 SHARED_STREAM_NAMES: frozenset[str] = frozenset(
     RAW_STREAM_FILES.keys() & STRUCTURED_STREAM_FILES.keys()
 ) - frozenset({"system_event"})

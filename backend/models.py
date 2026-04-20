@@ -1,6 +1,6 @@
-# backend/models.py
+"""backend/models.py
 
-"""Typed backend runtime state models.
+Typed backend runtime state models.
 
 This module defines the dataclass-backed state containers that make up the
 backend's authoritative runtime snapshot. The models are grouped by subsystem

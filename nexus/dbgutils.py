@@ -1,6 +1,7 @@
-# nexus/dbgutils.py
+"""nexus/dbgutils.py
 
-"""Debugging helpers for formatting Python call stacks."""
+Debugging helpers for formatting Python call stacks.
+"""
 
 import inspect
 

@@ -1,6 +1,6 @@
-# backend/ipc_server.py
+"""backend/ipc_server.py
 
-"""Unix-domain IPC server for backend JSON-lines request handling.
+Unix-domain IPC server for backend JSON-lines request handling.
 
 This module provides the backend-side socket server used by local clients to
 exchange line-delimited JSON IPC messages. Each accepted client connection is
@@ -18,11 +18,11 @@ from uuid import uuid4
 from .ipc_models import IPCMessage, error_message
 
 
+#: Callable that handles one decoded client message and yields zero or more responses.
 MessageHandler = Callable[[str, IPCMessage], Iterable[IPCMessage]]
-"""Callable that handles one decoded client message and yields zero or more responses."""
 
+#: Callable invoked when a client connects or disconnects.
 ClientHook = Callable[[str], None]
-"""Callable invoked when a client connects or disconnects."""
 
 
 class IPCServer:

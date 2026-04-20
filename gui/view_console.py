@@ -1,6 +1,6 @@
-# gui/view_console.py
+"""gui/view_console.py
 
-"""Console view helpers for live logging and playback event replay.
+Console view helpers for live logging and playback event replay.
 
 This module provides the console widget used by the GUI in two modes. In live
 mode it wraps a ``QLoggingHandler`` widget for runtime log output. In playback

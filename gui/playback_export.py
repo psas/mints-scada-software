@@ -1,6 +1,6 @@
-# gui/playback_export.py
+"""gui/playback_export.py
 
-"""Playback export helpers for run directories and seek-ordered event lists.
+Playback export helpers for run directories and seek-ordered event lists.
 
 This module loads merged playback artifacts from a recorded run directory and
 exports playback events as JSONL or flattened CSV. It supports both
@@ -92,11 +92,6 @@ def flatten_event_for_csv(event: dict[str, Any]) -> dict[str, Any]:
     return flattened
 
 
-# ---------------------------------------------------------------------------
-# Directory-based export (reads merged.jsonl from disk)
-# ---------------------------------------------------------------------------
-
-
 def export_run_jsonl(
     run_dir: str | Path,
     output_path: str | Path,
@@ -184,16 +179,6 @@ def export_run_csv(
     return str(destination)
 
 
-# ---------------------------------------------------------------------------
-# Event-list export (uses pre-sorted events from PlaybackStateManager)
-#
-# These functions export directly from the manager's seek_events list,
-# which is sorted by (timestamp_key, original_index) - the same order
-# that playback seek and advance use.  This guarantees export ordering
-# matches what the user sees during playback.
-# ---------------------------------------------------------------------------
-
-
 def export_events_jsonl(
     events: list[dict[str, Any]],
     output_path: str | Path,
@@ -203,9 +188,13 @@ def export_events_jsonl(
 ) -> int:
     """Export seek-ordered playback events to JSONL.
 
-    The output order matches the order already established by playback seek and
-    advance logic. When ``metadata`` is provided, the file begins with a header
-    record marked by ``_export_metadata``.
+    Events are exported directly from the manager's seek_events list, which is
+    sorted by ``(timestamp_key, original_index)`` — the same order that playback
+    seek and advance use. This guarantees export ordering matches what the user
+    sees during playback.
+
+    When ``metadata`` is provided, the file begins with a header record marked
+    by ``_export_metadata``.
 
     Args:
         events: Pre-sorted playback events, typically from

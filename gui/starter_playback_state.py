@@ -1,6 +1,6 @@
-# gui/starter_playback_state.py
+"""gui/starter_playback_state.py
 
-"""Starter playback-state models used during the playback refactor.
+Starter playback-state models used during the playback refactor.
 
 This module defines a minimal playback run context and a lightweight playback
 state manager that own the current playback position and basic play/pause

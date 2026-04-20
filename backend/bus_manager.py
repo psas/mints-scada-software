@@ -1,6 +1,6 @@
-# backend/bus_manager.py
+"""backend/bus_manager.py
 
-"""Backend-owned bus lifecycle management with reconnect supervision.
+Backend-owned bus lifecycle management with reconnect supervision.
 
 This module wraps the live ``nexus.Bus`` instance used by the backend. It
 coordinates bus startup and shutdown, device registration, optional packet
@@ -492,6 +492,14 @@ class BusManager:
                 continue
 
             def _call_candidate(candidate: Callable[..., Any] = candidate) -> Any:
+                """Invoke the bus receive callable with optional timeout.
+
+                Args:
+                    candidate: The bus receive method to invoke.
+
+                Returns:
+                    The packet or value returned by the bus receive call.
+                """
                 try:
                     return candidate(timeout=self.receive_poll_interval)
                 except TypeError:

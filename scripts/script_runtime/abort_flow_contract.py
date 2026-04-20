@@ -1,6 +1,6 @@
-# scripts/script_runtime/abort_flow_contract.py
+"""scripts/script_runtime/abort_flow_contract.py
 
-"""Shared payload builders for the abort-latch clear relay flow.
+Shared payload builders for the abort-latch clear relay flow.
 
 This module defines the canonical message types, command names, and payload
 builders used when the GUI relay requests an abort-latch clear through the

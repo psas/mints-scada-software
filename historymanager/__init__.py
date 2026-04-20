@@ -1,6 +1,7 @@
-# historymanager/__init__.py
+"""historymanager/__init__.py
 
-"""Public historymanager exports for run history, integrity, and rebuild helpers."""
+Public historymanager exports for run history, integrity, and rebuild helpers.
+"""
 
 from .manager import HistoryManager
 from .integrity import (

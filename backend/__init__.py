@@ -1,6 +1,6 @@
-# backend/__init__.py
+"""backend/__init__.py
 
-"""Public backend package exports for the backend-first runtime layer.
+Public backend package exports for the backend-first runtime layer.
 
 This package surface re-exports the main backend coordination and state
 components used by callers that import from `backend` directly.

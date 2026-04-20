@@ -1,6 +1,6 @@
-# backend/telemetry_models.py
+"""backend/telemetry_models.py
 
-"""Telemetry normalization models used by the backend ingest path.
+Telemetry normalization models used by the backend ingest path.
 
 This module defines the immutable normalized telemetry packet shape that the
 backend uses to combine device metadata, packet fields, and runtime adapter

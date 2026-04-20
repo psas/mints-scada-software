@@ -1,6 +1,6 @@
-# gui/graph_provider.py
+"""gui/graph_provider.py
 
-"""Shared graph data provider interfaces and in-memory storage.
+Shared graph data provider interfaces and in-memory storage.
 
 This module defines the common provider contract used by graph widgets and
 mode-specific adapters, plus a small in-memory implementation that stores
@@ -36,17 +36,29 @@ class BaseGraphDataProvider(ABC):
 
     @property
     def running(self) -> bool:
-        """Return whether the provider has been started."""
+        """Return whether the provider has been started.
+
+        Returns:
+            True if the provider is currently running.
+        """
         return self._running
 
     @property
     def subscriptions(self) -> tuple[str, ...]:
-        """Return the current subscribed channel keys in sorted order."""
+        """Return the current subscribed channel keys in sorted order.
+
+        Returns:
+            Sorted tuple of subscribed channel key strings.
+        """
         return tuple(sorted(self._subscriptions))
 
     @property
     def window(self) -> GraphWindow:
-        """Return the active graph time window filter."""
+        """Return the active graph time window filter.
+
+        Returns:
+            The current time window bounding displayed samples.
+        """
         return self._window
 
     def start(self) -> None:
@@ -165,6 +177,9 @@ class BaseGraphDataProvider(ABC):
         Returns:
             A list of channel descriptors that describe the provider's known
             graph channels.
+
+        Raises:
+            NotImplementedError: When the subclass does not override this method.
         """
         raise NotImplementedError
 
@@ -188,6 +203,9 @@ class BaseGraphDataProvider(ABC):
 
         Returns:
             Sample records matching the requested channels and time range.
+
+        Raises:
+            NotImplementedError: When the subclass does not override this method.
         """
         raise NotImplementedError
 

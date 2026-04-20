@@ -1,6 +1,6 @@
-# backend/script_runner.py
+"""backend/script_runner.py
 
-"""Backend-owned script execution and plan-mode control.
+Backend-owned script execution and plan-mode control.
 
 This module runs backend-owned scripts in one of three launch modes:
 

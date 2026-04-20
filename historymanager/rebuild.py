@@ -1,6 +1,6 @@
-# historymanager/rebuild.py
+"""historymanager/rebuild.py
 
-"""Safe rebuild helpers for history archive verification and publication.
+Safe rebuild helpers for history archive verification and publication.
 
 This module inspects raw, rawbak, and structured history artifacts for a run,
 builds a safe rebuild workspace when the shared archive streams are

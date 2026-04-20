@@ -1,30 +1,31 @@
-# nexus/busrider.py
+"""nexus/busrider.py
 
-"""Base bus rider class for addressable Nexus bus devices.
+Base bus rider class for addressable Nexus bus devices.
 
 This module defines the common runtime behavior shared by bus-backed device
 objects. A ``BusRider`` tracks its bus address, software-visible device
 identity, last update time, serial lookup state, and the packet/event flow
 used by polling subclasses.
+
+CAN message send format::
+
+    Byte 0: sequence identifier (echoed back in the reply)
+    Byte 1: command
+    Bytes 2-7: arguments
+
+CAN message receive format::
+
+    Byte 0: sequence identifier (same as the outgoing message)
+    Bytes 1-7: reply data
+
+Commands ``0x00`` and ``0x01`` are ``GET_SERIAL_LOW`` and ``GET_SERIAL_HIGH``.
+The ``simulated`` flag must never be changed after construction.
 """
 
 from .datapacket import DataPacket
 from .bus import Bus
 from .buscommands import BusCommands
 import threading
-
-# Message send format
-# First byte is message identifier. Any byte can be used. This byte will become the first byte in the reply.
-# Second byte is command
-# Remaining 6 bytes are arguments
-
-# Message Receive format
-# First byte is sequency identifier. This will be the same as in the message that was sent.
-# Remaining 7 bytes are reply data
-
-# Commands 0x00 and 0x01 are GET_SERIAL_LOW and GET_SERIAL_HIGH
-
-# NEVER change if a device is simulated.
 
 
 class BusRider:
@@ -61,11 +62,11 @@ class BusRider:
         # The bus the rider rides on
         self._bus = None
 
+        # Whether this device is simulated. DO NOT CHANGE after construction.
         self._simulated = simulated
-        """If the sensor is simulated. DO NOT CHANGE THIS."""
 
+        # Time of the last decoded reading.
         self.time = None
-        """Time of the last decoded reading."""
 
         # An event that is triggered when a new packet comes in for this sensor
         self._event = threading.Event()

@@ -1,6 +1,7 @@
-# electricaldevices/actuators/solenoid.py
+"""electricaldevices/actuators/solenoid.py
 
-"""Solenoid actuator wrapper built on top of the generic actuator base."""
+Solenoid actuator wrapper built on top of the generic actuator base.
+"""
 
 
 from nexus import GenericActuator

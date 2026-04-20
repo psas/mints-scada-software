@@ -1,6 +1,6 @@
-# gui/view_export.py
+"""gui/view_export.py
 
-"""Export view for writing per-device CSV files from the GUI.
+Export view for writing per-device CSV files from the GUI.
 
 This widget currently exposes a single folder-based export action that writes a
 CSV file for each device in ``self.devices`` that is a ``GenericSensor``.

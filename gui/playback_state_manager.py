@@ -1,6 +1,6 @@
-# gui/playback_state_manager.py
+"""gui/playback_state_manager.py
 
-"""GUI-side playback runtime state models and control helpers.
+GUI-side playback runtime state models and control helpers.
 
 This module defines the loaded playback run context and the small runtime state
 machine that tracks playback position, play/pause state, speed, and the most
@@ -110,42 +110,74 @@ class PlaybackStateManager:
 
     @property
     def duration_seconds(self) -> float:
-        """Return the loaded playback duration in seconds."""
+        """Return the loaded playback duration in seconds.
+
+        Returns:
+            Duration of the loaded run, or 0.0 if no context is loaded.
+        """
         return self.context.duration_seconds if self.context else 0.0
 
     @property
     def start_dt(self) -> datetime | None:
-        """Return the loaded run start time, if a context is loaded."""
+        """Return the loaded run start time, if a context is loaded.
+
+        Returns:
+            Run start datetime, or None if no context is loaded.
+        """
         return self.context.start_dt if self.context else None
 
     @property
     def end_dt(self) -> datetime | None:
-        """Return the loaded run end time, if a context is loaded."""
+        """Return the loaded run end time, if a context is loaded.
+
+        Returns:
+            Run end datetime, or None if no context is loaded.
+        """
         return self.context.end_dt if self.context else None
 
     @property
     def snapshot_index(self) -> list[dict[str, Any]]:
-        """Return the loaded snapshot index."""
+        """Return the loaded snapshot index.
+
+        Returns:
+            List of snapshot metadata dicts, or empty list if no context.
+        """
         return self.context.snapshot_index if self.context else []
 
     @property
     def seek_events(self) -> list[dict[str, Any]]:
-        """Return the event stream used for seek-time reconstruction."""
+        """Return the event stream used for seek-time reconstruction.
+
+        Returns:
+            Sorted event list for bisect-based seek, or empty list.
+        """
         return self.context.seek_events if self.context else []
 
     @property
     def event_time_keys(self) -> list[float]:
-        """Return sorted relative event times for event-index lookup."""
+        """Return sorted relative event times for event-index lookup.
+
+        Returns:
+            Sorted list of float timestamps relative to run start.
+        """
         return self.context.event_time_keys if self.context else []
 
     @property
     def merged_events(self) -> list[dict[str, Any]]:
-        """Return the full merged event stream for the loaded run."""
+        """Return the full merged event stream for the loaded run.
+
+        Returns:
+            All merged events for the run, or empty list if no context.
+        """
         return self.context.merged_events if self.context else []
 
     @property
     def run_id(self) -> str | None:
-        """Return the loaded run identifier, if a context is loaded."""
+        """Return the loaded run identifier, if a context is loaded.
+
+        Returns:
+            Run identifier string, or None if no context is loaded.
+        """
         return self.context.run_id if self.context else None
 
     # -- Position control --

@@ -1,6 +1,6 @@
-# backend/abort_command.py
+"""backend/abort_command.py
 
-"""Canonical abort command helpers for backend dispatch and event recording.
+Canonical abort command helpers for backend dispatch and event recording.
 
 This module normalizes accepted abort request payloads into the backend's
 canonical abort dispatch shape, builds the matching structured system event,

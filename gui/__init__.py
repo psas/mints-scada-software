@@ -1,6 +1,6 @@
-# gui/__init__.py
+"""gui/__init__.py
 
-"""Lazy public export surface for the GUI package.
+Lazy public export surface for the GUI package.
 
 This module preserves the historical ``gui`` import surface while deferring
 imports of individual GUI modules until a symbol is first accessed. The lazy

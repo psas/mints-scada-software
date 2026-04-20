@@ -1,6 +1,6 @@
-# main.py
+"""main.py
 
-"""Launch and supervise live or playback GUI sessions.
+Launch and supervise live or playback GUI sessions.
 
 This module is the project-level entrypoint that coordinates checklist-driven
 startup, service readiness, supervisor launch, and end-of-session cleanup. It

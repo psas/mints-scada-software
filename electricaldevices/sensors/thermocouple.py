@@ -1,6 +1,7 @@
-# electricaldevices/sensors/thermocouple.py
+"""electricaldevices/sensors/thermocouple.py
 
-"""Thermocouple sensor implementation built on the generic sensor base."""
+Thermocouple sensor implementation built on the generic sensor base.
+"""
 
 
 from collections.abc import Callable

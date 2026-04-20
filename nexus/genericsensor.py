@@ -1,11 +1,10 @@
-# nexus/genericsensor.py
+"""nexus/genericsensor.py
 
-"""Generic sensor bus rider with request/reply decoding and value history.
+Generic sensor bus rider with request/reply decoding and value history.
 
 This module defines a base sensor implementation for the Nexus bus layer. The
-sensor can decode :contentReference[oaicite:0]{index=0}answer
-READ_VALUE requests when running in simulated/local mode, and keep a rolling
-time/value history for graphing or diagnostics.
+sensor can decode READ_VALUE requests when running in simulated/local mode, 
+and keep a rolling time/value history for graphing or diagnostics.
 """
 
 from typing import Callable

@@ -1,6 +1,7 @@
-# electricaldevices/sensors/__init__.py
+"""electricaldevices/sensors/__init__.py
 
-"""Public sensor exports for the electrical devices package."""
+Public sensor exports for the electrical devices package.
+"""
 
 from .thermocouple import Thermocouple
 

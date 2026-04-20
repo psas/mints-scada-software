@@ -1,6 +1,6 @@
-# scripts/script_runtime/script_protocol.py
+"""scripts/script_runtime/script_protocol.py
 
-"""JSONL protocol helpers for subprocess legacy script host messaging.
+JSONL protocol helpers for subprocess legacy script host messaging.
 
 This module defines the lightweight message envelope shared between the script
 runner side and the isolated stdio-based script host. It centralizes protocol

@@ -1,6 +1,7 @@
-# gateway/__init__.py
+"""gateway/__init__.py
 
-"""Gateway package exports for backend-facing gateway service access."""
+Gateway package exports for backend-facing gateway service access.
+"""
 
 from .service import GatewayService
 
