@@ -4,8 +4,8 @@ import struct
 
 
 class GenericActuator(GenericSensor):
-    def __init__(self, id: int, name: str = "GenericActuator", simulated: bool = False):
-        super().__init__(id=id, name=name, simulated=simulated)
+    def __init__(self, id: int, name: str = "GenericActuator", simulated: bool = False, **kwargs):
+        super().__init__(id=id, name=name, simulated=simulated, **kwargs)
         self.value = False
 
     def set(self, state: bool | int):

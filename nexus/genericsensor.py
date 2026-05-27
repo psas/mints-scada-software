@@ -1,6 +1,7 @@
 from typing import Callable
 import struct
 import random
+
 from nexus import DataPacket, BusRider, BusCommands
 import numpy as np
 import logging
@@ -8,8 +9,8 @@ import logging
 class GenericSensor(BusRider):
     STRUCT_FORMAT = "<IH"
     BASE_HISTORY_SIZE = 1000
-    def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None):
-        super().__init__(id, name=name, simulated=simulated)
+    def __init__(self, id: int, name: str = "GenericSensor", simulated: bool = False, genVal: Callable = None, **kwargs):
+        super().__init__(id, name=name, simulated=simulated, **kwargs)
         self.log = logging.getLogger("genericsensor")
         # the value of the sensor, or None if there was an error. Must be an unsigned 4 byte int
         self.value = None

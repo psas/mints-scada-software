@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QPushButton, QLabel
+from PyQt5.QtWidgets import QPushButton, QLabel, QCheckBox
 from nexus import GenericSensor
 from gui import DeviceRow
 
@@ -9,7 +9,8 @@ class SensorRow(DeviceRow):
         self.sensor.poll()
         self.sensor.addListener(self.onValueChange)
 
-        self.nameLabel = QLabel(self.sensor.name)
+        # Prepend the name with the ID
+        self.nameLabel = QLabel(f"[{self.sensor.id :02X}] {self.sensor.name}")
         self.addWidget(self.nameLabel)
 
         self.valueLabel = QLabel("label")
@@ -17,9 +18,17 @@ class SensorRow(DeviceRow):
 
         self.addStretch()
 
+        self.autopollcheck = QCheckBox("Autopoll")
+        self.addWidget(self.autopollcheck)
+        self.autopollcheck.setChecked(self.sensor.autopoll)
+        self.autopollcheck.clicked.connect(self.pollCheckboxCheck)
+
         self.updateButton = QPushButton("Update")
         self.updateButton.clicked.connect(self.buttonClick)
         self.addWidget(self.updateButton)
+
+    def pollCheckboxCheck(self):
+        self.sensor.autopoll = self.autopollcheck.isChecked()
 
     def onValueChange(self, sensor):
         self.valueLabel.setText(f"Value: {self.sensor.value if self.sensor.value is not None else 'error'}")
