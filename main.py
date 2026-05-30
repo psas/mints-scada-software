@@ -30,6 +30,36 @@ if __name__ == '__main__':
     )
     log.debug("Hi!")
 
+    slcanport = settings.sender
+
+    if len(sys.argv) >= 2:
+        slcanport = sys.argv[1]
+
+    if not os.path.exists(slcanport):
+        print(f"It looks like the specified slcan interface {slcanport} doesn't exist.")
+        prefixed = [entry for entry in os.listdir('/dev/') if entry.startswith("ttyACM")]
+        if len(prefixed) == 0:
+            print("No options found. You can still type the correct path, or stop the program and plug it in.")
+        else:
+            print("Options:")
+            for i,poss in enumerate(prefixed):
+                print(f"\t{i}: {poss}")
+            print("Type either the number of the option, or the path to the interface")
+            iv = input("> ")
+            if len(iv) == 0:
+                slcanport = ""
+            else:
+                try:
+                    slcanport = "/dev/" + prefixed[int(iv)]
+                except ValueError:
+                    slcanport = iv
+
+        if not os.path.exists(slcanport):
+            log.fatal(f"CAN port {slcanport} not found, aborting.")
+            exit()
+
+        log.info("reselected slcan port " + slcanport)
+
     # Set up all the things
     with Bus(settings.sender, settings.bitrate, packetprinting=True, packetlogging=False) as bus:
         with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
@@ -59,7 +89,7 @@ if __name__ == '__main__':
                 # Initialize the device
                 device = deviceClass(deviceDesc["address"], deviceDesc["name"], **config)
                 bus.addRider(device)
-                
+
                 # Find the display for the device
                 isVisibleOnList = deviceDesc["display"] is not None and deviceDesc["display"] != 'None'
                 display = None
@@ -81,6 +111,6 @@ if __name__ == '__main__':
                     displayConfig = deviceDesc["displayConfig"] if "displayConfig" in deviceDesc else {}
                     display = deviceDisplayClass(device, **displayConfig)
                 window.addDevice(device, display)
-            
+
             window.show()
             app.exec()

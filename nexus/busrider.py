@@ -15,7 +15,7 @@ import threading
 # NEVER change if a device is simulated.
 
 class BusRider():
-    def __init__(self, id: int, name = "BusRider", simulated: bool = False):
+    def __init__(self, id: int, name = "BusRider", simulated: bool = False, autopoll: bool = True):
         # ID of the remote device
         self._id = id
         
@@ -38,6 +38,8 @@ class BusRider():
         # An event that is triggered when a new packet comes in for this sensor
         self._event = threading.Event()
         self._nextSequenceID = 0
+
+        self.autopoll = autopoll
 
     def _connectBus(self, bus: Bus):
         self._bus = bus
@@ -67,3 +69,7 @@ class BusRider():
     def poll():
         ''' Implement this in child classes '''
         pass
+
+    @property
+    def id(self):
+        return self._id

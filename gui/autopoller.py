@@ -138,7 +138,8 @@ class AutoPoller():
             start = time.monotonic()
             # Poll everyone
             for d in self._bus._riders:
-                d.poll()
+                if d.autopoll:
+                    d.poll()
             # Calculate poll time statistics
             proc = time.monotonic() - start
             self._avgProcBuff[self._avgBuffIndex] = proc
