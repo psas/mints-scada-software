@@ -31,7 +31,7 @@ if __name__ == '__main__':
     log.debug("Hi!")
 
     # Set up all the things
-    with Bus(settings.sender, settings.bitrate, packetprinting=False, packetlogging=False) as bus:
+    with Bus(settings.sender, settings.bitrate, packetprinting=True, packetlogging=False) as bus:
         with AutoPoller(bus=bus, interval=0.5, autostart=False) as ap:
             app = QApplication(sys.argv)
             window = MainWindow(loghandler=consolehandler, autopoller=ap)
