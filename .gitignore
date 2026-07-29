@@ -1,21 +1,38 @@
-# Virtualenv
-# http://iamzed.com/2009/05/07/a-primer-on-virtualenv/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# Distribution / packaging
 .Python
-[Bb]in
-[Ii]nclude
-[Ll]ib
-[Ll]ib64
-[Ll]ocal
-[Ss]cripts
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Env
 pyvenv.cfg
 .venv
 pip-selfcheck.json
-__pycache__
 
-# VSCode file
-.vscode/
-activate
+# Linting / LSP
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Project Specific
 log/
-
-# PyCharm files
-.idea/
