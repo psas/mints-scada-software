@@ -1,5 +1,9 @@
+from logging import getLogger
+
 import can
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+
+log = getLogger(__name__)
 
 
 class CANReceiveSignals(QObject):
@@ -8,8 +12,6 @@ class CANReceiveSignals(QObject):
 
 
 class CANReceiveTask(QRunnable):
-    """Long-running task: owns the receive loop, submitted once to the pool."""
-
     def __init__(self, bus: can.BusABC):
         super().__init__()
         self.bus = bus
@@ -20,10 +22,15 @@ class CANReceiveTask(QRunnable):
     def run(self):
         while self._running:
             try:
-                msg = self.bus.recv(timeout=1.0)
+                msg: can.Message | None = self.bus.recv(timeout=1.0)
                 if msg is not None:
+                    id = msg.arbitration_id
+                    data = msg.data
+                    log.debug("recv task received msg: id - %s data - %s", id, data)
                     self.signals.sigMessage.emit(msg)
+
             except can.CanError as e:
+                log.error("CAN receive error: %s", e)
                 self.signals.sigError.emit(str(e))
 
     def stop(self):
@@ -56,7 +63,7 @@ class BackendApi(QObject):
             self._recv_task.stop()
             self._recv_task = None
 
-    def send_can_msg(self, msg: can.Message):
+    def send(self, msg: can.Message):
         self.bus.send(msg)
 
     def shutdown(self):
