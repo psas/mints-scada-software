@@ -1,9 +1,9 @@
-from logging import getLogger
 import sys
-from time import sleep
-from box import Box
+from logging import getLogger
+from queue import Full, Queue, ShutDown
 
 import can
+from box import Box
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 log = getLogger(__name__)
@@ -22,8 +22,10 @@ DATA_BYTE = 2
 
 
 class BackendApi(QObject):
-    sigMessage = Signal(object)
-    sigError = Signal(str)
+    sig_rx_message = Signal(can.Message)
+    sig_rx_error = Signal(str)
+    _sig_tx_message = Signal(can.Message)
+    sig_tx_error = Signal(str)
 
     def __init__(self, channel: str):
         super().__init__()
@@ -40,19 +42,24 @@ class BackendApi(QObject):
 
         self._pool = QThreadPool.globalInstance()
         self._recv_task: CANReceiveTask | None = None
+        self._send_task: CANSendTask | None = None
+        self.sig_rx_message.connect(self.__on_msg_rx)
 
     def start(self):
         """Begin sending and receiving CAN messages on a pooled thread."""
-        if self._recv_task is not None:
-            return  # already running
+        if self._recv_task is not None or self._send_task is not None:
+            log.error("Attempt to start already running API")
+            return
         self._recv_task = CANReceiveTask(self.bus)
         self._send_task = CANSendTask(self.bus)
-        self._recv_task.signals.sigMessage.connect(self.sigMessage.emit)
-        self._recv_task.signals.sigError.connect(self.sigError.emit)
+        self._recv_task.signals.sig_rx_message.connect(self.sig_rx_message.emit)
+        self._recv_task.signals.sig_rx_error.connect(self.sig_rx_error.emit)
+        self._sig_tx_message.connect(self._send_task.on_msg_tx)
+        self._send_task.signals.sig_tx_error.connect(self.__on_tx_error)
         self._pool.start(self._recv_task)
         self._pool.start(self._send_task)
 
-    def stop(self):
+    def __stop(self):
         if self._recv_task is None:
             return
         self._recv_task.stop()
@@ -63,24 +70,32 @@ class BackendApi(QObject):
         self._send_task.stop()
         self._send_task = None
 
-    def send(self, msg: can.Message):
-        self.bus.send(msg)
+    def __send(self, msg: can.Message):
+        self._sig_tx_message.emit(msg)
+
+    def __on_tx_error(self, err_msg: str):
+        log.error("%s", err_msg)
+
+    def __on_msg_rx(self, msg: can.Message):
+        id = msg.arbitration_id
+        data = msg.data
+        log.debug("Received CAN msg -- id: %s data: %s", id, data)
 
     def shutdown(self):
-        self.stop()
-        self._pool.waitForDone(2000)
+        self.__stop()
         self.bus.shutdown()
+        self._pool.waitForDone(250)
 
 
 class CANReceiveSignals(QObject):
-    sigMessage = Signal(object)  # emits can.Message
-    sigError = Signal(str)
+    sig_rx_message = Signal(can.Message)
+    sig_rx_error = Signal(str)
 
 
 class CANReceiveTask(QRunnable):
     def __init__(self, bus: can.BusABC):
         super().__init__()
-        self.bus = bus
+        self._bus = bus
         self.signals = CANReceiveSignals()
         self._running = True
 
@@ -88,19 +103,16 @@ class CANReceiveTask(QRunnable):
     def run(self):
         while self._running:
             try:
-                msg: can.Message | None = self.bus.recv(timeout=2.0)
+                msg: can.Message | None = self._bus.recv()
                 if msg is None:
-                    log.warning("Timed out waiting for a message on the CAN bus")
+                    log.debug("Unexpected null msg waiting for CAN rx")
                     continue
 
-                id = msg.arbitration_id
-                data = msg.data
-                log.debug("received CAN msg -- id: %s data: %s", id, data)
-                self.signals.sigMessage.emit(msg)
+                self.signals.sig_rx_message.emit(msg)
 
             except can.CanError as e:
                 log.error("CAN receive error: %s", e)
-                self.signals.sigError.emit(str(e))
+                self.signals.sig_rx_error.emit(str(e))
                 continue
 
     def stop(self):
@@ -108,30 +120,41 @@ class CANReceiveTask(QRunnable):
 
 
 class CANSendSignals(QObject):
-    sigError = Signal(str)
+    sig_tx_error = Signal(str)
 
 
 class CANSendTask(QRunnable):
     def __init__(self, bus: can.BusABC):
         super().__init__()
-        self.bus = bus
+        self._bus = bus
         self.signals = CANSendSignals()
+        self._queue: Queue[can.Message] = Queue(50)
         self._running = True
 
     @Slot()
     def run(self):
         while self._running:
             try:
-                msg = can.Message(is_extended_id=False, arbitration_id=0x01, data=[0, 0, 0, 0, 0, 0, 0, 0])
-                self.bus.send(msg)
-                sleep(1)
+                msg = self._queue.get()
+                self._bus.send(msg)
+
+            except ShutDown:
+                break
 
             except can.CanError as e:
                 log.error("CAN send error: %s", e)
-                self.signals.sigError.emit(str(e))
+                self.signals.sig_tx_error.emit(str(e))
+
+    def on_msg_tx(self, msg: can.Message):
+        log.debug("Signal to send CAN msg received -- queuing message")
+        try:
+            self._queue.put_nowait(msg)
+        except Full as e:
+            self.signals.sig_tx_error.emit(f"Queue full -- dropping CAN msg -- {e}")
 
     def stop(self):
         self._running = False
+        self._queue.shutdown(immediate=True)
 
 
 class CANData:

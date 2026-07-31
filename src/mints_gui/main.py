@@ -34,7 +34,6 @@ def main():
     )
 
     window = MainWindow(log_widget, console_widget)
-
     timer = QtCore.QTimer()
     timer.timeout.connect(window.update_graph)
     timer.start(100)
