@@ -13,6 +13,7 @@ dependencies = [
     "pyqtgraph>=0.14.0",
     "pyside6>=6.11.1",
     "pyside6-stubs>=6.7.3.0",
+    "python-box>=7.4.1",
 ]
 
 [project.gui-scripts]

@@ -1,9 +1,12 @@
 from logging import getLogger
+from box import Box
 
 import can
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 log = getLogger(__name__)
+
+SETTINGS = Box.from_toml(filename="settings.toml")
 
 
 class CANReceiveSignals(QObject):
@@ -43,8 +46,11 @@ class BackendApi(QObject):
 
     def __init__(self, channel: str):
         super().__init__()
+        log.debug("Initializing backend API")
         self.bus = can.interface.Bus(
-            interface="socketcan", channel=channel, bitrate=1000000
+            interface=SETTINGS.can.interface,
+            channel=SETTINGS.can.channel if channel is None else channel,
+            bitrate=SETTINGS.can.bitrate,
         )
         self._pool = QThreadPool.globalInstance()
         self._recv_task: CANReceiveTask | None = None
@@ -70,4 +76,3 @@ class BackendApi(QObject):
         self.stop()
         self._pool.waitForDone(2000)
         self.bus.shutdown()
-
