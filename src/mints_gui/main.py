@@ -26,13 +26,14 @@ parser.add_argument(
 def main():
     args = parser.parse_args()
     app = pg.mkQApp("MinTS")
-
     log_widget = setup_logger()
-    console_widget = ConsoleWidget(namespace={"app": app})
+    api = BackendApi(args.bus)
+
+    console_widget = ConsoleWidget(
+        namespace={"app": app, "settings": SETTINGS, "api": api}
+    )
 
     window = MainWindow(log_widget, console_widget)
-
-    api = BackendApi(args.bus)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(window.update_graph)
@@ -41,10 +42,10 @@ def main():
     log.info("Welcome to MinTS!")
     api.start()
     window.show()
-    exit = app.exec()
+    exit_code = app.exec()
 
     api.shutdown()
-    sys.exit(exit)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

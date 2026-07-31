@@ -3,40 +3,28 @@ import logging
 import os
 from typing import override
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
+from PySide6.QtCore import QObject, Signal
 
 log = getLogger(__name__)
 
 APP_LOG_LEVEL = logging.DEBUG
 
-class QLoggingHandler(Handler):
+
+class QLoggingHandler(Handler, QObject):
+    appendPlainText = Signal(str)
+
     def __init__(self):
         super().__init__()
-        self.__widget = None
-        self.buf: list[LogRecord] = []
-
-    @property
-    def widget(self) -> QPlainTextEdit:
-        if self.__widget is not None:
-            return self.__widget
-
-        self.__widget = QPlainTextEdit()
-        self.__widget.setReadOnly(True)
-        self.__widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-
-        for record in self.buf:
-            msg = self.format(record)
-            self.__widget.appendPlainText(msg)
-
-        return self.__widget
+        QObject.__init__(self)
+        self.widget = QPlainTextEdit()
+        self.widget.setReadOnly(True)
+        self.widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.appendPlainText.connect(self.widget.appendPlainText)
 
     @override
-    def emit(self, record: LogRecord) -> None:
-        if self.__widget is None:
-            raise ValueError("Logger widget not initialized")
-
+    def emit(self, record: LogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         msg = self.format(record)
-        self.buf.append(record)
-        self.__widget.appendPlainText(msg)
+        self.appendPlainText.emit(msg)
 
 
 class ShortNameFormatter(logging.Formatter):

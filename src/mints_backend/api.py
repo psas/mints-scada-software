@@ -1,5 +1,6 @@
 from logging import getLogger
 import sys
+from time import sleep
 from box import Box
 
 import can
@@ -28,7 +29,7 @@ class BackendApi(QObject):
         super().__init__()
         log.debug("Initializing backend API")
         try:
-            self.bus = can.interface.Bus(
+            self.bus = can.ThreadSafeBus(
                 interface=SETTINGS.can.interface,
                 channel=SETTINGS.can.channel if channel is None else channel,
                 bitrate=SETTINGS.can.bitrate,
@@ -41,18 +42,26 @@ class BackendApi(QObject):
         self._recv_task: CANReceiveTask | None = None
 
     def start(self):
-        """Begin receiving CAN messages on a pooled thread."""
+        """Begin sending and receiving CAN messages on a pooled thread."""
         if self._recv_task is not None:
             return  # already running
         self._recv_task = CANReceiveTask(self.bus)
+        self._send_task = CANSendTask(self.bus)
         self._recv_task.signals.sigMessage.connect(self.sigMessage.emit)
         self._recv_task.signals.sigError.connect(self.sigError.emit)
         self._pool.start(self._recv_task)
+        self._pool.start(self._send_task)
 
     def stop(self):
-        if self._recv_task is not None:
-            self._recv_task.stop()
-            self._recv_task = None
+        if self._recv_task is None:
+            return
+        self._recv_task.stop()
+        self._recv_task = None
+
+        if self._send_task is None:
+            return
+        self._send_task.stop()
+        self._send_task = None
 
     def send(self, msg: can.Message):
         self.bus.send(msg)
@@ -79,22 +88,53 @@ class CANReceiveTask(QRunnable):
     def run(self):
         while self._running:
             try:
-                msg: can.Message | None = self.bus.recv(timeout=1.0)
-                if msg is not None:
-                    id = msg.arbitration_id
-                    data = msg.data
-                    log.debug("recv task received msg: id - %s data - %s", id, data)
-                    self.signals.sigMessage.emit(msg)
+                msg: can.Message | None = self.bus.recv(timeout=2.0)
+                if msg is None:
+                    log.warning("Timed out waiting for a message on the CAN bus")
+                    continue
+
+                id = msg.arbitration_id
+                data = msg.data
+                log.debug("received CAN msg -- id: %s data: %s", id, data)
+                self.signals.sigMessage.emit(msg)
 
             except can.CanError as e:
                 log.error("CAN receive error: %s", e)
+                self.signals.sigError.emit(str(e))
+                continue
+
+    def stop(self):
+        self._running = False
+
+
+class CANSendSignals(QObject):
+    sigError = Signal(str)
+
+
+class CANSendTask(QRunnable):
+    def __init__(self, bus: can.BusABC):
+        super().__init__()
+        self.bus = bus
+        self.signals = CANSendSignals()
+        self._running = True
+
+    @Slot()
+    def run(self):
+        while self._running:
+            try:
+                msg = can.Message(is_extended_id=False, arbitration_id=0x01, data=[0, 0, 0, 0, 0, 0, 0, 0])
+                self.bus.send(msg)
+                sleep(1)
+
+            except can.CanError as e:
+                log.error("CAN send error: %s", e)
                 self.signals.sigError.emit(str(e))
 
     def stop(self):
         self._running = False
 
 
-class CanData:
+class CANData:
     def __init__(self, seq: int, cmd: int, bytes: bytearray):
         self.seq = seq
         self.cmd = cmd
@@ -106,4 +146,4 @@ class DataPacket:
         data = msg.data
         self.id = msg.arbitration_id & NODE_ID_MASK
         self.err = err
-        self.data = CanData(data[SEQ_BYTE], data[CMD_BYTE], data[DATA_BYTE:])
+        self.data = CANData(data[SEQ_BYTE], data[CMD_BYTE], data[DATA_BYTE:])
