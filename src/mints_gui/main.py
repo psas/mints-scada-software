@@ -3,10 +3,10 @@ import sys
 from argparse import ArgumentParser
 
 import pyqtgraph as pg
-from box import Box
 from pyqtgraph.console import ConsoleWidget
 from PySide6 import QtCore
 
+from config import config as CFG
 from mints_backend.api import BackendApi
 from mints_gui.ui.main_window import MainWindow
 from mints_gui.ui.widgets.logger import setup_logger
@@ -14,8 +14,6 @@ from mints_gui.ui.widgets.logger import setup_logger
 log = logging.getLogger(__name__)
 
 pg.setConfigOption("antialias", True)
-
-config = Box.from_toml(filename="config.toml")
 
 parser = ArgumentParser()
 parser.add_argument(
@@ -29,7 +27,7 @@ def main():
     log_widget = setup_logger()
     api = BackendApi(args.bus)
 
-    console_widget = ConsoleWidget(namespace={"app": app, "config": config, "api": api})
+    console_widget = ConsoleWidget(namespace={"app": app, "config": CFG, "api": api})
 
     window = MainWindow(log_widget, console_widget)
     timer = QtCore.QTimer()

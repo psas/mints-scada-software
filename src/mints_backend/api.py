@@ -2,14 +2,12 @@ import sys
 from logging import getLogger
 
 import can
-from box import Box
 from PySide6.QtCore import QObject, QThreadPool, Signal
+from config import config as CFG
 
 from mints_backend.tasks import CANReceiveTask, CANSendTask
 
 log = getLogger(__name__)
-
-config = Box.from_toml(filename="config.toml")
 
 NODE_ID_MASK = 0x7F
 
@@ -33,9 +31,9 @@ class BackendApi(QObject):
         log.debug("Initializing backend API")
         try:
             self.bus = can.ThreadSafeBus(
-                interface=config.can.interface,
-                channel=config.can.channel if channel is None else channel,
-                bitrate=config.can.bitrate,
+                interface=CFG["can"]["interface"],
+                channel=CFG["can"]["channel"] if channel is None else channel,
+                bitrate=CFG["can"]["bitrate"],
             )
         except OSError as e:
             log.error("Unable to connect to CAN bus -- %s", e.strerror)

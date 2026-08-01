@@ -23,9 +23,8 @@ class CANReceiveTask(QRunnable):
     def run(self):
         while self._running:
             try:
-                msg: can.Message | None = self._bus.recv()
+                msg: can.Message | None = self._bus.recv(timeout=1.0)
                 if msg is None:
-                    log.debug("Unexpected null msg waiting for CAN rx")
                     continue
 
                 self.signals.sig_rx_message.emit(msg)
