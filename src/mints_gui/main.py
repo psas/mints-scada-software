@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 pg.setConfigOption("antialias", True)
 
-SETTINGS = Box.from_toml(filename="settings.toml")
+config = Box.from_toml(filename="config.toml")
 
 parser = ArgumentParser()
 parser.add_argument(
@@ -29,9 +29,7 @@ def main():
     log_widget = setup_logger()
     api = BackendApi(args.bus)
 
-    console_widget = ConsoleWidget(
-        namespace={"app": app, "settings": SETTINGS, "api": api}
-    )
+    console_widget = ConsoleWidget(namespace={"app": app, "config": config, "api": api})
 
     window = MainWindow(log_widget, console_widget)
     timer = QtCore.QTimer()

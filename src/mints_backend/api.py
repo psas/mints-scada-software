@@ -9,7 +9,7 @@ from mints_backend.tasks import CANReceiveTask, CANSendTask
 
 log = getLogger(__name__)
 
-SETTINGS = Box.from_toml(filename="settings.toml")
+config = Box.from_toml(filename="config.toml")
 
 NODE_ID_MASK = 0x7F
 
@@ -33,9 +33,9 @@ class BackendApi(QObject):
         log.debug("Initializing backend API")
         try:
             self.bus = can.ThreadSafeBus(
-                interface=SETTINGS.can.interface,
-                channel=SETTINGS.can.channel if channel is None else channel,
-                bitrate=SETTINGS.can.bitrate,
+                interface=config.can.interface,
+                channel=config.can.channel if channel is None else channel,
+                bitrate=config.can.bitrate,
             )
         except OSError as e:
             log.error("Unable to connect to CAN bus -- %s", e.strerror)
