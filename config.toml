@@ -3,5 +3,54 @@ interface = "socketcan"
 channel = "vcan0"
 bitrate = 1000000
 
-[devices]
-device1 = {addr = 0x01}
+[[boards]]
+node_id = 0x01
+valves = []
+
+[boards.adc]
+channels = [
+  { channel = 2, name = "TT5", type = "temperature" },
+  { channel = 3, name = "TT6", type = "temperature" },
+]
+
+[[boards]]
+node_id = 0x02
+valves = []
+
+[boards.adc]
+channels = [
+  { channel = 1, name = "PT1", type = "pressure" },
+  { channel = 2, name = "PT2", type = "pressure" },
+  { channel = 3, name = "PT3", type = "pressure" },
+  { channel = 4, name = "PT4", type = "pressure" },
+]
+
+[[boards]]
+node_id = 0x03
+valves = [{ id = 0, name = "IG-XV-23" }, { id = 1, name = "IPA-XV-25" }]
+
+[boards.adc]
+channels = []
+
+[[boards]]
+node_id = 0x04
+valves = [
+  { id = 0, name = "IG-XV-27" },
+  { id = 1, name = "LOX-XV-26" },
+  { id = 2, name = "IG-XV-24" },
+]
+
+[boards.adc]
+channels = []
+
+[[boards]]
+node_id = 0x05
+valves = []
+
+[boards.adc]
+channels = [
+  { channel = 1, name = "LC1", type = "load_cell" },
+  { channel = 2, name = "LC2", type = "load_cell" },
+  { channel = 3, name = "LC3", type = "load_cell" },
+  { channel = 4, name = "LC4", type = "load_cell" },
+]
