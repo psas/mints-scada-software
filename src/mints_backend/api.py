@@ -1,6 +1,5 @@
 import sys
 from logging import getLogger
-
 import can
 from PySide6.QtCore import QObject, QThreadPool, Signal
 
@@ -11,6 +10,7 @@ log = getLogger(__name__)
 
 NODE_ID_MASK = 0x7F
 
+ERR_MSG_ID = 0x80
 CLAIM_NODE_MSG_ID = 0x180
 REQUEST_MSG_ID = 0x200
 RESPONSE_MSG_ID = 0x280
@@ -80,8 +80,14 @@ class CANData:
 
 
 class DataPacket:
-    def __init__(self, msg: can.Message, err: int):
-        data = msg.data
-        self.id = msg.arbitration_id & NODE_ID_MASK
-        self.err = err
-        self.data = CANData(data[SEQ_BYTE], data[CMD_BYTE], data[DATA_BYTE:])
+    def __init__(self, id: int, is_err: bool, data: CANData):
+        self.id = id
+        self.is_err = is_err
+        self.data = data
+
+    @classmethod
+    def from_can_message(cls, msg: can.Message):
+        id = msg.arbitration_id & NODE_ID_MASK
+        is_err = msg.arbitration_id & ~NODE_ID_MASK == ERR_MSG_ID
+        data = CANData(msg.data[SEQ_BYTE], msg.data[CMD_BYTE], msg.data[DATA_BYTE:])
+        return cls(id, is_err, data)
