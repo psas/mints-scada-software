@@ -36,3 +36,7 @@ dmypy.json
 
 # Project Specific
 log/
+
+# Lock files
+uv.lock
+uv.lock
