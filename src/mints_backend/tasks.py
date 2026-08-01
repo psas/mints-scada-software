@@ -7,37 +7,6 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 log = logging.getLogger(__name__)
 
 
-class CANReceiveSignals(QObject):
-    sig_rx_message = Signal(can.Message)
-    sig_rx_error = Signal(str)
-
-
-class CANReceiveTask(QRunnable):
-    def __init__(self, bus: can.BusABC):
-        super().__init__()
-        self._bus = bus
-        self.signals = CANReceiveSignals()
-        self._running = True
-
-    @Slot()
-    def run(self):
-        while self._running:
-            try:
-                msg: can.Message | None = self._bus.recv(timeout=1.0)
-                if msg is None:
-                    continue
-
-                self.signals.sig_rx_message.emit(msg)
-
-            except can.CanError as e:
-                log.error("CAN receive error: %s", e)
-                self.signals.sig_rx_error.emit(str(e))
-                continue
-
-    def stop(self):
-        self._running = False
-
-
 class CANSendSignals(QObject):
     sig_tx_error = Signal(str)
 

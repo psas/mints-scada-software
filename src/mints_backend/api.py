@@ -3,9 +3,9 @@ from logging import getLogger
 
 import can
 from PySide6.QtCore import QObject, QThreadPool, Signal
-from config import config as CFG
 
-from mints_backend.tasks import CANReceiveTask, CANSendTask
+from config import config as CFG
+from mints_backend.tasks import CANSendTask
 
 log = getLogger(__name__)
 
@@ -39,31 +39,22 @@ class BackendApi(QObject):
             log.error("Unable to connect to CAN bus -- %s", e.strerror)
             sys.exit(e.errno)
 
+        self.notifier = can.Notifier(self.bus, [self.sig_rx_message.emit])
         self._pool = QThreadPool.globalInstance()
-        self._recv_task: CANReceiveTask | None = None
         self._send_task: CANSendTask | None = None
-        self.sig_rx_message.connect(self.__on_msg_rx)
 
     def start(self):
         """Begin sending and receiving CAN messages on a pooled thread."""
-        if self._recv_task is not None or self._send_task is not None:
+        if self._send_task is not None:
             log.error("Attempt to start already running API")
             return
-        self._recv_task = CANReceiveTask(self.bus)
         self._send_task = CANSendTask(self.bus)
-        self._recv_task.signals.sig_rx_message.connect(self.sig_rx_message.emit)
-        self._recv_task.signals.sig_rx_error.connect(self.sig_rx_error.emit)
         self._sig_tx_message.connect(self._send_task.on_msg_tx)
         self._send_task.signals.sig_tx_error.connect(self.__on_tx_error)
-        self._pool.start(self._recv_task)
         self._pool.start(self._send_task)
 
     def __stop(self):
-        if self._recv_task is None:
-            return
-        self._recv_task.stop()
-        self._recv_task = None
-
+        self.notifier.stop()
         if self._send_task is None:
             return
         self._send_task.stop()
@@ -74,11 +65,6 @@ class BackendApi(QObject):
 
     def __on_tx_error(self, err_msg: str):
         log.error("%s", err_msg)
-
-    def __on_msg_rx(self, msg: can.Message):
-        id = msg.arbitration_id
-        data = msg.data
-        log.debug("Received CAN msg -- id: %s data: %s", id, data)
 
     def shutdown(self):
         self.__stop()
