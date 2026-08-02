@@ -25,7 +25,11 @@ def main():
     args = parser.parse_args()
     app = pg.mkQApp("MinTS")
     log_widget = setup_logger()
-    api = BackendApi(args.bus)
+    try:
+        api = BackendApi(args.bus)
+    except OSError as e:
+        log.error("Unable to connect to CAN bus -- %s", e.strerror)
+        sys.exit(e.errno)
 
     console_widget = ConsoleWidget(namespace={"app": app, "config": CFG, "api": api})
 

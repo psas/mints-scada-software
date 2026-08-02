@@ -25,8 +25,7 @@ class BackendApi(QObject):
                 bitrate=CFG["can"]["bitrate"],
             )
         except OSError as e:
-            log.error("Unable to connect to CAN bus -- %s", e.strerror)
-            sys.exit(e.errno)
+            raise OSError from e
 
         self.notifier = can.Notifier(self.bus, [self.sig_rx_message.emit])
         self._pool = QThreadPool.globalInstance()
