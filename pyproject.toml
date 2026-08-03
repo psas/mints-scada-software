@@ -10,6 +10,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "argparse>=1.4.0",
+    "pydantic>=2.13.4",
     "pyqtgraph>=0.14.0",
     "pyside6>=6.11.1",
     "pyside6-stubs>=6.7.3.0",

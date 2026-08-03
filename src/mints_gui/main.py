@@ -1,8 +1,8 @@
-from errno import EFTYPE
 import logging
 import sys
 from argparse import ArgumentParser
 
+from pydantic import ValidationError
 import pyqtgraph as pg
 from pyqtgraph.console import ConsoleWidget
 from PySide6 import QtCore
@@ -35,10 +35,20 @@ def main():
         sys.exit(e.errno)
 
     try:
-        device_manager = DeviceManager()
-    except IndexError as e:
-        log.error("Error parsing devices from config: %s", e)
-        sys.exit(EFTYPE)
+        device_manager = DeviceManager(can)
+    except ValidationError as e:
+        err_details = e.errors()
+        for err in err_details:
+            log.error(
+                "Validation error in board config file. Field: %s. Found: '%s' - %s",
+                err["loc"],
+                err["input"],
+                err["msg"],
+            )
+        sys.exit(1)
+    except KeyError or ValueError as e:
+        log.error("%s", e)
+        sys.exit(1)
 
     console_widget = ConsoleWidget(
         namespace={
