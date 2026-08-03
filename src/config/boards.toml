@@ -1,0 +1,42 @@
+[[board]]
+node_id = 0x01
+
+[board.adc]
+channels = [
+  { channel = 2, name = "TT5", kind = "temperature" },
+  { channel = 3, name = "TT6", kind = "temperature" },
+]
+
+[[board]]
+node_id = 0x02
+
+[board.adc]
+channels = [
+  { channel = 1, name = "PT1", kind = "pressure" },
+  { channel = 2, name = "PT2", kind = "pressure" },
+  { channel = 3, name = "PT3", kind = "pressure" },
+  { channel = 4, name = "PT4", kind = "pressure" },
+]
+
+[[board]]
+node_id = 0x03
+valves = [{ id = 0, name = "IG-XV-23" }, { id = 1, name = "IPA-XV-25" }]
+
+[[board]]
+node_id = 0x04
+valves = [
+  { id = 0, name = "IG-XV-27" },
+  { id = 1, name = "LOX-XV-26" },
+  { id = 2, name = "IG-XV-24" },
+]
+
+[[board]]
+node_id = 0x05
+
+[board.adc]
+channels = [
+  { channel = 1, name = "LC1", kind = "load_cell" },
+  { channel = 2, name = "LC2", kind = "load_cell" },
+  { channel = 3, name = "LC3", kind = "load_cell" },
+  { channel = 4, name = "LC4", kind = "load_cell" },
+]

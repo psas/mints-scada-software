@@ -2,8 +2,10 @@ from typing import Dict, List
 
 from config import config as CFG
 
-Valves_t = List[Dict[str, int | str | None]]
-AdcCfg_t = Dict[str, int | str | None]
+from config import boards as BOARDS
+from mints_backend.can_bus import CanBus
+
+log = getLogger(__name__)
 
 
 class DeviceManager:
