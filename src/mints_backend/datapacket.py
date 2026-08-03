@@ -1,3 +1,4 @@
+from enum import Enum, unique
 from secrets import randbits
 from typing import Self
 
@@ -17,8 +18,16 @@ DATA_BYTES = 2
 CAN_DATA_LEN = 6
 
 
+@unique
+class CANCmd(Enum):
+    WriteReg = 0
+    ReadReg = 1
+    SetOutput = 2
+    GetOutput = 3
+
+
 class CANData:
-    def __init__(self, correlation_id: int | None, cmd: int, bytes: bytearray):
+    def __init__(self, correlation_id: int | None, cmd: CANCmd, bytes: bytearray):
         if len(bytes) != CAN_DATA_LEN:
             print(len(bytes))
             raise ValueError(f"length of CANData bytes must be exactly {CAN_DATA_LEN}")
@@ -32,12 +41,14 @@ class CANData:
     def to_bytes(self) -> bytearray:
         data = bytearray([0] * 8)
         data[CORELLATION_ID_BYTE] = self.correlation_id
-        data[CMD_BYTE] = self.cmd
+        data[CMD_BYTE] = self.cmd.value
         data[DATA_BYTES:] = self.bytes
         return data
 
     def __repr__(self):
-        return f"[{hex(self.cmd)}, [{', '.join(hex(byte) for byte in self.bytes)}]]"
+        return (
+            f"[{hex(self.cmd.value)}, [{', '.join(hex(byte) for byte in self.bytes)}]]"
+        )
 
 
 class DataPacket:
@@ -50,13 +61,9 @@ class DataPacket:
     def from_can_message(cls, msg: can.Message) -> Self:
         id = msg.arbitration_id
         is_err = msg.arbitration_id & ~NODE_ID_MASK == ERR_MSG_ID
-        try:
-            data = CANData(
-                msg.data[CORELLATION_ID_BYTE], msg.data[CMD_BYTE], msg.data[DATA_BYTES:]
-            )
-            return cls(id, is_err, data)
-        except ValueError as e:
-            raise ValueError from e
+        cmd = CANCmd(msg.data[CMD_BYTE])
+        data = CANData(msg.data[CORELLATION_ID_BYTE], cmd, msg.data[DATA_BYTES:])
+        return cls(id, is_err, data)
 
     def to_can_message(self) -> can.Message:
         return can.Message(
