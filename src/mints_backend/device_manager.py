@@ -53,9 +53,6 @@ class DeviceManager(QObject):
             board = Board(board_cfg)
             self.board_registry[board_cfg.node_id] = board
 
-        for node_id, board in self.board_registry.items():
-            for adc_channel in board.adc.channels:
-                self.device_registry[adc_channel.name] = adc_channel
 
 
 class Device:
