@@ -13,11 +13,10 @@ log = getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, log_widget: QWidget, console_widget: QWidget):
+    def __init__(self, log_widget: QWidget, console_widget: QWidget | None):
         super().__init__()
         log.debug("Initializing main window")
 
-        console_widget.localNamespace.update({"window": self})  # pyright: ignore[reportAttributeAccessIssue]
         self.resize(1280, 720)
         self.setWindowTitle("MinTS")
 
@@ -25,7 +24,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.area)
 
         d1 = Dock("Log", size=(500, 100), closable=True)
-        d2 = Dock("Console", size=(500, 100), closable=True)
         d3 = Dock("Graph 1", size=(500, 200))
         d4 = Dock("Graph 2", size=(500, 200))
         d5 = Dock("Graph 3", size=(500, 200))
@@ -33,16 +31,19 @@ class MainWindow(QMainWindow):
         d7 = Dock("Buttons", size=(200, 100))
 
         self.area.addDock(d1, "bottom")
-        self.area.addDock(d2, "right", d1)
         self.area.addDock(d3, "top")
         self.area.addDock(d7, "left", d3)
         self.area.addDock(d4, "right", d3)
         self.area.addDock(d5, "bottom", d3)
         self.area.addDock(d6, "bottom", d4)
 
-        d1.addWidget(log_widget)
+        if console_widget:
+            console_widget.localNamespace.update({"window": self})  # pyright: ignore[reportAttributeAccessIssue]
+            d2 = Dock("Console", size=(500, 100), closable=True)
+            self.area.addDock(d2, "right", d1)
+            d2.addWidget(console_widget)
 
-        d2.addWidget(console_widget)
+        d1.addWidget(log_widget)
 
         w3 = pg.PlotWidget()
         self.plot0 = w3.plot(np.random.normal(size=100))

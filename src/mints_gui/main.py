@@ -59,7 +59,7 @@ def main():
         }
     )
 
-    window = MainWindow(log_widget, console_widget)
+    window = MainWindow(log_widget, console_widget if CFG["debug"]["console"] else None)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(window.update_graph)

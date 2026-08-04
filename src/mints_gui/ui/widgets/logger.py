@@ -4,10 +4,11 @@ import os
 from typing import override
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 from PySide6.QtCore import QObject, Signal
+from config import config as CFG
 
 log = getLogger(__name__)
 
-APP_LOG_LEVEL = logging.DEBUG
+APP_LOG_LEVEL = CFG.get("logging", {}).get("level", "INFO").upper()
 
 
 class QLoggingHandler(Handler, QObject):
