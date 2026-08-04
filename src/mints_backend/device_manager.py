@@ -45,20 +45,75 @@ class DeviceManager(QObject):
         super().__init__()
         self.bus: CanBus = bus
         self.board_registry: Dict[int, Board] = {}
+        self.device_registry: Dict[str, AdcChannel | Valve] = {}
 
         validated_config = BoardCfgListModel.model_validate(BOARDS)
 
         for board_cfg in validated_config.board:
-            board = Board(board_cfg, bus)
+            board = Board(board_cfg)
             self.board_registry[board_cfg.node_id] = board
+
+        for node_id, board in self.board_registry.items():
+            for adc_channel in board.adc.channels:
+                self.device_registry[adc_channel.name] = adc_channel
+
+
+class Device:
+    def __init__(self, node_id: int, name: str):
+        self.node_id = node_id
+        self.name = name
+
+
+class Sensor(Device):
+    def __init__(self, node_id: int, adc_channel: int, name: str):
+        super().__init__(node_id, name)
+        self.adc_channel = adc_channel
+
+    def read(self):
+        pass
+
+
+class PressureSensor(Sensor):
+    def __init__(self, node_id: int, adc_channel: int, name: str):
+        super().__init__(node_id, adc_channel, name)
+
+
+class TemperatureSensor(Sensor):
+    def __init__(self, node_id: int, adc_channel: int, name: str):
+        super().__init__(node_id, adc_channel, name)
+
+
+class LoadCellSensor(Sensor):
+    def __init__(self, node_id: int, adc_channel: int, name: str):
+        super().__init__(node_id, adc_channel, name)
+
+
+class Valve(Device):
+    def __init__(self, node_id: int, valve_cfg: ValveCfgModel):
+        super().__init__(node_id, valve_cfg.name)
+        self.id = valve_cfg.id
+        self.name = valve_cfg.name
+
+    def set_on(self):
+        pass
+
+    def set_off(self):
+        pass
+
+    def get_state(self):
+        pass
+
+    def toggle(self):
+        pass
 
 
 class Board(QObject):
-    def __init__(self, board_cfg: BoardCfgModel, bus: CanBus):
+    def __init__(self, board_cfg: BoardCfgModel):
         super().__init__()
-        self.bus = bus
         self.node_id: int = board_cfg.node_id
-        valves: List[Valve] = [Valve(valve) for valve in board_cfg.valves]
+        valves: List[Valve] = [
+            Valve(board_cfg.node_id, valve) for valve in board_cfg.valves
+        ]
         if len(valves) > 0:
             self.valves: List[Valve] = valves
         adc_cfg = board_cfg.adc
@@ -83,22 +138,3 @@ class Adc:
         self.channels = {}
         for ch in adc_cfg.channels:
             self.channels["ch" + str(ch.channel)] = AdcChannel(ch)
-
-
-class Valve:
-    def __init__(self, valve_cfg: ValveCfgModel):
-        super().__init__()
-        self.id = valve_cfg.id
-        self.name = valve_cfg.name
-
-    def set_on(self):
-        pass
-
-    def set_off(self):
-        pass
-
-    def get_state(self):
-        pass
-
-    def toggle(self):
-        pass

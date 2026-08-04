@@ -9,7 +9,7 @@ from PySide6 import QtCore
 
 from config import config as CFG
 from mints_backend.can_bus import CanBus
-from mints_backend.devices.device_manager import DeviceManager
+from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.main_window import MainWindow
 from mints_gui.ui.widgets.logger import setup_logger
 
