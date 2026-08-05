@@ -1,6 +1,6 @@
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
@@ -10,9 +10,11 @@ from PySide6.QtCore import QObject, Signal
 from config import boards as BOARDS
 from config import config as CFG
 from mints_backend.datapacket import (
+    BASE_ID_MSK,
     CAN_DATA_LEN,
-    NODE_ID_MASK,
+    REQUEST_MSG_ID,
     RESPONSE_MSG_ID,
+    ADDR_MSK,
     CANCmd,
     CANData,
     DataPacket,
@@ -20,7 +22,7 @@ from mints_backend.datapacket import (
 
 log = getLogger(__name__)
 
-UPDATE_PERIOD = 1
+UPDATE_PERIOD = 0.175
 
 
 @unique
@@ -119,13 +121,13 @@ class Device(QObject):
             log.error("Sensor '%s' failed to parse datapacket from CAN msg", self.name)
             return
 
-        recipient_node_id = msg.arbitration_id & NODE_ID_MASK
-        base_id = msg.arbitration_id & BASE_ID_MASK
+        base_id = msg.arbitration_id & BASE_ID_MSK
+        addr = msg.arbitration_id & ADDR_MSK
 
         if (
-            recipient_node_id != self.id
+            addr != self.id
             or base_id != RESPONSE_MSG_ID
-            or datapacket.data.correlation_id not in self._pending
+            # or datapacket.data.correlation_id not in self._pending
         ):
             return
 
@@ -141,11 +143,11 @@ class Device(QObject):
         self.bus.send(datapacket.to_can_message())
         self._pending.add(data.correlation_id)
 
-    def decode(self, bytearray):
-        sum = 0
-        for byte in bytearray:
-            sum += byte
-        return sum
+    def decode(self, _val: bytearray) -> int:
+        log.error(
+            "Default decode method should not be used. Offending device: %s", self.name
+        )
+        return 0
 
 
 class Sensor(Device):
@@ -156,7 +158,8 @@ class Sensor(Device):
 
     def subscribe(self, slot_fn: Callable):
         data = CANData(None, CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
-        datapacket = DataPacket(id=self.id, is_err=False, data=data)
+        id = self.id + REQUEST_MSG_ID
+        datapacket = DataPacket(id=id, is_err=False, data=data)
         self.subscription = self.bus.send_periodic(
             datapacket.to_can_message(), UPDATE_PERIOD
         )
@@ -168,6 +171,13 @@ class Sensor(Device):
             return
         self.subscription.stop()
         self.sig_value_received.disconnect()
+
+    @override
+    def decode(self, val: bytearray) -> int:
+        sum = 0
+        for byte in val:
+            sum += byte
+        return sum
 
 
 class Output(Device):

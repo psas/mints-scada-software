@@ -4,51 +4,56 @@ from typing import Self
 
 import can
 
-NODE_ID_MASK = 0x7F
+BASE_ID_MSK = int("11100000000", 2)
+NODE_ID_MSK = int("00011110000", 2)
+SUB_ID_MSK  = int("00000001111", 2)  # fmt: skip
+ADDR_MSK = NODE_ID_MSK | SUB_ID_MSK
 
-ERR_MSG_ID = 0x80
-CLAIM_NODE_MSG_ID = 0x180
-REQUEST_MSG_ID = 0x200
-RESPONSE_MSG_ID = 0x280
+ERR_MSG_ID = 0x100  # 1 << 8
+CLAIM_NODE_MSG_ID = 0x200  # 2 << 8
+REQUEST_MSG_ID = 0x300  #  3 << 8
+RESPONSE_MSG_ID = 0x400  # 4 << 8
+# 0x500 / 5 << 8 unused
+# 0x600 / 6 << 8 unused
+# 0x700 / 7 << 8 unused
 
-CORELLATION_ID_BYTE = 0
-CMD_BYTE = 1
-DATA_BYTES = 2
+CORELLATION_ID_POS = 0
+CMD_POS = 1
+DATA_POS = 2
 
 CAN_DATA_LEN = 6
 
 
 @unique
 class CANCmd(Enum):
-    WriteReg = 0
-    ReadReg = 1
-    SetOutput = 2
-    GetOutput = 3
+    WriteReg = 1
+    ReadReg = 2
+    SetOutput = 3
+    GetOutput = 4
 
 
 class CANData:
-    def __init__(self, correlation_id: int | None, cmd: CANCmd, bytes: bytearray):
+    def __init__(
+        self, correlation_id: int | None, cmd: CANCmd | None, bytes: bytearray
+    ):
         if len(bytes) != CAN_DATA_LEN:
-            print(len(bytes))
             raise ValueError(f"length of CANData bytes must be exactly {CAN_DATA_LEN}")
 
         self.correlation_id = (
-            correlation_id if correlation_id is not None else randbits(8)
+            correlation_id if correlation_id else randbits(8)
         )
-        self.cmd = cmd
+        self.cmd = cmd if cmd else None
         self.bytes = bytes
 
     def to_bytes(self) -> bytearray:
         data = bytearray([0] * 8)
-        data[CORELLATION_ID_BYTE] = self.correlation_id
-        data[CMD_BYTE] = self.cmd.value
-        data[DATA_BYTES:] = self.bytes
+        data[CORELLATION_ID_POS] = self.correlation_id
+        data[CMD_POS] = self.cmd.value if self.cmd else 0
+        data[DATA_POS:] = self.bytes
         return data
 
     def __repr__(self):
-        return (
-            f"[{hex(self.cmd.value)}, [{', '.join(hex(byte) for byte in self.bytes)}]]"
-        )
+        return f"[{hex(self.cmd.value if self.cmd else 0)}, [{', '.join(hex(byte) for byte in self.bytes)}]]"
 
 
 class DataPacket:
@@ -60,9 +65,12 @@ class DataPacket:
     @classmethod
     def from_can_message(cls, msg: can.Message) -> Self:
         id = msg.arbitration_id
-        is_err = msg.arbitration_id & ~NODE_ID_MASK == ERR_MSG_ID
-        cmd = CANCmd(msg.data[CMD_BYTE])
-        data = CANData(msg.data[CORELLATION_ID_BYTE], cmd, msg.data[DATA_BYTES:])
+        is_err = msg.arbitration_id & BASE_ID_MSK == ERR_MSG_ID
+        try:
+            cmd = CANCmd(msg.data[CMD_POS])
+        except ValueError:
+            cmd = None
+        data = CANData(msg.data[CORELLATION_ID_POS], cmd, msg.data[DATA_POS:])
         return cls(id, is_err, data)
 
     def to_can_message(self) -> can.Message:
