@@ -4,7 +4,7 @@ from typing import Dict, List, Literal
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 from PySide6.QtCore import QObject
 
-from config import boards as BOARDS
+from config import boards as BOARDS, config as CFG
 from mints_backend.can_bus import CanBus
 
 log = getLogger(__name__)
@@ -41,11 +41,20 @@ class BoardCfgListModel(BaseModel):
 
 
 class DeviceManager(QObject):
-    def __init__(self, bus: CanBus):
+    def __init__(self, bus: CanBus, channel: str):
         super().__init__()
         self.bus: CanBus = bus
-        self.board_registry: Dict[int, Board] = {}
-        self.device_registry: Dict[str, AdcChannel | Output] = {}
+        self.device_registry: Dict[str, Sensor | Output] = {}
+        try:
+            self.bus = can.ThreadSafeBus(
+                interface=CFG["can"]["interface"],
+                channel=CFG["can"]["channel"] if channel is None else channel,
+                bitrate=CFG["can"]["bitrate"],
+            )
+        except OSError as e:
+            raise OSError from e
+
+        self.notifier = can.Notifier(self.bus, [lambda msg: log.info("%s", msg)])
 
         validated_config = BoardCfgListModel.model_validate(BOARDS)
 
