@@ -1,7 +1,7 @@
 from logging import getLogger
 from typing import Dict, List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 from PySide6.QtCore import QObject
 
 from config import boards as BOARDS
@@ -12,7 +12,7 @@ log = getLogger(__name__)
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    channel: NonNegativeInt
+    sub_id: PositiveInt
     name: str
     kind: Literal["temperature", "pressure", "load_cell"]
 
@@ -22,17 +22,17 @@ class AdcCfgModel(BaseModel):
     channels: List[AdcChannelCfgModel]
 
 
-class ValveCfgModel(BaseModel):
+class OutputCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: NonNegativeInt
+    sub_id: PositiveInt
     name: str
 
 
 class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    node_id: NonNegativeInt
+    node_id: PositiveInt
     adc: AdcCfgModel | None = None
-    valves: List[ValveCfgModel] = Field(default_factory=list)
+    outputs: List[OutputCfgModel] = Field(default_factory=list)
 
 
 class BoardCfgListModel(BaseModel):
@@ -45,14 +45,13 @@ class DeviceManager(QObject):
         super().__init__()
         self.bus: CanBus = bus
         self.board_registry: Dict[int, Board] = {}
-        self.device_registry: Dict[str, AdcChannel | Valve] = {}
+        self.device_registry: Dict[str, AdcChannel | Output] = {}
 
         validated_config = BoardCfgListModel.model_validate(BOARDS)
 
         for board_cfg in validated_config.board:
             board = Board(board_cfg)
             self.board_registry[board_cfg.node_id] = board
-
 
 
 class Device:
@@ -85,11 +84,11 @@ class LoadCellSensor(Sensor):
         super().__init__(node_id, adc_channel, name)
 
 
-class Valve(Device):
-    def __init__(self, node_id: int, valve_cfg: ValveCfgModel):
-        super().__init__(node_id, valve_cfg.name)
-        self.id = valve_cfg.id
-        self.name = valve_cfg.name
+class Output(Device):
+    def __init__(self, node_id: int, output_cfg: OutputCfgModel):
+        super().__init__(node_id, output_cfg.name)
+        self.id = output_cfg.sub_id
+        self.name = output_cfg.name
 
     def set_on(self):
         pass
@@ -108,11 +107,11 @@ class Board(QObject):
     def __init__(self, board_cfg: BoardCfgModel):
         super().__init__()
         self.node_id: int = board_cfg.node_id
-        valves: List[Valve] = [
-            Valve(board_cfg.node_id, valve) for valve in board_cfg.valves
+        outputs: List[Output] = [
+            Output(board_cfg.node_id, output) for output in board_cfg.outputs
         ]
-        if len(valves) > 0:
-            self.valves: List[Valve] = valves
+        if len(outputs) > 0:
+            self.outputs: List[Output] = outputs
         adc_cfg = board_cfg.adc
         if adc_cfg is not None:
             self.adc: Adc = Adc(adc_cfg)
@@ -121,7 +120,7 @@ class Board(QObject):
 class AdcChannel:
     def __init__(self, adc_chan_cfg: AdcChannelCfgModel):
         super().__init__()
-        self.channel = adc_chan_cfg.channel
+        self.channel = adc_chan_cfg.sub_id
         self.name = adc_chan_cfg.name
         self.kind = adc_chan_cfg.kind
 
@@ -134,4 +133,4 @@ class Adc:
         super().__init__()
         self.channels = {}
         for ch in adc_cfg.channels:
-            self.channels["ch" + str(ch.channel)] = AdcChannel(ch)
+            self.channels["ch" + str(ch.sub_id)] = AdcChannel(ch)

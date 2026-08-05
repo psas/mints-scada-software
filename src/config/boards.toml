@@ -3,8 +3,8 @@ node_id = 0x01
 
 [board.adc]
 channels = [
-  { channel = 2, name = "TT5", kind = "temperature" },
-  { channel = 3, name = "TT6", kind = "temperature" },
+  { sub_id = 0x1, name = "TT5", kind = "temperature" },
+  { sub_id = 0x2, name = "TT6", kind = "temperature" },
 ]
 
 [[board]]
@@ -12,22 +12,25 @@ node_id = 0x02
 
 [board.adc]
 channels = [
-  { channel = 1, name = "PT1", kind = "pressure" },
-  { channel = 2, name = "PT2", kind = "pressure" },
-  { channel = 3, name = "PT3", kind = "pressure" },
-  { channel = 4, name = "PT4", kind = "pressure" },
+  { sub_id = 0x1, name = "PT1", kind = "pressure" },
+  { sub_id = 0x2, name = "PT2", kind = "pressure" },
+  { sub_id = 0x3, name = "PT3", kind = "pressure" },
+  { sub_id = 0x4, name = "PT4", kind = "pressure" },
 ]
 
 [[board]]
 node_id = 0x03
-valves = [{ id = 0, name = "IG-XV-23" }, { id = 1, name = "IPA-XV-25" }]
+outputs = [
+  { sub_id = 1, name = "IG-XV-23" },
+  { sub_id = 2, name = "IPA-XV-25" },
+]
 
 [[board]]
 node_id = 0x04
-valves = [
-  { id = 0, name = "IG-XV-27" },
-  { id = 1, name = "LOX-XV-26" },
-  { id = 2, name = "IG-XV-24" },
+outputs = [
+  { sub_id = 0x1, name = "IG-XV-27" },
+  { sub_id = 0x2, name = "LOX-XV-26" },
+  { sub_id = 0x3, name = "IG-XV-24" },
 ]
 
 [[board]]
@@ -35,8 +38,8 @@ node_id = 0x05
 
 [board.adc]
 channels = [
-  { channel = 1, name = "LC1", kind = "load_cell" },
-  { channel = 2, name = "LC2", kind = "load_cell" },
-  { channel = 3, name = "LC3", kind = "load_cell" },
-  { channel = 4, name = "LC4", kind = "load_cell" },
+  { sub_id = 0x1, name = "LC1", kind = "load_cell" },
+  { sub_id = 0x2, name = "LC2", kind = "load_cell" },
+  { sub_id = 0x3, name = "LC3", kind = "load_cell" },
+  { sub_id = 0x4, name = "LC4", kind = "load_cell" },
 ]
