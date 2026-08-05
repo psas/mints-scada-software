@@ -39,9 +39,6 @@ def main():
                 err["msg"],
             )
         sys.exit(1)
-    except KeyError or ValueError as e:
-        log.error("%s", e)
-        sys.exit(1)
     except OSError as e:
         log.error("Unable to connect to CAN bus - %s", e.strerror)
         sys.exit(e.errno)
