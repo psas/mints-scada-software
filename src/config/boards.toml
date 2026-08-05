@@ -21,8 +21,8 @@ channels = [
 [[board]]
 node_id = 0x03
 outputs = [
-  { sub_id = 1, name = "IG-XV-23" },
-  { sub_id = 2, name = "IPA-XV-25" },
+  { sub_id = 0x1, name = "IG-XV-23" },
+  { sub_id = 0x2, name = "IPA-XV-25" },
 ]
 
 [[board]]

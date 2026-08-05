@@ -1,20 +1,48 @@
+from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import Dict, List, Literal
+from typing import Dict, List
 
+import can
+from can.broadcastmanager import CyclicSendTaskABC
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS, config as CFG
-from mints_backend.can_bus import CanBus
+from mints_backend.datapacket import (
+    CAN_DATA_LEN,
+    NODE_ID_MASK,
+    RESPONSE_MSG_ID,
+    CANCmd,
+    CANData,
+    DataPacket,
+)
 
 log = getLogger(__name__)
+
+# SensorKind = Literal["temperature", "pressure", "load_cell"]
+
+UPDATE_PERIOD = 1
+
+
+@unique
+class SensorKind(StrEnum):
+    Temperature = "temperature"
+    Pressure = "pressure"
+    LoadCell = "load_cell"
+
+
+@unique
+class OutputState(Enum):
+    High = True
+    Low = False
+    Unknown = None
 
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sub_id: PositiveInt
     name: str
-    kind: Literal["temperature", "pressure", "load_cell"]
+    kind: SensorKind
 
 
 class AdcCfgModel(BaseModel):
@@ -41,9 +69,8 @@ class BoardCfgListModel(BaseModel):
 
 
 class DeviceManager(QObject):
-    def __init__(self, bus: CanBus, channel: str):
+    def __init__(self, channel: str):
         super().__init__()
-        self.bus: CanBus = bus
         self.device_registry: Dict[str, Sensor | Output] = {}
         try:
             self.bus = can.ThreadSafeBus(
@@ -54,92 +81,101 @@ class DeviceManager(QObject):
         except OSError as e:
             raise OSError from e
 
-        self.notifier = can.Notifier(self.bus, [lambda msg: log.info("%s", msg)])
+        self.notifier = can.Notifier(self.bus, [])
 
         validated_config = BoardCfgListModel.model_validate(BOARDS)
 
         for board_cfg in validated_config.board:
-            board = Board(board_cfg)
-            self.board_registry[board_cfg.node_id] = board
+            if board_cfg.adc:
+                for ch in board_cfg.adc.channels:
+                    if ch.name in self.device_registry:
+                        raise ValueError(
+                            f"Duplicate device name found in board config: {ch.name}"
+                        )
+                    id = (board_cfg.node_id << 4) + ch.sub_id
+                    sensor = Sensor(id, ch.name, SensorKind(ch.kind), self.bus)
+                    sensor.subscribe()
+                    sensor.sig_conversion_ready.connect(lambda val: log.info("%s", val))
+
+                    self.notifier.add_listener(sensor.handle_can_rx)
+                    self.device_registry[ch.name] = sensor
+
+            if board_cfg.outputs:
+                for entry in board_cfg.outputs:
+                    if entry.name in self.device_registry:
+                        raise ValueError(
+                            f"Duplicate device name found in board config: {entry.name}"
+                        )
+                    id = (board_cfg.node_id << 4) + entry.sub_id
+                    output = Output(id, entry.name, self.bus)
+                    self.notifier.add_listener(output.handle_can_rx)
+                    self.device_registry[entry.name] = output
 
 
-class Device:
-    def __init__(self, node_id: int, name: str):
-        self.node_id = node_id
+class Device(QObject):
+    def __init__(self, id: int, name: str, bus: can.BusABC):
+        super().__init__()
+        self.id = id
         self.name = name
+        self.bus = bus
 
 
 class Sensor(Device):
-    def __init__(self, node_id: int, adc_channel: int, name: str):
-        super().__init__(node_id, name)
-        self.adc_channel = adc_channel
+    sig_conversion_ready = Signal(int)
 
-    def read(self):
-        pass
+    def __init__(self, id, name: str, kind: SensorKind, bus: can.BusABC):
+        super().__init__(id, name, bus)
+        self.kind = kind
+        self._pending: set[int] = set()
+        self.subscription: CyclicSendTaskABC | None = None
 
+    def handle_can_rx(self, msg: can.Message):
+        try:
+            datapacket = DataPacket.from_can_message(msg)
+        except ValueError:
+            log.error("Sensor %s failed to parse datapacket from CAN msg", self.name)
+            return
+        if msg.arbitration_id & NODE_ID_MASK != self.id:
+            return
+        if msg.arbitration_id & ~NODE_ID_MASK != RESPONSE_MSG_ID:
+            return
+        if datapacket.data.correlation_id not in self._pending:
+            return
+        val = self.decode(datapacket.data.bytes)
+        self.sig_conversion_ready.emit(val)
 
-class PressureSensor(Sensor):
-    def __init__(self, node_id: int, adc_channel: int, name: str):
-        super().__init__(node_id, adc_channel, name)
+    def subscribe(self):
+        data = CANData(
+            correlation_id=None, cmd=CANCmd.ReadReg, bytes=bytearray([0, 0, 0, 0, 0, 0])
+        )
+        datapacket = DataPacket(self.id, is_err=False, data=data)
+        self.subscription = self.bus.send_periodic(
+            datapacket.to_can_message(), UPDATE_PERIOD
+        )
+        self._pending.add(data.correlation_id)
 
+    def unsubscribe(self):
+        if self.subscription is None:
+            return
+        self.subscription.stop()
 
-class TemperatureSensor(Sensor):
-    def __init__(self, node_id: int, adc_channel: int, name: str):
-        super().__init__(node_id, adc_channel, name)
-
-
-class LoadCellSensor(Sensor):
-    def __init__(self, node_id: int, adc_channel: int, name: str):
-        super().__init__(node_id, adc_channel, name)
+    def decode(self, bytearray):
+        sum = 0
+        for byte in bytearray:
+            sum += byte
+        return sum
 
 
 class Output(Device):
-    def __init__(self, node_id: int, output_cfg: OutputCfgModel):
-        super().__init__(node_id, output_cfg.name)
-        self.id = output_cfg.sub_id
-        self.name = output_cfg.name
+    def __init__(self, id: int, name: str, bus: can.BusABC):
+        super().__init__(id, name, bus)
+        self.state: OutputState = OutputState.Unknown
 
-    def set_on(self):
+    def handle_can_rx(self, msg: can.Message):
         pass
 
-    def set_off(self):
+    def set(self, state: OutputState):
         pass
 
     def get_state(self):
         pass
-
-    def toggle(self):
-        pass
-
-
-class Board(QObject):
-    def __init__(self, board_cfg: BoardCfgModel):
-        super().__init__()
-        self.node_id: int = board_cfg.node_id
-        outputs: List[Output] = [
-            Output(board_cfg.node_id, output) for output in board_cfg.outputs
-        ]
-        if len(outputs) > 0:
-            self.outputs: List[Output] = outputs
-        adc_cfg = board_cfg.adc
-        if adc_cfg is not None:
-            self.adc: Adc = Adc(adc_cfg)
-
-
-class AdcChannel:
-    def __init__(self, adc_chan_cfg: AdcChannelCfgModel):
-        super().__init__()
-        self.channel = adc_chan_cfg.sub_id
-        self.name = adc_chan_cfg.name
-        self.kind = adc_chan_cfg.kind
-
-    def get_val(self):
-        return 1000
-
-
-class Adc:
-    def __init__(self, adc_cfg: AdcCfgModel):
-        super().__init__()
-        self.channels = {}
-        for ch in adc_cfg.channels:
-            self.channels["ch" + str(ch.sub_id)] = AdcChannel(ch)

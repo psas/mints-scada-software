@@ -8,7 +8,6 @@ from pyqtgraph.console import ConsoleWidget
 from PySide6 import QtCore
 
 from config import config as CFG
-from mints_backend.can_bus import CanBus
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.main_window import MainWindow
 from mints_gui.ui.widgets.logger import setup_logger
@@ -29,13 +28,7 @@ def main():
     log_widget = setup_logger()
 
     try:
-        can = CanBus(args.bus)
-    except OSError as e:
-        log.error("Unable to connect to CAN bus -- %s", e.strerror)
-        sys.exit(e.errno)
-
-    try:
-        device_manager = DeviceManager(can)
+        device_manager = DeviceManager(args.bus)
     except ValidationError as e:
         err_details = e.errors()
         for err in err_details:
@@ -49,12 +42,15 @@ def main():
     except KeyError or ValueError as e:
         log.error("%s", e)
         sys.exit(1)
+    except OSError as e:
+        log.error("Unable to connect to CAN bus - %s", e.strerror)
+        sys.exit(e.errno)
 
     console_widget = ConsoleWidget(
         namespace={
             "app": app,
             "config": CFG,
-            "can": can,
+            "can": device_manager.bus,
             "devices": device_manager,
         }
     )
@@ -66,11 +62,8 @@ def main():
     timer.start(100)
 
     log.info("Welcome to MinTS!")
-    can.start()
     window.show()
     exit_code = app.exec()
-
-    can.shutdown()
     sys.exit(exit_code)
 
 
