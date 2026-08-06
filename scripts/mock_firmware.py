@@ -41,7 +41,6 @@ def handle_can_rx(msg: can.Message):
         return
 
     request_datapacket = DataPacket.from_can_message(msg)
-    correlation_id = request_datapacket.data.correlation_id
     resp_id = (msg.arbitration_id & ~BASE_ID_MSK) | RESPONSE_MSG_ID
 
     match request_datapacket.data.cmd:
@@ -61,7 +60,7 @@ def handle_can_rx(msg: can.Message):
             print("Unhandled CANCmd type")
             return
 
-    resp_data = CANData(correlation_id=correlation_id, cmd=None, bytes=resp_val)
+    resp_data = CANData(cmd=None, bytes=resp_val)
     resp_datapacket = DataPacket(id=resp_id, is_err=False, data=resp_data)
     device_manager.bus.send(resp_datapacket.to_can_message())
 

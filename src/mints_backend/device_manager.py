@@ -112,7 +112,6 @@ class Device(QObject):
         self.id = id
         self.name = name
         self.bus = bus
-        self._pending: set[int] = set()
 
     def handle_can_rx(self, msg: can.Message):
         try:
@@ -124,11 +123,7 @@ class Device(QObject):
         base_id = msg.arbitration_id & BASE_ID_MSK
         addr = msg.arbitration_id & ADDR_MSK
 
-        if (
-            addr != self.id
-            or base_id != RESPONSE_MSG_ID
-            # or datapacket.data.correlation_id not in self._pending
-        ):
+        if addr != self.id or base_id != RESPONSE_MSG_ID:
             return
 
         val = self.decode(datapacket.data.bytes)
@@ -138,10 +133,9 @@ class Device(QObject):
         padded_params = bytearray(
             cmd_params + (bytearray([0] * (CAN_DATA_LEN - len(cmd_params))))
         )
-        data = CANData(None, cmd, padded_params)
+        data = CANData(cmd, padded_params)
         datapacket = DataPacket(id=self.id, is_err=False, data=data)
         self.bus.send(datapacket.to_can_message())
-        self._pending.add(data.correlation_id)
 
     def decode(self, _val: bytearray) -> int:
         log.error(
@@ -157,13 +151,12 @@ class Sensor(Device):
         self.subscription: CyclicSendTaskABC | None = None
 
     def subscribe(self, slot_fn: Callable):
-        data = CANData(None, CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
+        data = CANData(CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
         id = self.id + REQUEST_MSG_ID
         datapacket = DataPacket(id=id, is_err=False, data=data)
         self.subscription = self.bus.send_periodic(
             datapacket.to_can_message(), UPDATE_PERIOD
         )
-        self._pending.add(data.correlation_id)
         self.sig_value_received.connect(slot_fn)
 
     def unsubscribe(self):

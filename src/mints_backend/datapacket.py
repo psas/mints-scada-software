@@ -17,9 +17,8 @@ RESPONSE_MSG_ID = 0x400  # 4 << 8
 # 0x600 / 6 << 8 unused
 # 0x700 / 7 << 8 unused
 
-CORELLATION_ID_POS = 0
-CMD_POS = 1
-DATA_POS = 2
+CMD_POS = 0
+DATA_POS = 1
 
 CAN_DATA_LEN = 6
 
@@ -33,21 +32,15 @@ class CANCmd(Enum):
 
 
 class CANData:
-    def __init__(
-        self, correlation_id: int | None, cmd: CANCmd | None, bytes: bytearray
-    ):
+    def __init__(self, cmd: CANCmd | None, bytes: bytearray):
         if len(bytes) != CAN_DATA_LEN:
             raise ValueError(f"length of CANData bytes must be exactly {CAN_DATA_LEN}")
 
-        self.correlation_id = (
-            correlation_id if correlation_id else randbits(8)
-        )
         self.cmd = cmd if cmd else None
         self.bytes = bytes
 
     def to_bytes(self) -> bytearray:
         data = bytearray([0] * 8)
-        data[CORELLATION_ID_POS] = self.correlation_id
         data[CMD_POS] = self.cmd.value if self.cmd else 0
         data[DATA_POS:] = self.bytes
         return data
@@ -70,7 +63,7 @@ class DataPacket:
             cmd = CANCmd(msg.data[CMD_POS])
         except ValueError:
             cmd = None
-        data = CANData(msg.data[CORELLATION_ID_POS], cmd, msg.data[DATA_POS:])
+        data = CANData(cmd, msg.data[DATA_POS:])
         return cls(id, is_err, data)
 
     def to_can_message(self) -> can.Message:
