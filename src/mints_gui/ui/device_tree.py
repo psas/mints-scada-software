@@ -1,5 +1,4 @@
 from logging import getLogger
-from typing import Dict
 
 from pyqtgraph.parametertree import (
     Parameter,
@@ -8,8 +7,8 @@ from pyqtgraph.parametertree import (
     registerParameterType,
 )
 from pyqtgraph.parametertree.parameterTypes import WidgetParameterItem
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QSizePolicy, QToolButton
+from PySide6.QtCore import Signal, Slot
+from PySide6.QtWidgets import QPushButton
 
 from mints_backend.device_manager import (
     DeviceManager,
@@ -21,59 +20,79 @@ from mints_backend.device_manager import (
 
 log = getLogger(__name__)
 
-SENSOR_UNITS: Dict[SensorKind, str] = {
+SENSOR_UNITS: dict[SensorKind, str] = {
     SensorKind.Temperature: "°C",
     SensorKind.Pressure: "Pa",
     SensorKind.LoadCell: "N",
 }
 
 
-class OutputButton(QToolButton):
+class OutputButton(QPushButton):
     sigChanged = Signal(bool)
 
     def __init__(self):
         super().__init__()
-        self.setCheckable(True)
-        self.toggled.connect(self._on_toggled)
-        self.setText("Closed")
+        self.clicked.connect(self._on_click)
+        self.setText("...")
         self.setFixedSize(45, 25)
+        self.setCheckable(True)
+        self._confirmed_state: bool | None = None
+        self.update_style()
+
+    def update_style(self):
+        if self._confirmed_state is None:
+            bg, fg = "gray", "black"
+        elif self._confirmed_state:
+            bg, fg = "green", "white"
+        else:
+            bg, fg = "red", "black"
         self.setStyleSheet(
-            "background-color: red; color: black; margin-left: 5; min-width: 55;"
+            f"background-color: {bg}; color: {fg}; margin-left: 5; min-width: 55;"
         )
 
-    def _on_toggled(self, checked: bool):
-        self.setText("Open" if checked else "Closed")
-        styles = self.styleSheet()
-        print(styles)
-        self.setStyleSheet(
-            styles
-            + (
-                "background-color: green; color: white;"
-                if checked
-                else "background-color: red; color: black;"
-            )
-        )
-        self.sigChanged.emit(checked)
+    @Slot(bool)
+    def _on_click(self, is_checked: bool):
+        self.sigChanged.emit(is_checked)
 
     def value(self) -> bool:
         return self.isChecked()
 
-    def setValue(self, val: bool):
-        self.blockSignals(True)
-        self.setChecked(val)
-        self.blockSignals(False)
+    def setValue(self, value: bool) -> None:
+        # Don't set the value any way other than through the backend
+        pass
 
 
 class OutputButtonItem(WidgetParameterItem):
-    def makeWidget(self):
+    def __init__(self, param, depth):
+        super().__init__(param, depth)
+        param.sigUpdateFromBackend.connect(self.set_value_from_backend)
+
+    def makeWidget(self) -> OutputButton:
         self.hideWidget = False
         return OutputButton()
 
+    def makeDefaultButton(self) -> QPushButton:
+        # suppress return-to-default button
+        btn = QPushButton()
+        btn.setFixedSize(0, 0)
+        return btn
+
+    def set_value_from_backend(self, value: bool) -> None:
+        self.widget._confirmed_state = value
+        self.widget.setChecked(value)
+        self.widget.setText("Open" if value else "Closed")
+        self.widget.update_style()
+
 
 class OutputParameter(Parameter):
+    sigUpdateFromBackend = Signal(bool)
+
     @property
     def itemClass(self) -> type[ParameterItem]:
         return OutputButtonItem
+
+    def update_from_backend(self, val: bool) -> None:
+        self.sigUpdateFromBackend.emit(val)
 
 
 registerParameterType("output", OutputParameter)
@@ -83,11 +102,9 @@ class DeviceParameterTree(ParameterTree):
     def __init__(self, device_manager: DeviceManager, parent=None):
         super().__init__(parent)
         self.device_manager = device_manager
-        self._sensor_params: Dict[str, Parameter] = {}
-
+        self._sensor_params: dict[str, Parameter] = {}
         self.root = Parameter.create(name="Devices", type="group", children=[])
         self.setParameters(self.root, showTop=False)
-
         self._build_tree()
 
     def _get_or_create_board_group(self, node_id: int) -> Parameter:
@@ -98,11 +115,10 @@ class DeviceParameterTree(ParameterTree):
         self.root.addChild(group)
         return group
 
-    def _build_tree(self):
+    def _build_tree(self) -> None:
         for dev in self.device_manager.device_registry.values():
             node_id = dev.id >> 4
             board_group = self._get_or_create_board_group(node_id)
-
             match dev:
                 case Output():
                     self._add_output_param(board_group, dev)
@@ -110,18 +126,20 @@ class DeviceParameterTree(ParameterTree):
                 case Sensor():
                     self._add_sensor_param(board_group, dev)
 
-    def _add_output_param(self, board_group: Parameter, dev: Output):
-        param = Parameter.create(name=dev.name, type="output")
+    def _add_output_param(self, board_group: Parameter, dev: Output) -> None:
+        param: OutputParameter = Parameter.create(name=dev.name, type="output")  # pyright: ignore[reportAssignmentType]
 
-        def on_param_changed(_param, val: bool, dev=dev):
-
-            print("setting state")
+        def on_param_changed(_param, val: bool, dev=dev) -> None:
             dev.set_state(OutputState.High if val else OutputState.Low)
 
+        def on_can_rx(val: bool, p=param) -> None:
+            p.update_from_backend(val)
+
+        dev.add_slot_fn(on_can_rx)
         param.sigValueChanged.connect(on_param_changed)
         board_group.addChild(param)
 
-    def _add_sensor_param(self, board_group: Parameter, dev: Sensor):
+    def _add_sensor_param(self, board_group: Parameter, dev: Sensor) -> None:
         unit = SENSOR_UNITS.get(dev.kind, "")
         param = Parameter.create(
             name=dev.name,
@@ -134,12 +152,12 @@ class DeviceParameterTree(ParameterTree):
         board_group.addChild(param)
         self._sensor_params[dev.name] = param
 
-        def on_value(val, p=param):
+        def on_value(val, p=param) -> None:
             p.setValue(val)
 
         dev.subscribe(on_value)
 
-    def teardown(self):
+    def teardown(self) -> None:
         for dev in self.device_manager.device_registry.values():
             match dev:
                 case Sensor():

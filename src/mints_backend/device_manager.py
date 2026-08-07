@@ -12,6 +12,7 @@ from config import config as CFG
 from mints_backend.datapacket import (
     BASE_ID_MSK,
     CAN_DATA_LEN,
+    OUTPUT_SET_POS,
     REQUEST_MSG_ID,
     RESPONSE_MSG_ID,
     ADDR_MSK,
@@ -22,7 +23,7 @@ from mints_backend.datapacket import (
 
 log = getLogger(__name__)
 
-UPDATE_PERIOD = 0.175
+UPDATE_PERIOD = 1
 
 
 @unique
@@ -71,7 +72,7 @@ class BoardCfgListModel(BaseModel):
 class DeviceManager:
     def __init__(self, channel: str):
         super().__init__()
-        self.device_registry: Dict[str, Sensor | Output] = {}
+        self.device_registry: Dict[int, Sensor | Output] = {}
         try:
             self.bus = can.ThreadSafeBus(
                 interface=CFG["can"]["interface"],
@@ -101,7 +102,7 @@ class DeviceManager:
             case AdcChannelCfgModel():
                 dev = Sensor(id, cfg.name, SensorKind(cfg.kind), self.bus)
         self.notifier.add_listener(dev.handle_can_rx)
-        self.device_registry[cfg.name] = dev
+        self.device_registry[id] = dev
 
 
 class Device(QObject):
@@ -114,30 +115,27 @@ class Device(QObject):
         self.bus = bus
 
     def handle_can_rx(self, msg: can.Message):
+        base_id = msg.arbitration_id & BASE_ID_MSK
+        addr = msg.arbitration_id & ADDR_MSK
+        if addr != self.id or base_id != RESPONSE_MSG_ID:
+            return
+
         try:
             datapacket = DataPacket.from_can_message(msg)
         except ValueError:
             log.error("Sensor '%s' failed to parse datapacket from CAN msg", self.name)
             return
 
-        base_id = msg.arbitration_id & BASE_ID_MSK
-        addr = msg.arbitration_id & ADDR_MSK
-
-        if addr != self.id or base_id != RESPONSE_MSG_ID:
-            return
-
-        val = self.decode(datapacket.data.bytes)
+        val = self.decode(datapacket)
         self.sig_value_received.emit(val)
 
     def send_cmd(self, cmd: CANCmd, cmd_params: bytearray):
-        padded_params = bytearray(
-            cmd_params + (bytearray([0] * (CAN_DATA_LEN - len(cmd_params))))
-        )
-        data = CANData(cmd, padded_params)
-        datapacket = DataPacket(id=self.id, is_err=False, data=data)
+        data = CANData(cmd, cmd_params)
+        arbitration_id = REQUEST_MSG_ID | self.id
+        datapacket = DataPacket(id=arbitration_id, is_err=False, data=data)
         self.bus.send(datapacket.to_can_message())
 
-    def decode(self, _val: bytearray) -> int:
+    def decode(self, _datapacket: DataPacket) -> int:
         log.error(
             "Default decode method should not be used. Offending device: %s", self.name
         )
@@ -166,9 +164,9 @@ class Sensor(Device):
         self.sig_value_received.disconnect()
 
     @override
-    def decode(self, val: bytearray) -> int:
+    def decode(self, datapacket: DataPacket) -> int:
         sum = 0
-        for byte in val:
+        for byte in datapacket.data.bytes:
             sum += byte
         return sum
 
@@ -178,14 +176,20 @@ class Output(Device):
         super().__init__(id, name, bus)
         self.state: OutputState | None = None
 
-    def set_state(self, state: OutputState):
-        self.send_cmd(CANCmd.SetOutput, bytearray([state.value]))
+    def set_state(self, state: OutputState) -> None:
+        bytes = bytearray(CAN_DATA_LEN)
+        bytes[OUTPUT_SET_POS] = state.value
 
-    def get_state(self):
-        self.send_cmd(CANCmd.GetOutput, bytearray([0]))
+        self.send_cmd(CANCmd.SetOutput, bytes)
 
-    def add_slot_fn(self, slot_fn: Callable):
+    def get_state(self) -> None:
+        self.send_cmd(CANCmd.GetOutput, bytearray(CAN_DATA_LEN))
+
+    def add_slot_fn(self, slot_fn: Callable) -> None:
         self.sig_value_received.connect(slot_fn)
 
-    def remove_slot_fn(self):
+    def remove_slot_fn(self) -> None:
         self.sig_value_received.disconnect()
+
+    def decode(self, datapacket: DataPacket) -> int:
+        return datapacket.data.bytes[OUTPUT_SET_POS]
