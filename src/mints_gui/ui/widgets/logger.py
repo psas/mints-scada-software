@@ -1,9 +1,11 @@
-from logging import LogRecord, Handler, getLogger
 import logging
 import os
+from logging import Handler, LogRecord, getLogger
 from typing import override
-from PySide6.QtWidgets import QPlainTextEdit, QWidget
+
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QPlainTextEdit, QWidget
+
 from config import config as CFG
 
 log = getLogger(__name__)

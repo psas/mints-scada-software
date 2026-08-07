@@ -1,5 +1,6 @@
-from pathlib import Path
 import tomllib
+from pathlib import Path
+
 cfg_path = Path(__file__).parent / "config.toml"
 boards_path = Path(__file__).parent / "boards.toml"
 

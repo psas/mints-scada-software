@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import Callable, Dict, List, override
+from typing import override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
@@ -10,12 +11,12 @@ from PySide6.QtCore import QObject, Signal
 from config import boards as BOARDS
 from config import config as CFG
 from mints_backend.datapacket import (
+    ADDR_MSK,
     BASE_ID_MSK,
     CAN_DATA_LEN,
     OUTPUT_SET_POS,
     REQUEST_MSG_ID,
     RESPONSE_MSG_ID,
-    ADDR_MSK,
     CANCmd,
     CANData,
     DataPacket,
@@ -48,7 +49,7 @@ class AdcChannelCfgModel(BaseModel):
 
 class AdcCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    channels: List[AdcChannelCfgModel]
+    channels: list[AdcChannelCfgModel]
 
 
 class OutputCfgModel(BaseModel):
@@ -61,18 +62,18 @@ class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     node_id: PositiveInt
     adc: AdcCfgModel | None = None
-    outputs: List[OutputCfgModel] = Field(default_factory=list)
+    outputs: list[OutputCfgModel] = Field(default_factory=list)
 
 
 class BoardCfgListModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    board: List[BoardCfgModel]
+    board: list[BoardCfgModel]
 
 
 class DeviceManager:
     def __init__(self, channel: str):
         super().__init__()
-        self.device_registry: Dict[int, Sensor | Output] = {}
+        self.device_registry: dict[int, Sensor | Output] = {}
         try:
             self.bus = can.ThreadSafeBus(
                 interface=CFG["can"]["interface"],
