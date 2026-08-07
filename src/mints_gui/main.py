@@ -2,10 +2,9 @@ import logging
 import sys
 from argparse import ArgumentParser
 
-from pydantic import ValidationError
 import pyqtgraph as pg
+from pydantic import ValidationError
 from pyqtgraph.console import ConsoleWidget
-from PySide6 import QtCore
 
 from config import config as CFG
 from mints_backend.device_manager import DeviceManager
@@ -52,11 +51,7 @@ def main():
         }
     )
 
-    window = MainWindow(log_widget, console_widget if CFG["debug"]["console"] else None)
-
-    timer = QtCore.QTimer()
-    timer.timeout.connect(window.update_graph)
-    timer.start(100)
+    window = MainWindow(log_widget, console_widget if CFG["debug"]["console"] else None, device_manager)
 
     log.info("Welcome to MinTS!")
     window.show()
