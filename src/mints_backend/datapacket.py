@@ -1,5 +1,4 @@
 from enum import Enum, unique
-from secrets import randbits
 from typing import Self
 
 import can
@@ -17,10 +16,11 @@ RESPONSE_MSG_ID = 0x400  # 4 << 8
 # 0x600 / 6 << 8 unused
 # 0x700 / 7 << 8 unused
 
+CAN_DATA_LEN = 7
+
 CMD_POS = 0
 DATA_POS = 1
-
-CAN_DATA_LEN = 6
+OUTPUT_SET_POS = CAN_DATA_LEN - 1
 
 
 @unique
