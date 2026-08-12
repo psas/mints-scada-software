@@ -1,15 +1,16 @@
 from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import override
+from typing import override, Annotated
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, AfterValidator
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
 from config import config as CFG
+from .backend_validators import adc_channel_validator, output_id_validator, board_id_validator
 from mints_backend.datapacket import (
     ADDR_MSK,
     BASE_ID_MSK,
@@ -42,7 +43,7 @@ class OutputState(Enum):
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: Annotated[PositiveInt, AfterValidator(adc_channel_validator)]
     name: str
     kind: SensorKind
 
@@ -54,13 +55,13 @@ class AdcCfgModel(BaseModel):
 
 class OutputCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: Annotated[PositiveInt, AfterValidator(output_id_validator)]
     name: str
 
 
 class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    node_id: PositiveInt
+    board_id: Annotated[PositiveInt, AfterValidator(board_id_validator)]
     adc: AdcCfgModel | None = None
     outputs: list[OutputCfgModel] = Field(default_factory=list)
 
@@ -89,14 +90,14 @@ class DeviceManager:
 
         for board_cfg in validated_config.board:
             for cfg in board_cfg.adc.channels if board_cfg.adc else []:
-                self._register_device(cfg, board_cfg.node_id)
+                self._register_device(cfg, board_cfg.board_id)
             for cfg in board_cfg.outputs:
-                self._register_device(cfg, board_cfg.node_id)
+                self._register_device(cfg, board_cfg.board_id)
 
-    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, node_id: int):
+    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, sub_id: int):
         if cfg.name in self.device_registry:
             raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
-        id = (node_id << 4) + cfg.sub_id
+        id = (sub_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
                 dev = Output(id, cfg.name, self.bus)

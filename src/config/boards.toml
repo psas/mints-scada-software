@@ -1,5 +1,5 @@
 [[board]]
-node_id = 0x01
+board_id = 0x01
 
 [board.adc]
 channels = [
@@ -8,7 +8,7 @@ channels = [
 ]
 
 [[board]]
-node_id = 0x02
+board_id = 0x02
 
 [board.adc]
 channels = [
@@ -19,14 +19,14 @@ channels = [
 ]
 
 [[board]]
-node_id = 0x03
+board_id = 0x03
 outputs = [
   { sub_id = 0x1, name = "IG-XV-23" },
   { sub_id = 0x2, name = "IPA-XV-25" },
 ]
 
 [[board]]
-node_id = 0x04
+board_id = 0x04
 outputs = [
   { sub_id = 0x1, name = "IG-XV-27" },
   { sub_id = 0x2, name = "LOX-XV-26" },
@@ -34,7 +34,7 @@ outputs = [
 ]
 
 [[board]]
-node_id = 0x05
+board_id = 0x05
 
 [board.adc]
 channels = [
