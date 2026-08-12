@@ -1,5 +1,5 @@
 [[board]]
-board_id = 0x01
+board_id = 0x02
 
 [board.adc]
 channels = [

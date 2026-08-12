@@ -1,16 +1,16 @@
 from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import override, Annotated
+from typing import override
+from typing_extensions import Self
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, AfterValidator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
 from config import config as CFG
-from .backend_validators import adc_channel_validator, output_id_validator, board_id_validator
 from mints_backend.datapacket import (
     ADDR_MSK,
     BASE_ID_MSK,
@@ -43,9 +43,15 @@ class OutputState(Enum):
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: Annotated[PositiveInt, AfterValidator(adc_channel_validator)]
+    sub_id: PositiveInt
     name: str
     kind: SensorKind
+
+    @model_validator(mode='after')
+    def validate_adc_sub_id(self) -> Self:
+        if self.sub_id < 0x200 or self.sub_id > 0x800:
+            raise ValueError("ADC sub_id out of range. Mus be between 0x200 and ox800")
+        return self
 
 
 class AdcCfgModel(BaseModel):
@@ -55,15 +61,27 @@ class AdcCfgModel(BaseModel):
 
 class OutputCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: Annotated[PositiveInt, AfterValidator(output_id_validator)]
+    sub_id: PositiveInt
     name: str
+
+    @model_validator(mode='after')
+    def validate_output_sub_id(self) -> Self:
+        if self.sub_id < 0x200 or self.sub_id > 0x800:
+            raise ValueError("Board id out of range")
+        return self
 
 
 class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    board_id: Annotated[PositiveInt, AfterValidator(board_id_validator)]
+    board_id: PositiveInt
     adc: AdcCfgModel | None = None
     outputs: list[OutputCfgModel] = Field(default_factory=list)
+    
+    @model_validator(mode='after')
+    def validate_board_id(self) -> Self:
+        if self.board_id < 0x10 or self.board_id > 0x80:
+            raise ValueError("Board id out of range")
+        return self
 
 
 class BoardCfgListModel(BaseModel):
@@ -116,6 +134,7 @@ class Device(QObject):
         self.name = name
         self.bus = bus
 
+    # Shouln't this be can tx?
     def handle_can_rx(self, msg: can.Message):
         base_id = msg.arbitration_id & BASE_ID_MSK
         addr = msg.arbitration_id & ADDR_MSK
