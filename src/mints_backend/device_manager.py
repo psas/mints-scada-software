@@ -134,7 +134,6 @@ class Device(QObject):
         self.name = name
         self.bus = bus
 
-    # NOTE: Shouln't this be can tx?
     def handle_can_rx(self, msg: can.Message):
         base_id = msg.arbitration_id & BASE_ID_MSK
         addr = msg.arbitration_id & ADDR_MSK
