@@ -1,45 +1,45 @@
 [[board]]
-board_id = 0x02
+board_id = 0x10
 
 [board.adc]
 channels = [
-  { sub_id = 0x1, name = "TT5", kind = "temperature" },
-  { sub_id = 0x2, name = "TT6", kind = "temperature" },
+  { sub_id = 0x200, name = "TT5", kind = "temperature" },
+  { sub_id = 0x201, name = "TT6", kind = "temperature" },
 ]
 
 [[board]]
-board_id = 0x02
+board_id = 0x11
 
 [board.adc]
 channels = [
-  { sub_id = 0x1, name = "PT1", kind = "pressure" },
-  { sub_id = 0x2, name = "PT2", kind = "pressure" },
-  { sub_id = 0x3, name = "PT3", kind = "pressure" },
-  { sub_id = 0x4, name = "PT4", kind = "pressure" },
+  { sub_id = 0x202, name = "PT1", kind = "pressure" },
+  { sub_id = 0x203, name = "PT2", kind = "pressure" },
+  { sub_id = 0x204, name = "PT3", kind = "pressure" },
+  { sub_id = 0x205, name = "PT4", kind = "pressure" },
 ]
 
 [[board]]
-board_id = 0x03
+board_id = 0x12
 outputs = [
-  { sub_id = 0x1, name = "IG-XV-23" },
-  { sub_id = 0x2, name = "IPA-XV-25" },
+  { sub_id = 0x206, name = "IG-XV-23" },
+  { sub_id = 0x207, name = "IPA-XV-25" },
 ]
 
 [[board]]
-board_id = 0x04
+board_id = 0x13
 outputs = [
-  { sub_id = 0x1, name = "IG-XV-27" },
-  { sub_id = 0x2, name = "LOX-XV-26" },
-  { sub_id = 0x3, name = "IG-XV-24" },
+  { sub_id = 0x208, name = "IG-XV-27" },
+  { sub_id = 0x209, name = "LOX-XV-26" },
+  { sub_id = 0x20A, name = "IG-XV-24" },
 ]
 
 [[board]]
-board_id = 0x05
+board_id = 0x14
 
 [board.adc]
 channels = [
-  { sub_id = 0x1, name = "LC1", kind = "load_cell" },
-  { sub_id = 0x2, name = "LC2", kind = "load_cell" },
-  { sub_id = 0x3, name = "LC3", kind = "load_cell" },
-  { sub_id = 0x4, name = "LC4", kind = "load_cell" },
+  { sub_id = 0x20B, name = "LC1", kind = "load_cell" },
+  { sub_id = 0x20C, name = "LC2", kind = "load_cell" },
+  { sub_id = 0x20D, name = "LC3", kind = "load_cell" },
+  { sub_id = 0x20E, name = "LC4", kind = "load_cell" },
 ]

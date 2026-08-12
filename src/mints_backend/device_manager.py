@@ -50,7 +50,7 @@ class AdcChannelCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_adc_sub_id(self) -> Self:
         if self.sub_id < 0x200 or self.sub_id > 0x800:
-            raise ValueError("ADC sub_id out of range. Mus be between 0x200 and ox800")
+            raise ValueError("ADC sub_id out of range. Must be between 0x200 and 0x800.")
         return self
 
 
@@ -67,7 +67,7 @@ class OutputCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_output_sub_id(self) -> Self:
         if self.sub_id < 0x200 or self.sub_id > 0x800:
-            raise ValueError("Board id out of range")
+            raise ValueError("Output sub_id out of range. Must be between 0x200 and 0x800.")
         return self
 
 
@@ -80,7 +80,7 @@ class BoardCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_board_id(self) -> Self:
         if self.board_id < 0x10 or self.board_id > 0x80:
-            raise ValueError("Board id out of range")
+            raise ValueError("board_id out of range. Must be between 0x10 and 0x80.")
         return self
 
 
@@ -134,7 +134,7 @@ class Device(QObject):
         self.name = name
         self.bus = bus
 
-    # Shouln't this be can tx?
+    # NOTE: Shouln't this be can tx?
     def handle_can_rx(self, msg: can.Message):
         base_id = msg.arbitration_id & BASE_ID_MSK
         addr = msg.arbitration_id & ADDR_MSK
