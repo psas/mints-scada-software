@@ -50,7 +50,7 @@ class AdcChannelCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_adc_sub_id(self) -> Self:
         if self.sub_id > 0x7:
-            raise ValueError("ADC sub_id out of range. Must be between 0x200 and 0x800.")
+            raise ValueError("ADC sub_id out of range. Must be between 0 and 7.")
         return self
 
 
@@ -67,7 +67,7 @@ class OutputCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_output_sub_id(self) -> Self:
         if self.sub_id > 0x7:
-            raise ValueError("Output sub_id out of range. Must be between 0x200 and 0x800.")
+            raise ValueError("Output sub_id out of range. Must be between 0 and 7")
         return self
 
 
@@ -80,7 +80,7 @@ class BoardCfgModel(BaseModel):
     @model_validator(mode='after')
     def validate_board_id(self) -> Self:
         if self.board_id > 0xF:
-            raise ValueError("board_id out of range. Must be between 0x10 and 0x80.")
+            raise ValueError("board_id out of range. Must be between 0 and 15.")
         return self
 
 
@@ -112,10 +112,10 @@ class DeviceManager:
             for cfg in board_cfg.outputs:
                 self._register_device(cfg, board_cfg.board_id)
 
-    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, sub_id: int):
+    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
         if cfg.name in self.device_registry:
             raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
-        id = (sub_id << 4) + cfg.sub_id
+        id = (board_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
                 dev = Output(id, cfg.name, self.bus)
