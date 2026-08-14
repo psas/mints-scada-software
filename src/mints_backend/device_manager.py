@@ -90,12 +90,12 @@ class BoardCfgListModel(BaseModel):
 
 
 class DeviceManager:
-    def __init__(self, channel: str):
+    def __init__(self, channel: str | None, virtual_bus=False, board_cfg=None):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
         try:
             self.bus = can.ThreadSafeBus(
-                interface=CFG["can"]["interface"],
+                interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
                 channel=CFG["can"]["channel"] if channel is None else channel,
                 bitrate=CFG["can"]["bitrate"],
             )
@@ -104,7 +104,9 @@ class DeviceManager:
 
         self.notifier = can.Notifier(self.bus, [])
 
-        validated_config = BoardCfgListModel.model_validate(BOARDS)
+        validated_config = BoardCfgListModel.model_validate(
+            BOARDS if board_cfg is None else board_cfg
+        )
 
         for board_cfg in validated_config.board:
             for cfg in board_cfg.adc.channels if board_cfg.adc else []:
