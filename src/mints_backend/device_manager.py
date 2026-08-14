@@ -89,7 +89,7 @@ class BoardCfgListModel(BaseModel):
 
 
 class DeviceManager:
-    def __init__(self, channel: str | None, virtual_bus=False, board_cfg=None):
+    def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
         try:
@@ -104,7 +104,7 @@ class DeviceManager:
         self.notifier = can.Notifier(self.bus, [])
 
         validated_config = BoardCfgListModel.model_validate(
-            BOARDS if board_cfg is None else board_cfg
+            BOARDS if board_cfg_file is None else board_cfg_file
         )
 
         for board_cfg in validated_config.board:
