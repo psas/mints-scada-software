@@ -6,7 +6,7 @@ from typing_extensions import Self
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
@@ -43,13 +43,13 @@ class OutputState(Enum):
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: NonNegativeInt
     name: str
     kind: SensorKind
 
     @model_validator(mode='after')
     def validate_adc_sub_id(self) -> Self:
-        if self.sub_id < 0x200 or self.sub_id > 0x800:
+        if self.sub_id < 0x0 or self.sub_id > 0xF:
             raise ValueError("ADC sub_id out of range. Must be between 0x200 and 0x800.")
         return self
 
@@ -61,25 +61,25 @@ class AdcCfgModel(BaseModel):
 
 class OutputCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: NonNegativeInt
     name: str
 
     @model_validator(mode='after')
     def validate_output_sub_id(self) -> Self:
-        if self.sub_id < 0x200 or self.sub_id > 0x800:
+        if self.sub_id > 0xF:
             raise ValueError("Output sub_id out of range. Must be between 0x200 and 0x800.")
         return self
 
 
 class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    board_id: PositiveInt
+    board_id: NonNegativeInt
     adc: AdcCfgModel | None = None
     outputs: list[OutputCfgModel] = Field(default_factory=list)
     
     @model_validator(mode='after')
     def validate_board_id(self) -> Self:
-        if self.board_id < 0x10 or self.board_id > 0x80:
+        if self.board_id < 0x20 or self.board_id > 0x100:
             raise ValueError("board_id out of range. Must be between 0x10 and 0x80.")
         return self
 
