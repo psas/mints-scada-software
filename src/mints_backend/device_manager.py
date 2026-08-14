@@ -1,8 +1,7 @@
 from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import override
-from typing_extensions import Self
+from typing import Self, override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
@@ -47,7 +46,7 @@ class AdcChannelCfgModel(BaseModel):
     name: str
     kind: SensorKind
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_adc_sub_id(self) -> Self:
         if self.sub_id > 0x7:
             raise ValueError("ADC sub_id out of range. Must be between 0 and 7.")
@@ -64,7 +63,7 @@ class OutputCfgModel(BaseModel):
     sub_id: NonNegativeInt
     name: str
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_output_sub_id(self) -> Self:
         if self.sub_id > 0x7:
             raise ValueError("Output sub_id out of range. Must be between 0 and 7")
@@ -76,8 +75,8 @@ class BoardCfgModel(BaseModel):
     board_id: NonNegativeInt
     adc: AdcCfgModel | None = None
     outputs: list[OutputCfgModel] = Field(default_factory=list)
-    
-    @model_validator(mode='after')
+
+    @model_validator(mode="after")
     def validate_board_id(self) -> Self:
         if self.board_id > 0xF:
             raise ValueError("board_id out of range. Must be between 0 and 15.")
@@ -90,7 +89,7 @@ class BoardCfgListModel(BaseModel):
 
 
 class DeviceManager:
-    def __init__(self, channel: str | None, virtual_bus=False, board_cfg=None):
+    def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
         try:
@@ -105,7 +104,7 @@ class DeviceManager:
         self.notifier = can.Notifier(self.bus, [])
 
         validated_config = BoardCfgListModel.model_validate(
-            BOARDS if board_cfg is None else board_cfg
+            BOARDS if board_cfg_file is None else board_cfg_file
         )
 
         for board_cfg in validated_config.board:
