@@ -14,6 +14,7 @@ dependencies = [
     "pyqtgraph>=0.14.0",
     "pyside6>=6.11.1",
     "pyside6-stubs>=6.7.3.0",
+    "pytest>=9.1.1",
     "python-can>=4.6.1",
 ]
 
