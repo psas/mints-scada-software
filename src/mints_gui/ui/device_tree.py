@@ -107,8 +107,8 @@ class DeviceParameterTree(ParameterTree):
         self.setParameters(self.root, showTop=False)
         self._build_tree()
 
-    def _get_or_create_board_group(self, node_id: int) -> Parameter:
-        name = f"Board {hex(node_id)}"
+    def _get_or_create_board_group(self, board_id: int) -> Parameter:
+        name = f"Board {hex(board_id)}"
         if name in self.root.names:
             return self.root.child(name)
         group = Parameter.create(name=name, type="group", children=[])
@@ -117,8 +117,8 @@ class DeviceParameterTree(ParameterTree):
 
     def _build_tree(self) -> None:
         for dev in self.device_manager.device_registry.values():
-            node_id = dev.id >> 4
-            board_group = self._get_or_create_board_group(node_id)
+            board_id = dev.id >> 4
+            board_group = self._get_or_create_board_group(board_id)
             match dev:
                 case Output():
                     self._add_output_param(board_group, dev)

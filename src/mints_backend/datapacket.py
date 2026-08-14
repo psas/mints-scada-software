@@ -4,12 +4,12 @@ from typing import Self
 import can
 
 BASE_ID_MSK = int("11100000000", 2)
-NODE_ID_MSK = int("00011110000", 2)
+BOARD_ID_MSK = int("00011110000", 2)
 SUB_ID_MSK  = int("00000001111", 2)  # fmt: skip
-ADDR_MSK = NODE_ID_MSK | SUB_ID_MSK
+ADDR_MSK = BOARD_ID_MSK | SUB_ID_MSK
 
 ERR_MSG_ID = 0x100  # 1 << 8
-CLAIM_NODE_MSG_ID = 0x200  # 2 << 8
+CLAIM_BOARD_MSG_ID = 0x200  # 2 << 8
 REQUEST_MSG_ID = 0x300  #  3 << 8
 RESPONSE_MSG_ID = 0x400  # 4 << 8
 # 0x500 / 5 << 8 unused

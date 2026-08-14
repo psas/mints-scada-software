@@ -2,10 +2,11 @@ from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
 from typing import override
+from typing_extensions import Self
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
@@ -42,9 +43,15 @@ class OutputState(Enum):
 
 class AdcChannelCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: NonNegativeInt
     name: str
     kind: SensorKind
+
+    @model_validator(mode='after')
+    def validate_adc_sub_id(self) -> Self:
+        if self.sub_id > 0x7:
+            raise ValueError("ADC sub_id out of range. Must be between 0 and 7.")
+        return self
 
 
 class AdcCfgModel(BaseModel):
@@ -54,15 +61,27 @@ class AdcCfgModel(BaseModel):
 
 class OutputCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sub_id: PositiveInt
+    sub_id: NonNegativeInt
     name: str
+
+    @model_validator(mode='after')
+    def validate_output_sub_id(self) -> Self:
+        if self.sub_id > 0x7:
+            raise ValueError("Output sub_id out of range. Must be between 0 and 7")
+        return self
 
 
 class BoardCfgModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    node_id: PositiveInt
+    board_id: NonNegativeInt
     adc: AdcCfgModel | None = None
     outputs: list[OutputCfgModel] = Field(default_factory=list)
+    
+    @model_validator(mode='after')
+    def validate_board_id(self) -> Self:
+        if self.board_id > 0xF:
+            raise ValueError("board_id out of range. Must be between 0 and 15.")
+        return self
 
 
 class BoardCfgListModel(BaseModel):
@@ -89,14 +108,14 @@ class DeviceManager:
 
         for board_cfg in validated_config.board:
             for cfg in board_cfg.adc.channels if board_cfg.adc else []:
-                self._register_device(cfg, board_cfg.node_id)
+                self._register_device(cfg, board_cfg.board_id)
             for cfg in board_cfg.outputs:
-                self._register_device(cfg, board_cfg.node_id)
+                self._register_device(cfg, board_cfg.board_id)
 
-    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, node_id: int):
+    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
         if cfg.name in self.device_registry:
             raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
-        id = (node_id << 4) + cfg.sub_id
+        id = (board_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
                 dev = Output(id, cfg.name, self.bus)
