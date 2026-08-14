@@ -1,8 +1,7 @@
 from collections.abc import Callable
 from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import override
-from typing_extensions import Self
+from typing import Self, override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
