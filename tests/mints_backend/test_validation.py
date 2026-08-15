@@ -1,7 +1,9 @@
-import pytest
 import tomllib
 from pathlib import Path
+
+import pytest
 from pydantic import ValidationError
+
 from mints_backend.models import AdcChannelCfgModel, BoardCfgListModel, OutputCfgModel
 
 test_cfg_path = Path(__file__).parent.parent / "config"
