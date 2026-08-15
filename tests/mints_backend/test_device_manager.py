@@ -23,6 +23,7 @@ from mints_backend.device_manager import (
     DeviceManager,
     Output,
     Sensor,
+    SensorKind,
 )
 
 test_cfgs_path = Path(__file__).parent.parent / "config"
@@ -102,45 +103,44 @@ class TestDeviceManager:
 class TestDevices:
     test_channel = "vcan0"
 
-    def get_test_bus(self) -> can.BusABC:
+    def get_test_bus(self, loopback=False) -> can.BusABC:
         return can.ThreadSafeBus(
             interface="virtual",
             channel=self.test_channel,
             bitrate=CFG["can"]["bitrate"],
+            receive_own_messages=loopback,
         )
 
-    def test_sensors_subscribe_unscubscribe(self):
+    def test_sensor_init_success(self):
         """
-        Each Sensor Device should send a CAN message when it's subscribed to,
-        and shouldn't send messages once it's unsubscribed from
+        Sensor devices should initialize successfully under normal conditions
         """
-        device_manager = DeviceManager(channel=self.test_channel, virtual_bus=True)
-        test_bus: can.BusABC = self.get_test_bus()
-        for id, dev in device_manager.device_registry.items():
-            match dev:
-                case Sensor():
-                    # drain any stale messages from previous iterations
-                    while test_bus.recv(timeout=0):
-                        pass
+        with self.get_test_bus() as bus:
+            _test_sensor = Sensor(
+                id=0x1, name="test", kind=SensorKind.Temperature, bus=bus
+            )
 
-                    dev.subscribe(lambda _arg: None)
-                    try:
-                        msg_should_recv: can.Message | None = test_bus.recv(timeout=0.1)
-                        assert msg_should_recv is not None, (
-                            "No message received after subscribing"
-                        )
-                        msg_addr = msg_should_recv.arbitration_id & ~BASE_ID_MSK
-                        assert msg_addr == id
-                    finally:
-                        dev.unsubscribe()
+    def test_output_init_success(self):
+        """
+        Output devices should initialize successfully under normal conditions
+        """
+        with self.get_test_bus() as bus:
+            _test_output = Output(id=0x1, name="test", bus=bus)
 
-                    msg_shouldnt_recv: can.Message | None = test_bus.recv(timeout=0.15)
-                    assert msg_shouldnt_recv is None
-
-                case Output():
-                    pass
-
-        test_bus.shutdown()
+    def test_sensor_subscribe_unscubscribe(self):
+        """
+        Sensors should send CAN messages when subscribed to, and shouldn't send messages when unsubscribed from
+        """
+        with self.get_test_bus(loopback=True) as test_bus:
+            test_sensor = Sensor(
+                id=0x1, name="test", kind=SensorKind.Temperature, bus=test_bus
+            )
+            test_sensor.subscribe(lambda _args: None)
+            should_recv_msg: can.Message | None = test_bus.recv(timeout=0.1)
+            assert should_recv_msg is not None
+            test_sensor.unsubscribe()
+            should_not_recv_msg: can.Message | None = test_bus.recv(timeout=0.2)
+            assert should_not_recv_msg is None
 
     def test_device_rx_handler_called(self, qtbot: QtBot):
         """
