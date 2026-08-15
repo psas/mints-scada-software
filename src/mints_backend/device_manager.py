@@ -1,11 +1,9 @@
 from collections.abc import Callable
-from enum import Enum, StrEnum, unique
 from logging import getLogger
-from typing import Self, override
+from typing import override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
@@ -21,80 +19,25 @@ from mints_backend.datapacket import (
     CANData,
     DataPacket,
 )
+from .models import (
+    SensorKind,
+    BoardCfgListModel,
+    OutputCfgModel,
+    OutputState,
+    AdcChannelCfgModel,
+)
 
 log = getLogger(__name__)
 
 UPDATE_PERIOD = 1
 
-
-@unique
-class SensorKind(StrEnum):
-    Temperature = "temperature"
-    Pressure = "pressure"
-    LoadCell = "load_cell"
-
-
-@unique
-class OutputState(Enum):
-    High = 1
-    Low = 0
-
-
-class AdcChannelCfgModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    sub_id: NonNegativeInt
-    name: str
-    kind: SensorKind
-
-    @model_validator(mode="after")
-    def validate_adc_sub_id(self) -> Self:
-        if self.sub_id > 0x7:
-            raise ValueError("ADC sub_id out of range. Must be between 0 and 7.")
-        return self
-
-
-class AdcCfgModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    channels: list[AdcChannelCfgModel]
-
-
-class OutputCfgModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    sub_id: NonNegativeInt
-    name: str
-
-    @model_validator(mode="after")
-    def validate_output_sub_id(self) -> Self:
-        if self.sub_id > 0x7:
-            raise ValueError("Output sub_id out of range. Must be between 0 and 7")
-        return self
-
-
-class BoardCfgModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    board_id: NonNegativeInt
-    adc: AdcCfgModel | None = None
-    outputs: list[OutputCfgModel] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_board_id(self) -> Self:
-        if self.board_id > 0xF:
-            raise ValueError("board_id out of range. Must be between 0 and 15.")
-        return self
-
-
-class BoardCfgListModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    board: list[BoardCfgModel]
-
-
 class DeviceManager:
-    def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
+    def __init__(self, channel: str):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
         try:
             self.bus = can.ThreadSafeBus(
-                interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
+                interface=CFG["can"]["interface"],
                 channel=CFG["can"]["channel"] if channel is None else channel,
                 bitrate=CFG["can"]["bitrate"],
             )
@@ -103,9 +46,7 @@ class DeviceManager:
 
         self.notifier = can.Notifier(self.bus, [])
 
-        validated_config = BoardCfgListModel.model_validate(
-            BOARDS if board_cfg_file is None else board_cfg_file
-        )
+        validated_config = BoardCfgListModel.model_validate(BOARDS)
 
         for board_cfg in validated_config.board:
             for cfg in board_cfg.adc.channels if board_cfg.adc else []:
@@ -113,10 +54,10 @@ class DeviceManager:
             for cfg in board_cfg.outputs:
                 self._register_device(cfg, board_cfg.board_id)
 
-    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
+    def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, sub_id: int):
         if cfg.name in self.device_registry:
             raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
-        id = (board_id << 4) + cfg.sub_id
+        id = (sub_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
                 dev = Output(id, cfg.name, self.bus)
