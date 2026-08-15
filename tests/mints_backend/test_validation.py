@@ -4,12 +4,19 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from config import boards as BOARD
 from mints_backend.models import AdcChannelCfgModel, BoardCfgListModel, OutputCfgModel
 
 test_cfg_path = Path(__file__).parent.parent / "config"
 
 
 class TestValidation:
+    def test_board_cfg_init_successfully(self):
+        """
+        The main BoardCfgListModel should initialize successfully under normal conditions
+        """
+        _validated_model = BoardCfgListModel.model_validate(BOARD)
+
     def test_invalid_board_id_raises_exc(self):
         """
         The model should raise an exception if an invalid board_id is in the config
