@@ -36,14 +36,11 @@ class DeviceManager:
     def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
-        try:
-            self.bus = can.ThreadSafeBus(
-                interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
-                channel=CFG["can"]["channel"] if channel is None else channel,
-                bitrate=CFG["can"]["bitrate"],
-            )
-        except OSError as e:
-            raise OSError from e
+        self.bus = can.ThreadSafeBus(
+            interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
+            channel=CFG["can"]["channel"] if channel is None else channel,
+            bitrate=CFG["can"]["bitrate"],
+        )
 
         self.notifier = can.Notifier(self.bus, [])
 
@@ -58,8 +55,6 @@ class DeviceManager:
                 self._register_device(cfg, board_cfg.board_id)
 
     def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
-        if cfg.name in self.device_registry:
-            raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
         id = (board_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
@@ -67,6 +62,8 @@ class DeviceManager:
             case AdcChannelCfgModel():
                 dev = Sensor(id, cfg.name, SensorKind(cfg.kind), self.bus)
         self.notifier.add_listener(dev.handle_can_rx)
+        if id in self.device_registry:
+            raise ValueError(f"Duplicate device ID found in registry: {id}")
         self.device_registry[id] = dev
 
 
@@ -101,10 +98,7 @@ class Device(QObject):
         self.bus.send(datapacket.to_can_message())
 
     def decode(self, _datapacket: DataPacket) -> int:
-        log.error(
-            "Default decode method should not be used. Offending device: %s", self.name
-        )
-        return 0
+        raise NotImplementedError
 
 
 class Sensor(Device):
