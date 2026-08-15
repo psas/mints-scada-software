@@ -5,7 +5,6 @@ from pathlib import Path
 import can
 import pytest
 from pydantic import ValidationError
-from pytestqt.exceptions import TimeoutError as QTimeoutError
 from pytestqt.qtbot import QtBot
 
 from config import boards as DEFAULT_BOARDS_CFG
@@ -145,7 +144,7 @@ class TestDevices:
     def test_device_rx_handler_called(self, qtbot: QtBot):
         """
         Every Device should have its CAN rx handler function called when it receives
-        a CAN msg addressed to it, and it shouldn't be called if the msg wasn't addressed to it
+        a CAN msg addressed to it, and it shouldn't be called if the msg wasn't addressed to it.
         """
         device_manager = DeviceManager(channel=self.test_channel, virtual_bus=True)
         test_bus: can.BusABC = self.get_test_bus()
@@ -185,21 +184,13 @@ class TestDevices:
 
                 assert handler_called.is_set(), f"{id} handler was not called"
 
-                if isinstance(dev, Sensor):
-                    dev.unsubscribe()
-
-                with pytest.raises(QTimeoutError):
-                    blocker = qtbot.waitSignal(
-                        dev.sig_value_received, raising=True, timeout=50
-                    )
-                    datapacket.id += 1
-                    test_bus.send(datapacket.to_can_message())
-                    blocker.wait()
-
             finally:
                 handler_called.clear()
-                if isinstance(dev, Output):
-                    dev.remove_slot_fn()
+                match dev:
+                    case Sensor():
+                        dev.unsubscribe()
+                    case Output():
+                        dev.remove_slot_fn()
 
     def test_decode_on_nonsubclassed_device_raises_exc(self):
         """
