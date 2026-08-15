@@ -92,14 +92,11 @@ class DeviceManager:
     def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
-        try:
-            self.bus = can.ThreadSafeBus(
-                interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
-                channel=CFG["can"]["channel"] if channel is None else channel,
-                bitrate=CFG["can"]["bitrate"],
-            )
-        except OSError as e:
-            raise OSError from e
+        self.bus = can.ThreadSafeBus(
+            interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
+            channel=CFG["can"]["channel"] if channel is None else channel,
+            bitrate=CFG["can"]["bitrate"],
+        )
 
         self.notifier = can.Notifier(self.bus, [])
 
@@ -157,10 +154,7 @@ class Device(QObject):
         self.bus.send(datapacket.to_can_message())
 
     def decode(self, _datapacket: DataPacket) -> int:
-        log.error(
-            "Default decode method should not be used. Offending device: %s", self.name
-        )
-        return 0
+        raise NotImplementedError
 
 
 class Sensor(Device):
