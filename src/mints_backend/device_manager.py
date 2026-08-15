@@ -114,8 +114,6 @@ class DeviceManager:
                 self._register_device(cfg, board_cfg.board_id)
 
     def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
-        if cfg.name in self.device_registry:
-            raise ValueError(f"Duplicate device name found in board config: {cfg.name}")
         id = (board_id << 4) + cfg.sub_id
         match cfg:
             case OutputCfgModel():
@@ -123,6 +121,8 @@ class DeviceManager:
             case AdcChannelCfgModel():
                 dev = Sensor(id, cfg.name, SensorKind(cfg.kind), self.bus)
         self.notifier.add_listener(dev.handle_can_rx)
+        if id in self.device_registry:
+            raise ValueError(f"Duplicate device ID found in registry: {id}")
         self.device_registry[id] = dev
 
 
