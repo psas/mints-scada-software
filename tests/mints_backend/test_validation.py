@@ -1,11 +1,10 @@
-import tomllib
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from config import boards as BOARD
 from mints_backend.models import AdcChannelCfgModel, BoardCfgListModel, OutputCfgModel
+
 
 class TestValidation:
     def test_board_cfg_init_successfully(self):
