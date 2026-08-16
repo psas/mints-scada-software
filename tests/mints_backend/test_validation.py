@@ -1,13 +1,9 @@
-import tomllib
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from config import boards as BOARD
 from mints_backend.models import AdcChannelCfgModel, BoardCfgListModel, OutputCfgModel
-
-test_cfg_path = Path(__file__).parent.parent / "config"
 
 
 class TestValidation:
@@ -21,9 +17,7 @@ class TestValidation:
         """
         The model should raise an exception if an invalid board_id is in the config
         """
-        invalid_board_id = test_cfg_path / "invalid_board_id.toml"
-        with invalid_board_id.open(mode="rb") as file:
-            data = tomllib.load(file)
+        data = {"board": [{"board_id": 0xFFF}]}
         with pytest.raises(ValidationError):
             BoardCfgListModel.model_validate(data)
 
@@ -31,9 +25,7 @@ class TestValidation:
         """
         The model should raise an exception if an invalid sub_id is in the config
         """
-        invalid_adc_sub_id = test_cfg_path / "invalid_adc_sub_id.toml"
-        with invalid_adc_sub_id.open(mode="rb") as file:
-            data = tomllib.load(file)["board"][0]["adc"]["channels"][0]
+        data = {"sub_id": 0xFFF, "name": "PT1", "kind": "pressure"}
         with pytest.raises(ValidationError):
             AdcChannelCfgModel.model_validate(data)
 
@@ -41,8 +33,6 @@ class TestValidation:
         """
         The model should raise an exception if an invalid sub_id is in the config
         """
-        invalid_output_sub_id = test_cfg_path / "invalid_output_sub_id.toml"
-        with invalid_output_sub_id.open(mode="rb") as file:
-            data = tomllib.load(file)["board"][1]["outputs"][0]
+        data = {"sub_id": 0xFFF, "name": "PT1"}
         with pytest.raises(ValidationError):
             OutputCfgModel.model_validate(data)

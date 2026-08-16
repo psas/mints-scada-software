@@ -1,6 +1,4 @@
 import threading
-import tomllib
-from pathlib import Path
 
 import can
 import pytest
@@ -25,8 +23,6 @@ from mints_backend.device_manager import (
     SensorKind,
 )
 
-test_cfgs_path = Path(__file__).parent.parent / "config"
-
 
 class TestDeviceManager:
     def test_device_manager_init(self):
@@ -46,11 +42,9 @@ class TestDeviceManager:
 
     def test_bad_board_cfg_raises_exception(self):
         """
-        Using one of the intentionally error producing board configs should throw an exception
+        Using a board config with an error in it should raise an exception
         """
-        bad_cfg_path = test_cfgs_path / "typo_board_cfg.toml"
-        with bad_cfg_path.open(mode="rb") as file:
-            config = tomllib.load(file)
+        config = {"sub_i": 0x1, "name": "PT1", "kind": "pressure"}
 
         with pytest.raises(ValidationError):
             _device_manager = DeviceManager(
