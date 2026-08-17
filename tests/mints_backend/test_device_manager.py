@@ -48,7 +48,7 @@ class TestDeviceManager:
 
         with pytest.raises(ValidationError):
             _device_manager = DeviceManager(
-                "vcan0", virtual_bus=True, board_cfg_file=config
+                "vcan0", virtual_bus=True, board_cfg_dict=config
             )
 
     def test_all_devices_in_registry_have_unique_ids(self):
