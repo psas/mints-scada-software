@@ -20,11 +20,11 @@ from mints_backend.datapacket import (
     DataPacket,
 )
 from mints_backend.models import (
+    AdcChannelCfgModel,
     BoardCfgListModel,
     OutputCfgModel,
-    AdcChannelCfgModel,
     OutputState,
-    SensorKind
+    SensorKind,
 )
 
 log = getLogger(__name__)
@@ -33,7 +33,9 @@ UPDATE_PERIOD = 1
 
 
 class DeviceManager:
-    def __init__(self, channel: str | None, virtual_bus=False, board_cfg_file=None):
+    def __init__(
+        self, channel: str | None, virtual_bus=False, board_cfg_dict: dict | None = None
+    ):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
         self.bus = can.ThreadSafeBus(
@@ -45,7 +47,7 @@ class DeviceManager:
         self.notifier = can.Notifier(self.bus, [])
 
         validated_config = BoardCfgListModel.model_validate(
-            BOARDS if board_cfg_file is None else board_cfg_file
+            BOARDS if board_cfg_dict is None else board_cfg_dict
         )
 
         for board_cfg in validated_config.board:
