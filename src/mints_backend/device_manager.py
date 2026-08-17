@@ -29,7 +29,7 @@ from mints_backend.models import (
 
 log = getLogger(__name__)
 
-UPDATE_PERIOD = 1
+UPDATE_PERIOD = 1.0
 
 
 class DeviceManager:
@@ -107,12 +107,12 @@ class Sensor(Device):
         self.kind = kind
         self.subscription: CyclicSendTaskABC | None = None
 
-    def subscribe(self, slot_fn: Callable):
+    def subscribe(self, slot_fn: Callable, send_period: float = UPDATE_PERIOD):
         data = CANData(CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
         id = self.id + REQUEST_MSG_ID
         datapacket = DataPacket(id=id, is_err=False, data=data)
         self.subscription = self.bus.send_periodic(
-            datapacket.to_can_message(), UPDATE_PERIOD
+            datapacket.to_can_message(), send_period
         )
         self.sig_value_received.connect(slot_fn)
 

@@ -128,7 +128,7 @@ class TestDevices:
             test_sensor = Sensor(
                 id=0x1, name="test", kind=SensorKind.Temperature, bus=test_bus
             )
-            test_sensor.subscribe(lambda _args: None)
+            test_sensor.subscribe(lambda _args: None, send_period=0.1)
             should_recv_msg: can.Message | None = test_bus.recv(timeout=0.1)
             assert should_recv_msg is not None
             test_sensor.unsubscribe()
