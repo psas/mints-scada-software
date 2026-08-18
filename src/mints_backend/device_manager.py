@@ -38,17 +38,18 @@ class DeviceManager:
     ):
         super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
-        self.bus = can.ThreadSafeBus(
+
+        validated_config = BoardCfgListModel.model_validate(
+            BOARDS if board_cfg_dict is None else board_cfg_dict
+        )
+
+        self.bus: can.BusABC = can.ThreadSafeBus(
             interface=CFG["can"]["interface"] if not virtual_bus else "virtual",
             channel=CFG["can"]["channel"] if channel is None else channel,
             bitrate=CFG["can"]["bitrate"],
         )
 
         self.notifier = can.Notifier(self.bus, [])
-
-        validated_config = BoardCfgListModel.model_validate(
-            BOARDS if board_cfg_dict is None else board_cfg_dict
-        )
 
         for board_cfg in validated_config.board:
             for cfg in board_cfg.adc.channels if board_cfg.adc else []:
@@ -67,6 +68,19 @@ class DeviceManager:
         if id in self.device_registry:
             raise ValueError(f"Duplicate device ID found in registry: {id}")
         self.device_registry[id] = dev
+
+    def teardown(self):
+        self.notifier.stop()
+
+        for dev in self.device_registry:
+            match dev:
+                case Sensor():
+                    dev.unsubscribe()
+                case Output():
+                    dev.remove_slot_fn()
+
+        self.bus.stop_all_periodic_tasks()
+        self.bus.shutdown()
 
 
 class Device(QObject):
