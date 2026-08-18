@@ -50,7 +50,7 @@ def notifier(dev_bus: can.ThreadSafeBus):
 
 
 @pytest.fixture()
-def device(dev_bus):
+def device(dev_bus: can.ThreadSafeBus):
     yield Device(id=0x0, name="TEST", bus=dev_bus)
 
 
@@ -62,7 +62,7 @@ def sensor(dev_bus: can.ThreadSafeBus, notifier: can.Notifier):
 
 
 @pytest.fixture()
-def sensor_datapacket(sensor):
+def sensor_datapacket(sensor: Sensor):
     resp_id = RESPONSE_MSG_ID | sensor.id
     resp_data = CANData(None, bytearray(CAN_DATA_LEN))
     yield DataPacket(id=resp_id, is_err=False, data=resp_data)
@@ -76,13 +76,13 @@ def output(dev_bus: can.ThreadSafeBus, notifier: can.Notifier):
 
 
 @pytest.fixture()
-def output_datapacket(output):
+def output_datapacket(output: Output):
     resp_id = RESPONSE_MSG_ID | output.id
     resp_data = CANData(None, bytearray(CAN_DATA_LEN))
     yield DataPacket(id=resp_id, is_err=False, data=resp_data)
 
 
-def test_device_manager_init(device_manager):
+def test_device_manager_init(device_manager: DeviceManager):
     """
     Device manager should initialize successfully under normal conditions,
     and with proper attributes
@@ -115,7 +115,7 @@ def test_duplicate_id_in_register_raises_exception(
         )
 
 
-def test_each_device_rx_handler_registered_as_listener(device_manager):
+def test_each_device_rx_handler_registered_as_listener(device_manager: DeviceManager):
     """
     Each device in the registry should have its rx_handler registered in the CAN bus notifier list
     """
@@ -123,7 +123,7 @@ def test_each_device_rx_handler_registered_as_listener(device_manager):
         assert dev.handle_can_rx in device_manager.notifier.listeners
 
 
-def test_sensor_init_success(sensor):
+def test_sensor_init_success(sensor: Sensor):
     """
     Sensor devices should initialize successfully under normal conditions
     """
@@ -132,7 +132,7 @@ def test_sensor_init_success(sensor):
     assert isinstance(sensor.bus, can.ThreadSafeBus)
 
 
-def test_output_init_success(output):
+def test_output_init_success(output: Output):
     """
     Output devices should initialize successfully under normal conditions
     """
