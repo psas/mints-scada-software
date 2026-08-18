@@ -36,7 +36,6 @@ class DeviceManager:
     def __init__(
         self, channel: str | None, virtual_bus=False, board_cfg_dict: dict | None = None
     ):
-        super().__init__()
         self.device_registry: dict[int, Sensor | Output] = {}
 
         validated_config = BoardCfgListModel.model_validate(
