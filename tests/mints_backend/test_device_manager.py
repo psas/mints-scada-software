@@ -24,12 +24,49 @@ from mints_backend.device_manager import (
 )
 
 
+@pytest.fixture()
+def device_manager():
+    device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
+    yield device_manager
+    device_manager.teardown()
+
+
+@pytest.fixture()
+def loopback_test_bus():
+    bus: can.BusABC = can.ThreadSafeBus(
+        interface="virtual",
+        channel="vcan0",
+        bitrate=CFG["can"]["bitrate"],
+        receive_own_messages=True,
+    )
+
+    yield bus
+
+    bus.stop_all_periodic_tasks()
+    bus.shutdown()
+
+
+@pytest.fixture()
+def test_bus():
+    bus: can.BusABC = can.ThreadSafeBus(
+        interface="virtual",
+        channel="vcan0",
+        bitrate=CFG["can"]["bitrate"],
+        receive_own_messages=False,
+    )
+
+    yield bus
+
+    bus.stop_all_periodic_tasks()
+    bus.shutdown()
+
+
 class TestDeviceManager:
-    def test_device_manager_init(self):
+    def test_device_manager_init(self, device_manager):
         """
         Device manager should initialize successfully under normal conditions
         """
-        _device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
+        assert True  # Fixture does test
 
     def test_bad_channel_raises_os_err(self):
         """
@@ -51,11 +88,10 @@ class TestDeviceManager:
                 "vcan0", virtual_bus=True, board_cfg_dict=config
             )
 
-    def test_all_devices_in_registry_have_unique_ids(self):
+    def test_all_devices_in_registry_have_unique_ids(self, device_manager):
         """
         Each device in the device manager's registry should have a unique ID
         """
-        device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
         registry: dict[int, Sensor | Output] = device_manager.device_registry
         device_ids: set[int] = set()
 
@@ -63,11 +99,10 @@ class TestDeviceManager:
             assert id not in device_ids
             device_ids.add(id)
 
-    def test_duplicate_id_in_register_raises_exception(self):
+    def test_duplicate_id_in_register_raises_exception(self, device_manager):
         """
         If a duplicate ID is detected in the device manager's registry it should raise an exception
         """
-        device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
         registry: dict[int, Sensor | Output] = device_manager.device_registry
 
         if len(registry) == 1:
@@ -84,11 +119,10 @@ class TestDeviceManager:
         with pytest.raises(ValueError):
             device_manager._register_device(first_device, first_board.board_id)
 
-    def test_each_device_rx_handler_registered_as_listener(self):
+    def test_each_device_rx_handler_registered_as_listener(self, device_manager):
         """
         Each device in the registry should have its rx_handler registered in the CAN bus notifier list
         """
-        device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
         for dev in device_manager.device_registry.values():
             assert dev.handle_can_rx in device_manager.notifier.listeners
 
@@ -96,52 +130,40 @@ class TestDeviceManager:
 class TestDevices:
     test_channel = "vcan0"
 
-    def get_test_bus(self, loopback=False) -> can.BusABC:
-        return can.ThreadSafeBus(
-            interface="virtual",
-            channel=self.test_channel,
-            bitrate=CFG["can"]["bitrate"],
-            receive_own_messages=loopback,
-        )
-
-    def test_sensor_init_success(self):
+    def test_sensor_init_success(self, test_bus):
         """
         Sensor devices should initialize successfully under normal conditions
         """
-        with self.get_test_bus() as bus:
-            _test_sensor = Sensor(
-                id=0x1, name="test", kind=SensorKind.Temperature, bus=bus
-            )
+        _test_sensor = Sensor(
+            id=0x1, name="test", kind=SensorKind.Temperature, bus=test_bus
+        )
 
-    def test_output_init_success(self):
+    def test_output_init_success(self, test_bus):
         """
         Output devices should initialize successfully under normal conditions
         """
-        with self.get_test_bus() as bus:
-            _test_output = Output(id=0x1, name="test", bus=bus)
+        _test_output = Output(id=0x1, name="test", bus=test_bus)
 
-    def test_sensor_subscribe_unscubscribe(self):
+    def test_sensor_subscribe_unscubscribe(self, loopback_test_bus):
         """
         Sensors should send CAN messages when subscribed to, and shouldn't send messages when unsubscribed from
         """
-        with self.get_test_bus(loopback=True) as test_bus:
-            test_sensor = Sensor(
-                id=0x1, name="test", kind=SensorKind.Temperature, bus=test_bus
-            )
-            test_sensor.subscribe(lambda _args: None, send_period=0.1)
-            should_recv_msg: can.Message | None = test_bus.recv(timeout=0.1)
-            assert should_recv_msg is not None
-            test_sensor.unsubscribe()
-            should_not_recv_msg: can.Message | None = test_bus.recv(timeout=0.2)
-            assert should_not_recv_msg is None
+        test_sensor = Sensor(
+            id=0x1, name="test", kind=SensorKind.Temperature, bus=loopback_test_bus
+        )
+        test_sensor.subscribe(lambda _args: None, send_period=0.1)
+        should_recv_msg: can.Message | None = loopback_test_bus.recv(timeout=0.1)
+        assert should_recv_msg is not None
+        test_sensor.unsubscribe()
+        should_not_recv_msg: can.Message | None = loopback_test_bus.recv(timeout=0.2)
+        assert should_not_recv_msg is None
 
-    def test_device_rx_handler_called(self, qtbot: QtBot):
+    def test_device_rx_handler_called(self, test_bus, qtbot: QtBot):
         """
         Every Device should have its CAN rx handler function called when it receives
         a CAN msg addressed to it, and it shouldn't be called if the msg wasn't addressed to it.
         """
         device_manager = DeviceManager(channel=self.test_channel, virtual_bus=True)
-        test_bus: can.BusABC = self.get_test_bus()
         handler_called = threading.Event()
 
         for id, dev in device_manager.device_registry.items():
@@ -186,11 +208,11 @@ class TestDevices:
                     case Output():
                         dev.remove_slot_fn()
 
-    def test_decode_on_nonsubclassed_device_raises_exc(self):
+    def test_decode_on_nonsubclassed_device_raises_exc(self, test_bus):
         """
         Calling decode on a non-subclassed Device should raise an exception
         """
-        test_dev = Device(id=0x123, name="test", bus=self.get_test_bus())
+        test_dev = Device(id=0x123, name="test", bus=test_bus)
         datapacket = DataPacket(
             id=0x123, is_err=False, data=CANData(None, bytearray(CAN_DATA_LEN))
         )
