@@ -4,51 +4,73 @@ import pytest
 from mints_backend.datapacket import CAN_DATA_LEN, CANData, DataPacket
 
 
-def test_from_to_can_message():
-    """
-    Test datapacket creation from CAN message and conversion from
-    datapacket to CAN message results in equivalent CAN messages
-    """
-    mock_msg = can.Message(
+@pytest.fixture()
+def can_message():
+    yield can.Message(
         check=True, arbitration_id=0x123, is_extended_id=False, data=[0] * 8
     )
 
-    datapacket = DataPacket.from_can_message(mock_msg)
-    msg: can.Message = datapacket.to_can_message()
 
-    assert msg.timestamp == mock_msg.timestamp
-    assert msg.arbitration_id == mock_msg.arbitration_id
-    assert msg.is_extended_id == mock_msg.is_extended_id
-    assert msg.is_remote_frame == mock_msg.is_remote_frame
-    assert msg.is_error_frame == mock_msg.is_error_frame
-    assert msg.channel == mock_msg.channel
-    assert msg.dlc == mock_msg.dlc
-    assert msg.data == mock_msg.data
-    assert msg.is_fd == mock_msg.is_fd
-    assert msg.is_rx == mock_msg.is_rx
-    assert msg.bitrate_switch == mock_msg.bitrate_switch
-    assert msg.error_state_indicator == mock_msg.error_state_indicator
+@pytest.fixture()
+def datapacket(can_message: can.Message):
+    yield DataPacket.from_can_message(can_message)
+
+
+@pytest.fixture()
+def can_msg_from_datapacket(datapacket: DataPacket):
+    yield datapacket.to_can_message()
+
+
+@pytest.fixture()
+def can_data():
+    yield CANData(None, bytearray(CAN_DATA_LEN))
+
+
+@pytest.fixture()
+def can_data_to_bytes(can_data: CANData):
+    yield can_data.to_bytes()
+
+
+def test_from_to_can_message(
+    can_message: can.Message, can_msg_from_datapacket: can.Message
+):
+    """
+    Datapacket creation from CAN message and conversion from
+    datapacket to CAN message should result in equivalent CAN messages
+    """
+    assert can_msg_from_datapacket.timestamp == can_message.timestamp
+    assert can_msg_from_datapacket.arbitration_id == can_message.arbitration_id
+    assert can_msg_from_datapacket.is_extended_id == can_message.is_extended_id
+    assert can_msg_from_datapacket.is_remote_frame == can_message.is_remote_frame
+    assert can_msg_from_datapacket.is_error_frame == can_message.is_error_frame
+    assert can_msg_from_datapacket.channel == can_message.channel
+    assert can_msg_from_datapacket.dlc == can_message.dlc
+    assert can_msg_from_datapacket.data == can_message.data
+    assert can_msg_from_datapacket.is_fd == can_message.is_fd
+    assert can_msg_from_datapacket.is_rx == can_message.is_rx
+    assert can_msg_from_datapacket.bitrate_switch == can_message.bitrate_switch
+    assert (
+        can_msg_from_datapacket.error_state_indicator
+        == can_message.error_state_indicator
+    )
 
 
 def test_candata_checks_data_len():
     """
-    Test that CANData __init__ validates the length of passed in data,
+    CANData __init__ should validate the length of passed in data,
     raising an exception on invalid length and succeeding on the correct length
     """
     with pytest.raises(ValueError):
-        data_too_long = bytearray([0] * (CAN_DATA_LEN + 1))
-        _bad_can_data = CANData(None, data_too_long)
+        CANData(None, bytearray(CAN_DATA_LEN + 1))
 
     with pytest.raises(ValueError):
-        data_too_short = bytearray([0] * (CAN_DATA_LEN - 1))
-        _bad_can_data = CANData(None, data_too_short)
+        CANData(None, bytearray(CAN_DATA_LEN - 1))
 
-    good_data = bytearray([0] * CAN_DATA_LEN)
-    _good_can_data = CANData(None, good_data)
+    CANData(None, bytearray(CAN_DATA_LEN))
 
 
-def test_candata_to_bytes():
-    mock_bytes = bytearray([0] * CAN_DATA_LEN)
-    can_data = CANData(None, mock_bytes)
-    converted_data = can_data.to_bytes()
-    assert converted_data[1:] == mock_bytes
+def test_candata_to_bytes(can_data: CANData, can_data_to_bytes: bytearray):
+    """
+    Conversion method to go from CANData to a bytearray should yield equivalent bytes
+    """
+    assert can_data_to_bytes[1:] == can_data.bytes
