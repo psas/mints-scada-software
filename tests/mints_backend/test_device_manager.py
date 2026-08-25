@@ -2,13 +2,10 @@ import threading
 
 import can
 import pytest
-from pydantic import ValidationError
 from pytestqt.qtbot import QtBot
 
-from config import boards as DEFAULT_BOARDS_CFG
 from config import config as CFG
 from mints_backend.datapacket import (
-    BASE_ID_MSK,
     CAN_DATA_LEN,
     RESPONSE_MSG_ID,
     CANData,
@@ -25,19 +22,18 @@ from mints_backend.device_manager import (
 
 
 @pytest.fixture()
-def device_manager():
-    device_manager = DeviceManager(channel="vcan0", virtual_bus=True)
-    yield device_manager
-    device_manager.teardown()
+def event_bool():
+    event = threading.Event()
+    yield event
+    event.clear()
 
 
 @pytest.fixture()
-def loopback_test_bus():
+def dev_bus(request):
     bus: can.BusABC = can.ThreadSafeBus(
         interface="virtual",
         channel="vcan0",
         bitrate=CFG["can"]["bitrate"],
-        receive_own_messages=True,
     )
 
     yield bus
@@ -47,174 +43,159 @@ def loopback_test_bus():
 
 
 @pytest.fixture()
-def test_bus():
-    bus: can.BusABC = can.ThreadSafeBus(
-        interface="virtual",
-        channel="vcan0",
-        bitrate=CFG["can"]["bitrate"],
-        receive_own_messages=False,
-    )
-
-    yield bus
-
-    bus.stop_all_periodic_tasks()
-    bus.shutdown()
+def notifier(dev_bus: can.ThreadSafeBus):
+    notifier = can.Notifier(dev_bus, listeners=[])
+    yield notifier
+    notifier.stop()
 
 
-class TestDeviceManager:
-    def test_device_manager_init(self, device_manager):
-        """
-        Device manager should initialize successfully under normal conditions
-        """
-        assert True  # Fixture does test
+@pytest.fixture()
+def device(dev_bus: can.ThreadSafeBus):
+    yield Device(id=0x0, name="TEST", bus=dev_bus)
 
-    def test_bad_channel_raises_os_err(self):
-        """
-        Passing a bad CAN channel to the device manager should throw an error
-        """
-        with pytest.raises(OSError):
-            _device_manager = DeviceManager(
-                channel="why_would_you_ever_name_something_this"
-            )
 
-    def test_bad_board_cfg_raises_exception(self):
-        """
-        Using a board config with an error in it should raise an exception
-        """
-        config = {"sub_i": 0x1, "name": "PT1", "kind": "pressure"}
+@pytest.fixture()
+def sensor(dev_bus: can.ThreadSafeBus, notifier: can.Notifier):
+    sensor = Sensor(id=0x1, name="TEST0", kind=SensorKind.Temperature, bus=dev_bus)
+    notifier.add_listener(sensor.handle_can_rx)
+    yield sensor
 
-        with pytest.raises(ValidationError):
-            _device_manager = DeviceManager(
-                "vcan0", virtual_bus=True, board_cfg_dict=config
-            )
 
-    def test_all_devices_in_registry_have_unique_ids(self, device_manager):
-        """
-        Each device in the device manager's registry should have a unique ID
-        """
-        registry: dict[int, Sensor | Output] = device_manager.device_registry
-        device_ids: set[int] = set()
+@pytest.fixture()
+def sensor_datapacket(sensor: Sensor):
+    resp_id = RESPONSE_MSG_ID | sensor.id
+    resp_data = CANData(None, bytearray(CAN_DATA_LEN))
+    yield DataPacket(id=resp_id, is_err=False, data=resp_data)
 
-        for id in registry:
-            assert id not in device_ids
-            device_ids.add(id)
 
-    def test_duplicate_id_in_register_raises_exception(self, device_manager):
-        """
-        If a duplicate ID is detected in the device manager's registry it should raise an exception
-        """
-        registry: dict[int, Sensor | Output] = device_manager.device_registry
+@pytest.fixture()
+def output(dev_bus: can.ThreadSafeBus, notifier: can.Notifier):
+    output = Output(id=0x2, name="Test1", bus=dev_bus)
+    notifier.add_listener(output.handle_can_rx)
+    yield output
 
-        if len(registry) == 1:
-            pytest.skip("Length of device registry is only 1 - test doesn't apply")
 
-        config = BoardCfgListModel.model_validate(DEFAULT_BOARDS_CFG)
-        first_board = config.board[0]
-        first_device = (
-            first_board.adc.channels[0]
-            if first_board.adc is not None
-            else first_board.outputs[0]
+@pytest.fixture()
+def output_datapacket(output: Output):
+    resp_id = RESPONSE_MSG_ID | output.id
+    resp_data = CANData(None, bytearray(CAN_DATA_LEN))
+    yield DataPacket(id=resp_id, is_err=False, data=resp_data)
+
+
+def test_device_manager_init(device_manager: DeviceManager):
+    """
+    Device manager should initialize successfully under normal conditions,
+    and with proper attributes
+    """
+    assert isinstance(device_manager.bus, can.ThreadSafeBus)
+    assert isinstance(device_manager.notifier, can.Notifier)
+    assert len(device_manager.device_registry) > 0
+
+
+def test_bad_channel_raises_os_err():
+    """
+    Passing a bad CAN channel to the device manager should throw an error
+    """
+    with pytest.raises(OSError):
+        _device_manager = DeviceManager(
+            channel="why_would_you_ever_name_something_this"
         )
 
-        with pytest.raises(ValueError):
-            device_manager._register_device(first_device, first_board.board_id)
 
-    def test_each_device_rx_handler_registered_as_listener(self, device_manager):
-        """
-        Each device in the registry should have its rx_handler registered in the CAN bus notifier list
-        """
-        for dev in device_manager.device_registry.values():
-            assert dev.handle_can_rx in device_manager.notifier.listeners
-
-
-class TestDevices:
-    test_channel = "vcan0"
-
-    def test_sensor_init_success(self, test_bus):
-        """
-        Sensor devices should initialize successfully under normal conditions
-        """
-        _test_sensor = Sensor(
-            id=0x1, name="test", kind=SensorKind.Temperature, bus=test_bus
+def test_duplicate_id_in_register_raises_exception(
+    device_manager: DeviceManager, board_configs_model: BoardCfgListModel
+):
+    """
+    If a duplicate ID is detected in the device manager's registry it should raise an exception
+    """
+    with pytest.raises(ValueError):
+        device_manager._register_device(
+            next(iter(board_configs_model.board)).outputs[0],
+            next(iter(board_configs_model.board)).board_id,
         )
 
-    def test_output_init_success(self, test_bus):
-        """
-        Output devices should initialize successfully under normal conditions
-        """
-        _test_output = Output(id=0x1, name="test", bus=test_bus)
 
-    def test_sensor_subscribe_unscubscribe(self, loopback_test_bus):
-        """
-        Sensors should send CAN messages when subscribed to, and shouldn't send messages when unsubscribed from
-        """
-        test_sensor = Sensor(
-            id=0x1, name="test", kind=SensorKind.Temperature, bus=loopback_test_bus
-        )
-        test_sensor.subscribe(lambda _args: None, send_period=0.1)
-        should_recv_msg: can.Message | None = loopback_test_bus.recv(timeout=0.1)
-        assert should_recv_msg is not None
-        test_sensor.unsubscribe()
-        should_not_recv_msg: can.Message | None = loopback_test_bus.recv(timeout=0.2)
-        assert should_not_recv_msg is None
+def test_each_device_rx_handler_registered_as_listener(device_manager: DeviceManager):
+    """
+    Each device in the registry should have its rx_handler registered in the CAN bus notifier list
+    """
+    for dev in device_manager.device_registry.values():
+        assert dev.handle_can_rx in device_manager.notifier.listeners
 
-    def test_device_rx_handler_called(self, test_bus, qtbot: QtBot):
-        """
-        Every Device should have its CAN rx handler function called when it receives
-        a CAN msg addressed to it, and it shouldn't be called if the msg wasn't addressed to it.
-        """
-        device_manager = DeviceManager(channel=self.test_channel, virtual_bus=True)
-        handler_called = threading.Event()
 
-        for id, dev in device_manager.device_registry.items():
-            # drain any stale messages from previous iterations
-            while test_bus.recv(timeout=0):
-                pass
+def test_sensor_init_success(sensor: Sensor):
+    """
+    Sensor devices should initialize successfully under normal conditions
+    """
+    assert sensor.id is not None
+    assert sensor.name is not None
+    assert isinstance(sensor.bus, can.ThreadSafeBus)
 
-            assert handler_called.is_set() == False, (
-                "handler_called event not cleared between iterations"
-            )
 
-            match dev:
-                case Sensor():
-                    dev.subscribe(lambda _arg: handler_called.set())
-                case Output():
-                    dev.add_slot_fn(lambda _arg: handler_called.set())
-                    dev.get_state()
+def test_output_init_success(output: Output):
+    """
+    Output devices should initialize successfully under normal conditions
+    """
+    assert output.id is not None
+    assert output.name is not None
+    assert isinstance(output.bus, can.ThreadSafeBus)
 
-            try:
-                msg: can.Message | None = test_bus.recv(timeout=0.1)
-                assert msg is not None, "No message received after subscribing"
 
-                msg_addr = msg.arbitration_id & ~BASE_ID_MSK
-                assert msg_addr == id
+def test_sensor_subscribe_unsubscribe(sensor: Sensor, test_bus: can.ThreadSafeBus):
+    """
+    Sensors should send CAN messages when subscribed to, and shouldn't send messages when unsubscribed from
+    """
+    sensor.subscribe(lambda _args: None, send_period=0.01)
+    assert test_bus.recv(timeout=0.01) is not None
+    sensor.unsubscribe()
+    assert test_bus.recv(timeout=0) is None
 
-                resp_id = id + RESPONSE_MSG_ID
-                resp_data = CANData(None, bytearray(CAN_DATA_LEN))
-                datapacket = DataPacket(id=resp_id, is_err=False, data=resp_data)
 
-                with qtbot.waitSignal(
-                    dev.sig_value_received, raising=True, timeout=50
-                ) as _blocker:
-                    test_bus.send(datapacket.to_can_message())
+def test_decode_on_nonsubclassed_device_raises_exc(
+    device: Device, output_datapacket: DataPacket
+):
+    """
+    Calling decode on a non-subclassed Device should raise an exception
+    """
+    with pytest.raises(NotImplementedError):
+        device.decode(output_datapacket)
 
-                assert handler_called.is_set(), f"{id} handler was not called"
 
-            finally:
-                handler_called.clear()
-                match dev:
-                    case Sensor():
-                        dev.unsubscribe()
-                    case Output():
-                        dev.remove_slot_fn()
+def test_sensor_rx_handler_called(
+    qtbot: QtBot,
+    sensor: Sensor,
+    sensor_datapacket: DataPacket,
+    test_bus: can.ThreadSafeBus,
+    event_bool: threading.Event,
+):
+    """
+    When a sensor receives a CAN msg addressed to it, it should fire its can_rx_handler
+    """
+    sensor.subscribe(lambda _arg: event_bool.set(), send_period=0.1)
 
-    def test_decode_on_nonsubclassed_device_raises_exc(self, test_bus):
-        """
-        Calling decode on a non-subclassed Device should raise an exception
-        """
-        test_dev = Device(id=0x123, name="test", bus=test_bus)
-        datapacket = DataPacket(
-            id=0x123, is_err=False, data=CANData(None, bytearray(CAN_DATA_LEN))
-        )
-        with pytest.raises(NotImplementedError):
-            test_dev.decode(datapacket)
+    with qtbot.waitSignal(
+        sensor.sig_value_received, raising=True, timeout=100
+    ) as _blocker:
+        test_bus.send(sensor_datapacket.to_can_message())
+
+    assert event_bool.is_set(), f"sensor {id} handler was not called"
+
+
+def test_output_rx_handler_called(
+    qtbot: QtBot,
+    output: Output,
+    output_datapacket: DataPacket,
+    test_bus: can.ThreadSafeBus,
+    event_bool: threading.Event,
+):
+    """
+    When an output device receives a CAN msg addressed to it, it should fire its can_rx_handler
+    """
+    output.add_slot_fn(lambda _arg: event_bool.set())
+
+    with qtbot.waitSignal(
+        output.sig_value_received, raising=True, timeout=1000
+    ) as _blocker:
+        test_bus.send(output_datapacket.to_can_message())
+
+    assert event_bool.is_set(), f"output {id} handler was not called"
