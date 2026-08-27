@@ -148,7 +148,7 @@ def test_sensor_subscribe_unsubscribe(sensor: Sensor, test_bus: can.ThreadSafeBu
     sensor.subscribe(lambda _args: None, send_period=0.01)
     assert test_bus.recv(timeout=0.01) is not None
     sensor.unsubscribe()
-    assert test_bus.recv(timeout=0) is None
+    assert test_bus.recv(timeout=0.02) is None
 
 
 def test_decode_on_nonsubclassed_device_raises_exc(
