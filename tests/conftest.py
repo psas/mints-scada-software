@@ -7,6 +7,27 @@ from mints_backend.models import BoardCfgListModel
 
 
 @pytest.fixture()
+def dev_bus():
+    bus: can.BusABC = can.ThreadSafeBus(
+        interface="virtual",
+        channel="vcan0",
+        bitrate=CFG["can"]["bitrate"],
+    )
+
+    yield bus
+
+    bus.stop_all_periodic_tasks()
+    bus.shutdown()
+
+
+@pytest.fixture()
+def notifier(dev_bus: can.ThreadSafeBus):
+    notifier = can.Notifier(dev_bus, listeners=[])
+    yield notifier
+    notifier.stop()
+
+
+@pytest.fixture()
 def test_bus(request):
     marker = request.node.get_closest_marker("loopback")
     loopback = False if marker is None else marker.args[0]

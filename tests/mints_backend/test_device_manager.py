@@ -4,7 +4,6 @@ import can
 import pytest
 from pytestqt.qtbot import QtBot
 
-from config import config as CFG
 from mints_backend.datapacket import (
     CAN_DATA_LEN,
     RESPONSE_MSG_ID,
@@ -26,27 +25,6 @@ def event_bool():
     event = threading.Event()
     yield event
     event.clear()
-
-
-@pytest.fixture()
-def dev_bus(request):
-    bus: can.BusABC = can.ThreadSafeBus(
-        interface="virtual",
-        channel="vcan0",
-        bitrate=CFG["can"]["bitrate"],
-    )
-
-    yield bus
-
-    bus.stop_all_periodic_tasks()
-    bus.shutdown()
-
-
-@pytest.fixture()
-def notifier(dev_bus: can.ThreadSafeBus):
-    notifier = can.Notifier(dev_bus, listeners=[])
-    yield notifier
-    notifier.stop()
 
 
 @pytest.fixture()
