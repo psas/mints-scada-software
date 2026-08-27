@@ -132,8 +132,9 @@ class DeviceParameterTree(ParameterTree):
         def on_param_changed(_param, val: bool, dev=dev) -> None:
             dev.set_state(OutputState.High if val else OutputState.Low)
 
-        def on_can_rx(val: bool, p=param) -> None:
-            p.update_from_backend(val)
+        @Slot(bool)
+        def on_can_rx(val: bool) -> None:
+            param.update_from_backend(val)
 
         dev.add_slot_fn(on_can_rx)
         param.sigValueChanged.connect(on_param_changed)
@@ -152,8 +153,9 @@ class DeviceParameterTree(ParameterTree):
         board_group.addChild(param)
         self._sensor_params[dev.name] = param
 
-        def on_value(val, p=param) -> None:
-            p.setValue(val)
+        @Slot(int)
+        def on_value(val: int) -> None:
+            param.setValue(val)
 
         dev.subscribe(on_value)
 
