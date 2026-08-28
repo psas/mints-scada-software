@@ -65,10 +65,10 @@ def handle_can_rx(msg: can.Message, req_device: Sensor | Output, bus: can.BusABC
 
     match CANCmd(request_datapacket.data.cmd):
         case CANCmd.ReadReg:
-            resp_val = bytearray([int(random.gauss(3))] * CAN_DATA_LEN)
+            resp_val = bytearray([int(random.gauss(5))] * CAN_DATA_LEN)
 
         case CANCmd.WriteReg:
-            resp_val = bytearray([int(random.gauss(3))] * CAN_DATA_LEN)
+            resp_val = bytearray([int(random.gauss(5))] * CAN_DATA_LEN)
 
         case CANCmd.SetOutput:
             val = request_datapacket.data.bytes[OUTPUT_SET_POS]
