@@ -125,7 +125,7 @@ def test_sensor_subscribe_unsubscribe(sensor: Sensor, test_bus: can.ThreadSafeBu
     """
     sensor.subscribe(lambda _args: None, send_period=0.01)
     assert test_bus.recv(timeout=0.01) is not None
-    sensor.unsubscribe()
+    sensor.unsubscribe_all()
     assert test_bus.recv(timeout=0.02) is None
 
 

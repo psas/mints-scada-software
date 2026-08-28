@@ -158,11 +158,3 @@ class DeviceParameterTree(ParameterTree):
             param.setValue(val)
 
         dev.subscribe(on_value)
-
-    def teardown(self) -> None:
-        for dev in self.device_manager.device_registry.values():
-            match dev:
-                case Sensor():
-                    dev.unsubscribe()
-                case _:
-                    pass

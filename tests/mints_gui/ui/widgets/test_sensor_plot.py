@@ -18,7 +18,7 @@ def sensor(dev_bus: ThreadSafeBus, notifier: Notifier):
     notifier.add_listener(sensor.handle_can_rx)
     yield sensor
     notifier.remove_listener(sensor.handle_can_rx)
-    sensor.unsubscribe()
+    sensor.unsubscribe_all()
 
 
 @pytest.fixture()
