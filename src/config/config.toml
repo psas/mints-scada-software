@@ -7,4 +7,4 @@ bitrate = 1000000
 level = "INFO"
 
 [debug]
-console = true
+console = false
