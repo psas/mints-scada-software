@@ -71,12 +71,16 @@ class DeviceManager:
     def teardown(self):
         self.notifier.stop()
 
-        for dev in self.device_registry:
+        for dev in self.device_registry.values():
             match dev:
                 case Sensor():
                     dev.unsubscribe()
                 case Output():
                     dev.remove_slot_fn()
+                case _:
+                    raise ValueError(
+                        f"Failed to teardown Device Manager: {type(dev)} is not a device"
+                    )
 
         self.bus.stop_all_periodic_tasks()
         self.bus.shutdown()
