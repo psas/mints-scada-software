@@ -21,7 +21,6 @@ def device_param_tree(device_manager: DeviceManager, qtbot: QtBot):
     # Pass in qtbot to make sure a QApp is loaded before creating widgets
     device_param_tree = DeviceParameterTree(device_manager)
     yield device_param_tree
-    device_param_tree.teardown()
 
 
 @pytest.fixture()

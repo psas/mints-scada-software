@@ -74,9 +74,9 @@ class DeviceManager:
         for dev in self.device_registry.values():
             match dev:
                 case Sensor():
-                    dev.unsubscribe()
+                    dev.unsubscribe_all()
                 case Output():
-                    dev.remove_slot_fn()
+                    dev.remove_all_slot_fns()
                 case _:
                     raise ValueError(
                         f"Failed to teardown Device Manager: {type(dev)} is not a device"
@@ -125,6 +125,7 @@ class Sensor(Device):
         super().__init__(id, name, bus)
         self.kind = kind
         self.subscription: CyclicSendTaskABC | None = None
+        self.num_sig_val_rcv_connections = 0
 
     def subscribe(self, slot_fn: Callable, send_period: float = UPDATE_PERIOD):
         data = CANData(CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
@@ -134,12 +135,17 @@ class Sensor(Device):
             datapacket.to_can_message(), send_period
         )
         self.sig_value_received.connect(slot_fn)
+        self.num_sig_val_rcv_connections += 1
 
-    def unsubscribe(self):
+    def unsubscribe_all(self):
         if self.subscription is None:
             return
         self.subscription.stop()
-        self.sig_value_received.disconnect()
+        if self.num_sig_val_rcv_connections > 0:
+            self.sig_value_received.disconnect()
+            self.num_sig_val_rcv_connections = 0
+        else:
+            return
 
     @override
     def decode(self, datapacket: DataPacket) -> int:
@@ -153,6 +159,7 @@ class Output(Device):
     def __init__(self, id: int, name: str, bus: can.BusABC):
         super().__init__(id, name, bus)
         self.state: OutputState | None = None
+        self.num_sig_val_rcv_connections = 0
 
     def set_state(self, state: OutputState) -> None:
         bytes = bytearray(CAN_DATA_LEN)
@@ -165,9 +172,12 @@ class Output(Device):
 
     def add_slot_fn(self, slot_fn: Callable) -> None:
         self.sig_value_received.connect(slot_fn)
+        self.num_sig_val_rcv_connections += 1
 
-    def remove_slot_fn(self) -> None:
-        self.sig_value_received.disconnect()
+    def remove_all_slot_fns(self) -> None:
+        if self.num_sig_val_rcv_connections > 0:
+            self.sig_value_received.disconnect()
+            self.num_sig_val_rcv_connections = 0
 
     def decode(self, datapacket: DataPacket) -> int:
         return datapacket.data.bytes[OUTPUT_SET_POS]
