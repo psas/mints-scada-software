@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget
 
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.device_tree import DeviceParameterTree
-from mints_gui.ui.widgets.plot_layout import PlotLayout
+from mints_gui.ui.plot_area import PlotLayout
 
 log = getLogger(__name__)
 

@@ -2,7 +2,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from mints_backend.device_manager import DeviceManager
-from mints_gui.ui.widgets.plot_layout import PlotLayout
+from mints_gui.ui.plot_area import PlotLayout
 
 
 @pytest.fixture
