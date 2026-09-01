@@ -3,9 +3,15 @@ from math import ceil, sqrt
 
 from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
-from PySide6.QtWidgets import QMainWindow, QWidget
+from PySide6.QtWidgets import (
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QTabWidget,
+    QWidget,
+)
 
-from mints_backend.device_manager import DeviceManager, Output, Sensor
+from mints_backend.device_manager import DeviceManager, Sensor
 from mints_gui.ui.device_tree import DeviceParameterTree
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
@@ -28,8 +34,17 @@ class MainWindow(QMainWindow):
         self.resize(self.default_width, self.default_height)
         self.setWindowTitle("MinTS")
 
+        self.menu = QMenuBar()
         self.area = DockArea()
-        self.setCentralWidget(self.area)
+        self.view_menu = QMenu("View")
+        self.view_menu.addAction(
+            "Revert devices to default layout", self.restore_default_area_state
+        )
+        self.menu.addMenu(self.view_menu)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.area, "Devices")
+        self.setMenuBar(self.menu)
+        self.setCentralWidget(self.tabs)
 
         self.populate_plot_area()
 
@@ -40,7 +55,6 @@ class MainWindow(QMainWindow):
         log_dock = Dock(
             "Log",
             size=((1 / 6) * self.default_width, (1 / 3) * self.default_height),
-            closable=True,
         )
 
         self.area.addDock(tree_dock, "left")
@@ -57,6 +71,11 @@ class MainWindow(QMainWindow):
             console_dock = Dock("Console", size=(200, 25), closable=True)
             self.area.addDock(console_dock, "bottom")
             console_dock.addWidget(console_widget)
+
+        self.default_area_state = self.area.saveState()
+
+    def restore_default_area_state(self):
+        self.area.restoreState(self.default_area_state)
 
     def populate_plot_area(self):
         sensors: list[Sensor] = [
