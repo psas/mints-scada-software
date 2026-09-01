@@ -1,12 +1,13 @@
 from logging import getLogger
+from math import ceil, sqrt
 
 from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
 from PySide6.QtWidgets import QMainWindow, QWidget
 
-from mints_backend.device_manager import DeviceManager
+from mints_backend.device_manager import DeviceManager, Output, Sensor
 from mints_gui.ui.device_tree import DeviceParameterTree
-from mints_gui.ui.plot_area import PlotLayout
+from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 log = getLogger(__name__)
 
@@ -20,29 +21,68 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         log.debug("Initializing main window")
+        self.device_manager = device_manager
+        self.default_width = 1280
+        self.default_height = 720
 
-        self.resize(1280, 720)
+        self.resize(self.default_width, self.default_height)
         self.setWindowTitle("MinTS")
 
         self.area = DockArea()
         self.setCentralWidget(self.area)
 
-        log_dock = Dock("Log", size=(200, 25), closable=True)
-        tree_dock = Dock("Device Tree", size=(100, 100))
-        plot_area_dock = Dock("Plot", size=(500, 100))
-        plot_layout = PlotLayout(device_manager.device_registry)
-        plot_area_dock.addWidget(plot_layout)
+        self.populate_plot_area()
 
-        self.area.addDock(tree_dock, "top")
-        self.area.addDock(plot_area_dock, "right", tree_dock)
-        self.area.addDock(log_dock, "bottom")
+        tree_dock = Dock(
+            "Device Tree",
+            size=((1 / 6) * self.default_width, (2 / 3) * self.default_height),
+        )
+        log_dock = Dock(
+            "Log",
+            size=((1 / 6) * self.default_width, (1 / 3) * self.default_height),
+            closable=True,
+        )
 
-        if console_widget:
-            console_widget.localNamespace.update({"window": self})
-            console_dock = Dock("Console", size=(200, 25), closable=True)
-            self.area.addDock(console_dock, "right", log_dock)
-            console_dock.addWidget(console_widget)
+        self.area.addDock(tree_dock, "left")
+        self.area.addDock(log_dock, "bottom", tree_dock)
 
         tree = DeviceParameterTree(device_manager)
         tree_dock.addWidget(tree)
         log_dock.addWidget(log_widget)
+
+        if console_widget:
+            console_widget.localNamespace.update(
+                {"window": self, "devicetree": tree, "plots": self.plot_area}
+            )
+            console_dock = Dock("Console", size=(200, 25), closable=True)
+            self.area.addDock(console_dock, "bottom")
+            console_dock.addWidget(console_widget)
+
+    def populate_plot_area(self):
+        sensors: list[Sensor] = [
+            device
+            for device in self.device_manager.device_registry.values()
+            if isinstance(device, Sensor)
+        ]
+
+        cols: int = ceil(sqrt(len(sensors)))
+
+        prev_dock: Dock | None = None
+        should_drop_row: bool = False
+
+        for i, sensor in enumerate(sensors):
+            next_plot = SensorPlot(sensor, update_period=0.1)
+
+            next_dock = Dock(sensor.name, size=(150, 150), autoOrientation=False)
+            next_dock.setOrientation(o="vertical", force=True)
+            next_dock.addWidget(next_plot)
+
+            if i != 0:
+                should_drop_row = i % cols == 0
+
+            pos: str = "bottom" if should_drop_row else "right"
+            relative_dock: Dock | None = None if should_drop_row else prev_dock
+
+            self.area.addDock(next_dock, pos, relativeTo=relative_dock)
+
+            prev_dock = next_dock
