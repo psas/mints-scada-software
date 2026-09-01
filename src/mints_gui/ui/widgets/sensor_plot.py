@@ -22,7 +22,6 @@ class SensorPlot(PlotWidget):
         self.ptr: int = 0
 
         self.plot_item.setExportMode(export=True)
-        self.setTitle(sensor.name)
         self.setXRange(-10, 0)
         self.setYRange(-100, 100)
 
