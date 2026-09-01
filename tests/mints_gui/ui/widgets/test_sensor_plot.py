@@ -1,5 +1,7 @@
 import random
+from time import perf_counter
 
+import numpy as np
 import pytest
 from can import Notifier, ThreadSafeBus
 from pyqtgraph import GraphicsLayoutWidget, PlotDataItem
@@ -36,7 +38,7 @@ def plot_item(graphics_layout_widget: GraphicsLayoutWidget):
 
 @pytest.fixture()
 def sensor_plot(qtbot: QtBot, sensor: Sensor, plot_item: PlotItem):
-    sensor_plot = SensorPlot(sensor=sensor, plot=plot_item, update_period=0.01)
+    sensor_plot = SensorPlot(sensor=sensor, update_period=0.01)
     yield sensor_plot
 
 
@@ -85,7 +87,70 @@ def test_plot_data_updated_from_subscription(
     ) as _blocker:
         test_bus.send(sensor_plot_datapacket.to_can_message())
 
-    sensor_plot_data_items: list[PlotDataItem] = sensor_plot.plot.listDataItems()
+    sensor_plot_data_items: list[PlotDataItem] = sensor_plot.listDataItems()
     _, y = get_last_point_from_data_items(sensor_plot_data_items)
 
     assert y == sensor_plot.sensor.decode(sensor_plot_datapacket)
+
+
+def test_shift_all_curves_left_sets_correct_position(sensor_plot: SensorPlot):
+    """
+    _shift_all_curves_left should translate the curves on the plot to the left correctly
+    """
+    for _ in range(5):
+        sensor_plot._get_new_curve()
+    now = perf_counter()
+    sensor_plot._shift_all_curves_left(now)
+    expected_x = -(now - sensor_plot.start_time)
+    for curve in sensor_plot.curves:
+        assert curve.pos().x() == pytest.approx(expected_x)
+
+
+def test_get_new_curve(sensor_plot: SensorPlot):
+    """
+    _get_new_curve should append a new curve to the plots list of curves
+    """
+    prev_len = len(sensor_plot.curves)
+    sensor_plot._get_new_curve()
+    assert len(sensor_plot.curves) == prev_len + 1
+    assert isinstance(sensor_plot.curves[-1], PlotDataItem)
+
+
+def test_reset_data_preserve_last(sensor_plot: SensorPlot):
+    """
+    _reset_data_preserve_last should reset the plot data to an empty array
+    but preserve the last data point
+    """
+    for i in range(5):
+        sensor_plot.update_plot(i)
+
+    prev_data = sensor_plot.data
+
+    sensor_plot._reset_data_preserve_last()
+
+    assert np.all(sensor_plot.data[0] == prev_data[-1])
+    assert sensor_plot.data.shape == prev_data.shape
+
+
+def test_trim_oldest_curves_removes_excess_curves(sensor_plot: SensorPlot):
+    """
+    _trim_oldest_chunks should remove curves from the beginning of self.curves
+    until max_chunks remain
+    """
+    curves = [sensor_plot._get_new_curve() for _ in range(sensor_plot.max_chunks + 3)]
+
+    sensor_plot._trim_oldest_curves()
+
+    assert len(sensor_plot.curves) == sensor_plot.max_chunks
+    assert sensor_plot.curves == curves[3:]
+
+
+def test_trim_oldest_curves_noop_when_under_limit(sensor_plot: SensorPlot):
+    """
+    If curves are at or below max_chunks, nothing should be removed
+    """
+    curves = [sensor_plot._get_new_curve() for _ in range(sensor_plot.max_chunks)]
+
+    sensor_plot._trim_oldest_curves()
+
+    assert sensor_plot.curves == curves
