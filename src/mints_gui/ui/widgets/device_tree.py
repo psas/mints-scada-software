@@ -105,6 +105,9 @@ class DeviceParameterTree(ParameterTree):
         self._sensor_params: dict[str, Parameter] = {}
         self.root = Parameter.create(name="Devices", type="group", children=[])
         self.setParameters(self.root, showTop=False)
+        font = self.font()
+        font.setPointSize(10)
+        self.setFont(font)
         self._build_tree()
 
     def _get_or_create_board_group(self, board_id: int) -> Parameter:

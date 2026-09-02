@@ -13,7 +13,11 @@ from mints_backend.datapacket import (
 )
 from mints_backend.device_manager import DeviceManager
 from mints_backend.models import OutputState
-from mints_gui.ui.device_tree import DeviceParameterTree, OutputButton, OutputParameter
+from mints_gui.ui.widgets.device_tree import (
+    DeviceParameterTree,
+    OutputButton,
+    OutputParameter,
+)
 
 
 @pytest.fixture()
