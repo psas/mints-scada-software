@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from logging import getLogger
 from math import ceil, sqrt
 
@@ -5,14 +6,13 @@ from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
 from PySide6.QtWidgets import (
     QMainWindow,
-    QMenu,
-    QMenuBar,
     QTabWidget,
     QWidget,
 )
 
 from mints_backend.device_manager import DeviceManager, Sensor
 from mints_gui.ui.device_tree import DeviceParameterTree
+from mints_gui.ui.widgets.menubar import MenuBar
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 log = getLogger(__name__)
@@ -30,22 +30,17 @@ class MainWindow(QMainWindow):
         self.device_manager = device_manager
         self.default_width = 1280
         self.default_height = 720
-
-        self.resize(self.default_width, self.default_height)
-        self.setWindowTitle("MinTS")
-
-        self.menu = QMenuBar()
-        self.area = DockArea()
-        self.view_menu = QMenu("View")
-        self.view_menu.addAction(
-            "Revert devices to default layout", self.restore_default_area_state
+        self.menu = MenuBar(
+            self.restore_default_area_state,
         )
-        self.menu.addMenu(self.view_menu)
+        self.area = DockArea()
         self.tabs = QTabWidget()
+
         self.tabs.addTab(self.area, "Devices")
         self.setMenuBar(self.menu)
         self.setCentralWidget(self.tabs)
-
+        self.resize(self.default_width, self.default_height)
+        self.setWindowTitle("MinTS")
         self.populate_plot_area()
 
         tree_dock = Dock(
