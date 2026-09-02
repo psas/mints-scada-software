@@ -37,14 +37,14 @@ class ShortNameFormatter(logging.Formatter):
 
 
 def setup_logger() -> QWidget:
-    formatstr = "%(asctime)s [%(name)-13.13s] [%(levelname)-5.5s]  %(message)s"
+    formatstr = "%(asctime)s [%(levelname)-4.4s] %(message)s"
     shortdatefmt = "%H:%M:%S"
     formatter = ShortNameFormatter(fmt=formatstr, datefmt=shortdatefmt)
     consolehandler = QLoggingHandler()
     consolehandler.setFormatter(formatter)
     streamhandler = logging.StreamHandler()
     streamhandler.setFormatter(formatter)
-    file_formatstr = "%(asctime)s [%(name)-30.30s] [%(levelname)-5.5s]  %(message)s"
+    file_formatstr = "%(asctime)s [%(name)-30.30s] [%(levelname)-5.5s] %(message)s"
     file_formatter = logging.Formatter(file_formatstr)
     filehandler = logging.FileHandler("log/debug.log")
     filehandler.setFormatter(file_formatter)

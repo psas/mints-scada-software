@@ -28,6 +28,7 @@ from mints_backend.models import (
 )
 
 log = getLogger(__name__)
+can.util.set_logging_level("WARN")
 
 UPDATE_PERIOD = 1.0
 
