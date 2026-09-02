@@ -4,9 +4,7 @@ from argparse import ArgumentParser
 
 import pyqtgraph as pg
 from pydantic import ValidationError
-from pyqtgraph.console import ConsoleWidget
 
-from config import config as CFG
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.main_window import MainWindow
 from mints_gui.ui.widgets.logger import setup_logger
@@ -42,16 +40,7 @@ def main():
         log.error("Unable to connect to CAN bus - %s", e.strerror)
         sys.exit(e.errno)
 
-    console_widget = ConsoleWidget(
-        namespace={
-            "app": app,
-            "config": CFG,
-            "can": device_manager.bus,
-            "devices": device_manager,
-        }
-    )
-
-    window = MainWindow(log_widget, console_widget if CFG["debug"]["console"] else None, device_manager)
+    window = MainWindow(log_widget, device_manager)
 
     log.info("Welcome to MinTS!")
     window.show()

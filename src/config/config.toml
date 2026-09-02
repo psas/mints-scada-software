@@ -5,6 +5,3 @@ bitrate = 1000000
 
 [logging]
 level = "INFO"
-
-[debug]
-console = false
