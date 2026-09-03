@@ -11,9 +11,7 @@ from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 class DevicePage(DockArea):
     def __init__(
-        self,
-        device_manager: DeviceManager,
-        log_widget: QWidget,
+        self, device_manager: DeviceManager, log_widget: QWidget, add_to_menu: Callable
     ):
         super().__init__()
         self.device_manager = device_manager
@@ -33,9 +31,19 @@ class DevicePage(DockArea):
         tree_dock.addWidget(tree)
         log_dock.addWidget(log_widget)
 
+        add_to_menu(
+            menu="View",
+            desc="Revert Devices to Default Layout",
+            callback=self.restore_default_script_page_state,
+            shortcut=None,
+        )
+
         self.default_area_state = self.saveState()
 
-    def populate_plot_area(self):
+    def restore_default_script_page_state(self) -> None:
+        self.restoreState(self.default_area_state)
+
+    def populate_plot_area(self) -> None:
         sensors: list[Sensor] = [
             device
             for device in self.device_manager.device_registry.values()
