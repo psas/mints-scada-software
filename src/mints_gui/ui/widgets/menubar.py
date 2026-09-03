@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -9,6 +10,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMenuBar,
 )
+
+logger = logging.get_logger(__file__)
 
 MenuTypes = Literal["File", "View"]
 
@@ -35,6 +38,8 @@ class MenuBar(QMenuBar):
                     entry.callback,
                     entry.shortcut if entry.shortcut is not None else 0,
                 )
+            case _:
+                logger.error("Unhandled menu type '%s'", entry.menu)
 
 
 @dataclass(frozen=True)
