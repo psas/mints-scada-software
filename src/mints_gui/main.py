@@ -45,6 +45,7 @@ def main():
     log.info("Welcome to MinTS!")
     window.show()
     exit_code = app.exec()
+    device_manager.teardown()
     sys.exit(exit_code)
 
 
