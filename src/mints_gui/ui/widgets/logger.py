@@ -36,7 +36,19 @@ class ShortNameFormatter(logging.Formatter):
         return super().format(record)
 
 
+def create_log_dir_and_file_if_not_exists():
+    app_dir = Path.cwd()
+    if not Path.is_dir(app_dir / "log"):
+        Path.mkdir(app_dir / "log")
+    log_dir = app_dir / "log"
+    if not Path.exists(log_dir / "debug.log"):
+        with open(Path(log_dir / "debug.log"), "a") as file:
+            file.write("")
+
+
 def setup_logger() -> QWidget:
+    create_log_dir_and_file_if_not_exists()
+
     formatstr = "%(asctime)s [%(levelname)-4.4s] %(message)s"
     shortdatefmt = "%H:%M:%S"
     formatter = ShortNameFormatter(fmt=formatstr, datefmt=shortdatefmt)
