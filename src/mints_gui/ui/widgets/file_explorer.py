@@ -1,27 +1,46 @@
-from PySide6.QtCore import QDir, QModelIndex
+from collections.abc import Callable
+from pathlib import Path
+
+from PySide6.QtCore import QDir, QModelIndex, Signal, Slot
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileIconProvider,
     QFileSystemModel,
+    QSizePolicy,
     QTreeView,
 )
 
 
 class FileExplorerWidget(QTreeView):
+    sig_file_selected = Signal(Path)
+
     def __init__(self):
         super().__init__()
         self.file_model = QFileSystemModel()
         self.icon_provider = QFileIconProvider()
-        self.file_model.setIconProvider(self.icon_provider)
         self.root_path: str = QDir.currentPath()
+
         self.file_model.setRootPath(self.root_path)
+        self.file_model.setIconProvider(self.icon_provider)
+        self.file_model.setReadOnly(True)
+
         self.setModel(self.file_model)
         root_index: QModelIndex = self.file_model.index(self.root_path)
         if root_index.isValid():
             self.setRootIndex(root_index)
         self.setAnimated(True)
         self.setSortingEnabled(False)
-        self.set_root_from_dialog()
+        self.setHeaderHidden(True)
+        for col in range(1, self.file_model.columnCount()):
+            self.hideColumn(col)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        self.doubleClicked.connect(self.on_file_selected)
+
+    @Slot(QModelIndex)
+    def on_file_selected(self, index: QModelIndex):
+        path = Path(self.file_model.filePath(index))
+        if path.exists() and not path.is_dir():
+            self.sig_file_selected.emit(path)
 
     def set_root_from_dialog(self):
         dir: str = QFileDialog.getExistingDirectory(
