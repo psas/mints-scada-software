@@ -1,14 +1,11 @@
 from logging import getLogger
 
-from PySide6.QtWidgets import (
-    QMainWindow,
-    QTabWidget,
-    QWidget,
-)
+from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.device_page import DevicePage
 from mints_gui.ui.script_page import ScriptPage
+from mints_gui.ui.widgets.logger import SignalHandler
 from mints_gui.ui.widgets.menubar import MenuBar
 
 log = getLogger(__name__)
@@ -20,15 +17,15 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        log_widget: QWidget,
+        log_signal: SignalHandler,
         device_manager: DeviceManager,
     ):
         super().__init__()
         log.debug("Initializing main window")
         self.menu = MenuBar()
         self.device_manager = device_manager
-        self.device_page = DevicePage(device_manager, log_widget, self.menu.add_to_menu)
-        self.script_page = ScriptPage(self.menu.add_to_menu)
+        self.device_page = DevicePage(device_manager, log_signal, self.menu.add_to_menu)
+        self.script_page = ScriptPage(log_signal, self.menu.add_to_menu)
         self.tabs = QTabWidget()
 
         self.tabs.addTab(self.device_page, "Devices")

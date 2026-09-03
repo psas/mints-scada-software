@@ -7,7 +7,10 @@ from pydantic import ValidationError
 
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.main_window import MainWindow
-from mints_gui.ui.widgets.logger import setup_logger
+from mints_gui.ui.widgets.logger import (
+    SignalHandler,
+    setup_logging,
+)
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +25,8 @@ parser.add_argument(
 def main():
     args = parser.parse_args()
     app = pg.mkQApp("MinTS")
-    log_widget = setup_logger()
+    log_signal = SignalHandler()
+    setup_logging(log_signal)
 
     try:
         device_manager = DeviceManager(args.bus)
@@ -40,10 +44,11 @@ def main():
         log.error("Unable to connect to CAN bus - %s", e.strerror)
         sys.exit(e.errno)
 
-    window = MainWindow(log_widget, device_manager)
+    window = MainWindow(log_signal, device_manager)
 
     log.info("Welcome to MinTS!")
     window.show()
+
     exit_code = app.exec()
     device_manager.teardown()
     sys.exit(exit_code)

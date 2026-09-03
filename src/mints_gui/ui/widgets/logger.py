@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import logging
-import os
 from logging import Handler, LogRecord, getLogger
+from pathlib import Path
 from typing import override
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QPlainTextEdit, QWidget
+from PySide6.QtWidgets import QPlainTextEdit, QSizePolicy
 
 from config import config as CFG
 
@@ -13,24 +15,47 @@ log = getLogger(__name__)
 APP_LOG_LEVEL = CFG.get("logging", {}).get("level", "INFO").upper()
 
 
-class QLoggingHandler(Handler, QObject):
-    appendPlainText = Signal(str)
+def setup_logging(signalhandler: SignalHandler) -> None:
+    create_log_dir_and_file_if_not_exists()
+
+    logging.basicConfig(
+        level=APP_LOG_LEVEL,
+        handlers=[
+            make_log_file_handler(),
+            signalhandler,
+        ],
+    )
+
+
+class SignalHandler(Handler, QObject):
+    sig_output_log = Signal(str)
 
     def __init__(self):
         super().__init__()
         QObject.__init__(self)
-        self.widget = QPlainTextEdit()
-        self.widget.setReadOnly(True)
-        self.widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.appendPlainText.connect(self.widget.appendPlainText)
+        formatter = ShortFormatter()
+        self.setFormatter(formatter)
 
     @override
     def emit(self, record: LogRecord) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         msg = self.format(record)
-        self.appendPlainText.emit(msg)
+        self.sig_output_log.emit(msg)
 
 
-class ShortNameFormatter(logging.Formatter):
+class LogConsoleWidget(QPlainTextEdit):
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+
+class ShortFormatter(logging.Formatter):
+    def __init__(self):
+        self.formatstr = "%(asctime)s [%(levelname)-4.4s] %(message)s"
+        self.shortdatefmt = "%H:%M:%S"
+        super().__init__(fmt=self.formatstr, datefmt=self.shortdatefmt)
+
     def format(self, record):
         record.name = record.name.split(".")[-1]
         return super().format(record)
@@ -46,31 +71,9 @@ def create_log_dir_and_file_if_not_exists():
             file.write("")
 
 
-def setup_logger() -> QWidget:
-    create_log_dir_and_file_if_not_exists()
-
-    formatstr = "%(asctime)s [%(levelname)-4.4s] %(message)s"
-    shortdatefmt = "%H:%M:%S"
-    formatter = ShortNameFormatter(fmt=formatstr, datefmt=shortdatefmt)
-    consolehandler = QLoggingHandler()
-    consolehandler.setFormatter(formatter)
-    streamhandler = logging.StreamHandler()
-    streamhandler.setFormatter(formatter)
+def make_log_file_handler():
     file_formatstr = "%(asctime)s [%(name)-30.30s] [%(levelname)-5.5s] %(message)s"
     file_formatter = logging.Formatter(file_formatstr)
     filehandler = logging.FileHandler("log/debug.log")
     filehandler.setFormatter(file_formatter)
-
-    if not os.path.isdir("log"):
-        os.mkdir("log")
-
-    logging.basicConfig(
-        level=APP_LOG_LEVEL,
-        handlers=[
-            filehandler,
-            streamhandler,
-            consolehandler,
-        ],
-    )
-
-    return consolehandler.widget
+    return filehandler

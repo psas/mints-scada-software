@@ -7,13 +7,17 @@ from PySide6.QtWidgets import QWidget
 
 from mints_backend.device_manager import DeviceManager, Sensor
 from mints_gui.ui.widgets.device_tree import DeviceParameterTree
+from mints_gui.ui.widgets.logger import LogConsoleWidget, SignalHandler
 from mints_gui.ui.widgets.menubar import MenuEntry
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 
 class DevicePage(DockArea):
     def __init__(
-        self, device_manager: DeviceManager, log_widget: QWidget, add_to_menu: Callable
+        self,
+        device_manager: DeviceManager,
+        log_signal: SignalHandler,
+        add_to_menu: Callable,
     ):
         super().__init__()
         self.device_manager = device_manager
@@ -31,6 +35,8 @@ class DevicePage(DockArea):
 
         tree = DeviceParameterTree(device_manager)
         tree_dock.addWidget(tree)
+        log_widget = LogConsoleWidget()
+        log_signal.sig_output_log.connect(log_widget.appendPlainText)
         log_dock.addWidget(log_widget)
 
         add_to_menu(

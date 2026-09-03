@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
 )
 
-logger = logging.get_logger(__file__)
+logger = logging.getLogger(__name__)
 
 MenuTypes = Literal["File", "View"]
 
