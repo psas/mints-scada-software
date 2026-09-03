@@ -2,6 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QDir, QModelIndex, Signal, Slot
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileIconProvider,
@@ -10,11 +11,13 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
+from mints_gui.ui.widgets.menubar import MenuEntry
+
 
 class FileExplorerWidget(QTreeView):
     sig_file_selected = Signal(Path)
 
-    def __init__(self):
+    def __init__(self, add_to_menu: Callable):
         super().__init__()
         self.file_model = QFileSystemModel()
         self.icon_provider = QFileIconProvider()
@@ -35,6 +38,15 @@ class FileExplorerWidget(QTreeView):
             self.hideColumn(col)
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         self.doubleClicked.connect(self.on_file_selected)
+
+        add_to_menu(
+            MenuEntry(
+                menu="File",
+                desc="Open Folder",
+                callback=self.set_root_from_dialog,
+                shortcut=QKeySequence("Ctrl+o"),
+            )
+        )
 
     @Slot(QModelIndex)
     def on_file_selected(self, index: QModelIndex):

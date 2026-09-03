@@ -14,31 +14,27 @@ MenuTypes = Literal["File", "View"]
 
 
 class MenuBar(QMenuBar):
-    def __init__(
-        self,
-        menu_entries: list[MenuEntry],
-    ):
+    def __init__(self):
         super().__init__()
         self.file_menu = QMenu("File")
         self.view_menu = QMenu("View")
-
-        for entry in menu_entries:
-            match entry.menu:
-                case "File":
-                    self.file_menu.addAction(
-                        entry.desc,
-                        entry.callback,
-                        entry.shortcut if entry.shortcut is not None else 0,
-                    )
-                case "View":
-                    self.view_menu.addAction(
-                        entry.desc,
-                        entry.callback,
-                        entry.shortcut if entry.shortcut is not None else 0,
-                    )
-
         self.addMenu(self.file_menu)
         self.addMenu(self.view_menu)
+
+    def add_to_menu(self, entry: MenuEntry):
+        match entry.menu:
+            case "File":
+                self.file_menu.addAction(
+                    entry.desc,
+                    entry.callback,
+                    entry.shortcut if entry.shortcut is not None else 0,
+                )
+            case "View":
+                self.view_menu.addAction(
+                    entry.desc,
+                    entry.callback,
+                    entry.shortcut if entry.shortcut is not None else 0,
+                )
 
 
 @dataclass(frozen=True)

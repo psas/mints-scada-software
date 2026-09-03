@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget
 
 from mints_backend.device_manager import DeviceManager, Sensor
 from mints_gui.ui.widgets.device_tree import DeviceParameterTree
+from mints_gui.ui.widgets.menubar import MenuEntry
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 
@@ -33,15 +34,17 @@ class DevicePage(DockArea):
         log_dock.addWidget(log_widget)
 
         add_to_menu(
-            menu="View",
-            desc="Revert Devices to Default Layout",
-            callback=self.restore_default_script_page_state,
-            shortcut=None,
+            MenuEntry(
+                menu="View",
+                desc="Revert Devices to Default Layout",
+                callback=self.restore_default_page_layout,
+                shortcut=None,
+            )
         )
 
         self.default_area_state = self.saveState()
 
-    def restore_default_script_page_state(self) -> None:
+    def restore_default_page_layout(self) -> None:
         self.restoreState(self.default_area_state)
 
     def populate_plot_area(self) -> None:
