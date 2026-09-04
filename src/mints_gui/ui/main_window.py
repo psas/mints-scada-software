@@ -3,9 +3,9 @@ from logging import getLogger
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from mints_backend.device_manager import DeviceManager
+from mints_gui.logging import SignalHandler
 from mints_gui.ui.device_page import DevicePage
 from mints_gui.ui.script_page import ScriptPage
-from mints_gui.ui.widgets.logger import SignalHandler
 from mints_gui.ui.widgets.menubar import MenuBar
 
 log = getLogger(__name__)

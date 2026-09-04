@@ -3,8 +3,8 @@ from collections.abc import Callable
 from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
 
+from mints_gui.logging import LogConsoleWidget, SignalHandler
 from mints_gui.ui.widgets.file_explorer import FileExplorerWidget
-from mints_gui.ui.widgets.logger import LogConsoleWidget, SignalHandler
 from mints_gui.ui.widgets.script_editor import ScriptEditor
 
 

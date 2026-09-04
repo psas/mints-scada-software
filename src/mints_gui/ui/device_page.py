@@ -5,8 +5,8 @@ from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
 
 from mints_backend.device_manager import DeviceManager, Sensor
+from mints_gui.logging import LogConsoleWidget, SignalHandler
 from mints_gui.ui.widgets.device_tree import DeviceParameterTree
-from mints_gui.ui.widgets.logger import LogConsoleWidget, SignalHandler
 from mints_gui.ui.widgets.menubar import MenuEntry
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 

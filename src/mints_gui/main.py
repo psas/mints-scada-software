@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from mints_backend.device_manager import DeviceManager
 from mints_gui.ui.main_window import MainWindow
-from mints_gui.ui.widgets.logger import (
+from mints_gui.logging import (
     SignalHandler,
     setup_logging,
 )
