@@ -51,3 +51,33 @@ class BoardCfgModel(BaseModel):
 class BoardCfgListModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     board: list[BoardCfgModel]
+
+    @model_validator(mode="after")
+    def validate_unique_names_ids(self) -> Self:
+        seen_names = set()
+        seen_ids = set()
+
+        def check_for_duplicates(
+            board: BoardCfgModel, dev: AdcChannelCfgModel | OutputCfgModel
+        ) -> None:
+            if dev.name in seen_names:
+                raise ValueError(f"Duplicate device name found in config: {dev.name}")
+            seen_names.add(dev.name)
+            id = (board.board_id << 4) | dev.sub_id
+            if id in seen_ids:
+                raise ValueError(
+                    f"Duplicate device id found in config - id: {hex(id)}, board_id: {hex(board.board_id)}, sub_id: {hex(dev.sub_id)}"
+                )
+            seen_ids.add(id)
+
+        for board in self.board:
+            for dev in board.outputs:
+                check_for_duplicates(board, dev)
+
+            if board.adc is None:
+                continue
+
+            for dev in board.adc.channels:
+                check_for_duplicates(board, dev)
+
+        return self

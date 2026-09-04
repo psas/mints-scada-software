@@ -22,6 +22,7 @@ def setup_logging(signalhandler: SignalHandler) -> None:
         level=APP_LOG_LEVEL,
         handlers=[
             make_log_file_handler(),
+            make_log_stream_handler(),
             signalhandler,
         ],
     )
@@ -70,6 +71,12 @@ def create_log_dir_and_file_if_not_exists() -> None:
     if not Path.exists(log_dir / "debug.log"):
         with open(Path(log_dir / "debug.log"), "a") as file:
             file.write("")
+
+
+def make_log_stream_handler() -> Handler:
+    streamhandler = logging.StreamHandler()
+    streamhandler.setFormatter(ShortFormatter())
+    return streamhandler
 
 
 def make_log_file_handler() -> Handler:
