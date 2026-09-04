@@ -3,7 +3,6 @@ from math import ceil, sqrt
 
 from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
-from PySide6.QtWidgets import QWidget
 
 from mints_backend.device_manager import DeviceManager, Sensor
 from mints_gui.ui.widgets.device_tree import DeviceParameterTree
@@ -24,10 +23,7 @@ class DevicePage(DockArea):
 
         self.populate_plot_area()
 
-        tree_dock = Dock(
-            "Device Tree",
-            size=(175, 200),
-        )
+        tree_dock = Dock("Device Tree", size=(175, 200))
         log_dock = Dock("Log", size=(175, 50))
 
         self.addDock(tree_dock, "left")

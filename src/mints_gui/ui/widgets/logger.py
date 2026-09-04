@@ -45,6 +45,7 @@ class SignalHandler(Handler, QObject):
 class LogConsoleWidget(QPlainTextEdit):
     def __init__(self):
         super().__init__()
+        self.setBaseSize(1, 10)
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -61,7 +62,7 @@ class ShortFormatter(logging.Formatter):
         return super().format(record)
 
 
-def create_log_dir_and_file_if_not_exists():
+def create_log_dir_and_file_if_not_exists() -> None:
     app_dir = Path.cwd()
     if not Path.is_dir(app_dir / "log"):
         Path.mkdir(app_dir / "log")
@@ -71,7 +72,7 @@ def create_log_dir_and_file_if_not_exists():
             file.write("")
 
 
-def make_log_file_handler():
+def make_log_file_handler() -> Handler:
     file_formatstr = "%(asctime)s [%(name)-30.30s] [%(levelname)-5.5s] %(message)s"
     file_formatter = logging.Formatter(file_formatstr)
     filehandler = logging.FileHandler("log/debug.log")
