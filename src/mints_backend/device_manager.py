@@ -82,7 +82,7 @@ class DeviceManager:
                 case Sensor():
                     dev.unsubscribe_all()
                 case Output():
-                    dev.remove_all_slot_fns()
+                    dev.remove_all_recvrs()
                 case _:
                     raise ValueError(
                         f"Failed to teardown Device Manager: {type(dev)} is not a device"

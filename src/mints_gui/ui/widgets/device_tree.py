@@ -53,7 +53,7 @@ class DeviceParameterTree(ParameterTree):
 
     def _add_output_param(self, board_group: Parameter, dev: Output) -> None:
         param: OutputParameter = Parameter.create(name=dev.name, type="output")  # pyright: ignore[reportAssignmentType]
-        dev.add_slot_fn(param.update_from_backend)
+        dev.add_recvr(param.update_from_backend)
         param.sigValueChanged.connect(lambda _param, val: dev.set_state(val))
         board_group.addChild(param)
 

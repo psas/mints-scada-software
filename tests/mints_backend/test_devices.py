@@ -140,7 +140,7 @@ def test_output_rx_handler_called(
     """
     When an output device receives a CAN msg addressed to it, it should fire its can_rx_handler
     """
-    output.add_slot_fn(lambda _arg: event_bool.set())
+    output.add_recvr(lambda _arg: event_bool.set())
 
     with qtbot.waitSignal(
         output.sig_value_received, raising=True, timeout=1000

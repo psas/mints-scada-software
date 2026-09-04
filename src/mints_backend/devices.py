@@ -31,6 +31,7 @@ class Device(QObject):
         self.id = id
         self.name = name
         self.bus = bus
+        self.sig_val_recvrs: set[Callable] = set()
 
     def handle_can_rx(self, msg: can.Message):
         base_id = msg.arbitration_id & BASE_ID_MSK
@@ -41,7 +42,7 @@ class Device(QObject):
         try:
             datapacket = DataPacket.from_can_message(msg)
         except ValueError:
-            log.error("Sensor '%s' failed to parse datapacket from CAN msg", self.name)
+            logger.error("%s failed to parse datapacket from CAN msg", self.name)
             return
 
         val = self.decode(datapacket)
@@ -56,13 +57,31 @@ class Device(QObject):
     def decode(self, _datapacket: DataPacket) -> int:
         raise NotImplementedError
 
+    def add_recvr(self, slot_fn: Callable) -> None:
+        self.sig_value_received.connect(slot_fn)
+        self.sig_val_recvrs.add(slot_fn)
+
+    def remove_recvr(self, slot_fn: Callable):
+        if slot_fn not in self.sig_val_recvrs:
+            logger.error(
+                "Attempted to remove slot fn not connected to %s: %s",
+                self.name,
+                str(slot_fn),
+            )
+        self.sig_value_received.disconnect(slot_fn)
+        self.sig_val_recvrs.remove(slot_fn)
+
+    def remove_all_recvrs(self) -> None:
+        for slot_fn in self.sig_val_recvrs:
+            self.sig_value_received.disconnect(slot_fn)
+        self.sig_val_recvrs.clear()
+
 
 class Sensor(Device):
     def __init__(self, id: int, name: str, kind: SensorKind, bus: can.BusABC):
         super().__init__(id, name, bus)
         self.kind = kind
         self.send_task: can.CyclicSendTaskABC | None = None
-        self.subscribers: set[Callable] = set()
 
     def begin_periodic_reads(self, send_period: float):
         data = CANData(CANCmd.ReadReg, bytearray([0] * CAN_DATA_LEN))
@@ -73,39 +92,18 @@ class Sensor(Device):
         )
 
     def subscribe(self, slot_fn: Callable, send_period: float = UPDATE_PERIOD):
-        if slot_fn in self.subscribers:
-            logger.error(
-                "Attempted to subscribed already subscribed slot fn to %s: %s",
-                self.name,
-                str(slot_fn),
-            )
-            return
-
-        if len(self.subscribers) == 0:
+        if len(self.sig_val_recvrs) == 0:
             self.begin_periodic_reads(send_period)
-
-        self.sig_value_received.connect(slot_fn)
-        self.subscribers.add(slot_fn)
+        self.add_recvr(slot_fn)
 
     def unsubscribe(self, slot_fn: Callable) -> None:
-        if slot_fn not in self.subscribers:
-            logger.error(
-                "Attempted to unsubscribe slot fn not subscribed to %s: %s",
-                self.name,
-                str(slot_fn),
-            )
-            return
-
-        self.sig_value_received.disconnect(slot_fn)
-        self.subscribers.remove(slot_fn)
-        if len(self.subscribers) == 0:
+        self.remove_recvr(slot_fn)
+        if len(self.sig_val_recvrs) == 0:
             self.stop_send_task()
 
     def unsubscribe_all(self) -> None:
         self.stop_send_task()
-        for slot_fn in self.subscribers:
-            self.sig_value_received.disconnect(slot_fn)
-        self.subscribers.clear()
+        self.remove_all_recvrs()
 
     def stop_send_task(self) -> None:
         if self.send_task is None:
@@ -123,11 +121,6 @@ class Sensor(Device):
 
 
 class Output(Device):
-    def __init__(self, id: int, name: str, bus: can.BusABC):
-        super().__init__(id, name, bus)
-        self.state: OutputState | None = None
-        self.sig_val_recv_connections: set[Callable] = set()
-
     def set_state(self, val: bool) -> None:
         bytes = bytearray(CAN_DATA_LEN)
         bytes[OUTPUT_SET_POS] = int(val)
@@ -135,25 +128,6 @@ class Output(Device):
 
     def get_state(self) -> None:
         self.send_cmd(CANCmd.GetOutput, bytearray(CAN_DATA_LEN))
-
-    def add_slot_fn(self, slot_fn: Callable) -> None:
-        self.sig_value_received.connect(slot_fn)
-        self.sig_val_recv_connections.add(slot_fn)
-
-    def remove_slot_fn(self, slot_fn: Callable):
-        if slot_fn not in self.sig_val_recv_connections:
-            logger.error(
-                "Attempted to remove slot fn not connected to %s: %s",
-                self.name,
-                str(slot_fn),
-            )
-        self.sig_value_received.disconnect(slot_fn)
-        self.sig_val_recv_connections.remove(slot_fn)
-
-    def remove_all_slot_fns(self) -> None:
-        for slot_fn in self.sig_val_recv_connections:
-            self.sig_value_received.disconnect(slot_fn)
-        self.sig_val_recv_connections.clear()
 
     def decode(self, datapacket: DataPacket) -> int:
         return datapacket.data.bytes[OUTPUT_SET_POS]
