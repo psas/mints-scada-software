@@ -1,9 +1,13 @@
+from __future__ import annotations
+
+import sys
 from collections.abc import Callable
 from logging import getLogger
 from typing import override
 
 import can
 from can.broadcastmanager import CyclicSendTaskABC
+from pydantic import ValidationError
 from PySide6.QtCore import QObject, Signal
 
 from config import boards as BOARDS
@@ -31,6 +35,24 @@ log = getLogger(__name__)
 can.util.set_logging_level("WARN")
 
 UPDATE_PERIOD = 1.0
+
+
+def try_setup_device_manager(bus: str) -> DeviceManager:
+    try:
+        return DeviceManager(bus)
+    except ValidationError as e:
+        err_details = e.errors()
+        for err in err_details:
+            log.error(
+                "Validation error in board config file. Field: %s. Found: '%s' - %s",
+                err["loc"],
+                err["input"],
+                err["msg"],
+            )
+        sys.exit(1)
+    except OSError as e:
+        log.error("Unable to connect to CAN bus - %s", e.strerror)
+        sys.exit(e.errno)
 
 
 class DeviceManager:

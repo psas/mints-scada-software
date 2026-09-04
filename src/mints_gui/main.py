@@ -3,14 +3,13 @@ import sys
 from argparse import ArgumentParser
 
 import pyqtgraph as pg
-from pydantic import ValidationError
 
-from mints_backend.device_manager import DeviceManager
-from mints_gui.ui.main_window import MainWindow
+from mints_backend.device_manager import try_setup_device_manager
 from mints_gui.logging import (
     SignalHandler,
     setup_logging,
 )
+from mints_gui.ui.main_window import MainWindow
 
 log = logging.getLogger(__name__)
 
@@ -28,22 +27,7 @@ def main():
     log_signal = SignalHandler()
     setup_logging(log_signal)
 
-    try:
-        device_manager = DeviceManager(args.bus)
-    except ValidationError as e:
-        err_details = e.errors()
-        for err in err_details:
-            log.error(
-                "Validation error in board config file. Field: %s. Found: '%s' - %s",
-                err["loc"],
-                err["input"],
-                err["msg"],
-            )
-        sys.exit(1)
-    except OSError as e:
-        log.error("Unable to connect to CAN bus - %s", e.strerror)
-        sys.exit(e.errno)
-
+    device_manager = try_setup_device_manager(args.bus)
     window = MainWindow(log_signal, device_manager)
 
     log.info("Welcome to MinTS!")
