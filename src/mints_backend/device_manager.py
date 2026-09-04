@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import sys
+from collections import UserList
 from logging import getLogger
+from typing import NoReturn, SupportsIndex, overload
 
 import can
 from pydantic import ValidationError
 
 from config import boards as BOARDS
 from config import config as CFG
-from mints_backend.devices import Output, Sensor
+from mints_backend.devices import Device, Output, Sensor
 from mints_backend.models import (
     AdcChannelCfgModel,
     BoardCfgListModel,
@@ -42,7 +44,7 @@ class DeviceManager:
     def __init__(
         self, channel: str | None, virtual_bus=False, board_cfg_dict: dict | None = None
     ):
-        self.device_registry: dict[int, Sensor | Output] = {}
+        self.device_registry = DeviceRegistry()
 
         validated_config = BoardCfgListModel.model_validate(
             BOARDS if board_cfg_dict is None else board_cfg_dict
@@ -64,20 +66,20 @@ class DeviceManager:
 
     def _register_device(self, cfg: OutputCfgModel | AdcChannelCfgModel, board_id: int):
         id = (board_id << 4) + cfg.sub_id
+
         match cfg:
             case OutputCfgModel():
                 dev = Output(id, cfg.name, self.bus)
             case AdcChannelCfgModel():
                 dev = Sensor(id, cfg.name, SensorKind(cfg.kind), self.bus)
+
         self.notifier.add_listener(dev.handle_can_rx)
-        if id in self.device_registry:
-            raise ValueError(f"Duplicate device ID found in registry: {id}")
-        self.device_registry[id] = dev
+        self.device_registry.register(dev)
 
     def teardown(self):
         self.notifier.stop()
 
-        for dev in self.device_registry.values():
+        for dev in self.device_registry:
             match dev:
                 case Sensor():
                     dev.unsubscribe_all()
@@ -90,3 +92,35 @@ class DeviceManager:
 
         self.bus.stop_all_periodic_tasks()
         self.bus.shutdown()
+
+
+class DeviceRegistry(UserList):
+    def __contains__(self, item):
+        return item in self.data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __repr__(self):
+        return f"DeviceRegistry({self.data})"
+
+    def register(self, dev: Device) -> None:
+        if dev.id in self.ids:
+            raise ValueError("Attempted to register device already in registry")
+        self.data.append(dev)
+
+    @property
+    def ids(self) -> list[int]:
+        ids = []
+        for dev in self:
+            ids.append(dev.id)
+        return ids
+
+    def get_by_id(self, id: int) -> Device:
+        return next(iter(dev for dev in self.data if dev.id == id))
+
+    def get_by_name(self, name: str) -> Device:
+        return next(iter(dev for dev in self.data if dev.name == name))

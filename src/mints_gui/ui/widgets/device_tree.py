@@ -40,7 +40,7 @@ class DeviceParameterTree(ParameterTree):
         return group
 
     def _build_tree(self) -> None:
-        for dev in self.device_manager.device_registry.values():
+        for dev in self.device_manager.device_registry:
             board_id = dev.id >> 4
             board_group = self._get_or_create_board_group(board_id)
             match dev:

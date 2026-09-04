@@ -16,11 +16,11 @@ from mints_backend.datapacket import (
     DataPacket,
 )
 from mints_backend.device_manager import DeviceManager
-from mints_backend.devices import Output, Sensor
+from mints_backend.devices import Device, Output, Sensor
 
 device_manager = DeviceManager(CFG["can"]["channel"])
 outputs = {}
-for dev in device_manager.device_registry.values():
+for dev in device_manager.device_registry:
     match dev:
         case Output():
             outputs[dev.id] = False
@@ -47,14 +47,14 @@ def main():
                     continue
 
                 req_addr = msg.arbitration_id & ADDR_MSK
-                req_device = device_manager.device_registry[req_addr]
+                req_device = device_manager.device_registry.get_by_id(req_addr)
 
                 handle_can_rx(msg, req_device, bus)
         except KeyboardInterrupt:
             print("\nGoodbye")
 
 
-def handle_can_rx(msg: can.Message, req_device: Sensor | Output, bus: can.BusABC):
+def handle_can_rx(msg: can.Message, req_device: Device, bus: can.BusABC):
     base_id = msg.arbitration_id & BASE_ID_MSK
 
     if base_id != REQUEST_MSG_ID:

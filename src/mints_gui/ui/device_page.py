@@ -53,7 +53,7 @@ class DevicePage(DockArea):
     def populate_plot_area(self) -> None:
         sensors: list[Sensor] = [
             device
-            for device in self.device_manager.device_registry.values()
+            for device in self.device_manager.device_registry
             if isinstance(device, Sensor)
         ]
 
