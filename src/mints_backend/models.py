@@ -1,19 +1,8 @@
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
-from enum import Enum, StrEnum, unique
 from typing import Self
 
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
-@unique
-class SensorKind(StrEnum):
-    Temperature = "temperature"
-    Pressure = "pressure"
-    LoadCell = "load_cell"
-
-
-@unique
-class OutputState(Enum):
-    High = 1
-    Low = 0
+from mints_backend.devices import SensorKind
 
 
 class AdcChannelCfgModel(BaseModel):
@@ -62,5 +51,3 @@ class BoardCfgModel(BaseModel):
 class BoardCfgListModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     board: list[BoardCfgModel]
-
-

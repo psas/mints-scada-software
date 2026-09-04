@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from enum import Enum, StrEnum, unique
 from logging import getLogger
 from typing import override
 
@@ -16,11 +17,23 @@ from mints_backend.datapacket import (
     CANData,
     DataPacket,
 )
-from mints_backend.models import OutputState, SensorKind
 
 logger = getLogger(__name__)
 
 UPDATE_PERIOD = 1.0
+
+
+@unique
+class SensorKind(StrEnum):
+    Temperature = "temperature"
+    Pressure = "pressure"
+    LoadCell = "load_cell"
+
+
+@unique
+class OutputState(Enum):
+    High = True
+    Low = False
 
 
 class Device(QObject):
@@ -121,9 +134,15 @@ class Sensor(Device):
 
 
 class Output(Device):
-    def set_state(self, val: bool) -> None:
+    def set_state(self, val: bool | OutputState) -> None:
+        match val:
+            case bool():
+                state = int(val)
+            case OutputState():
+                state = int(val.value)
+
         bytes = bytearray(CAN_DATA_LEN)
-        bytes[OUTPUT_SET_POS] = int(val)
+        bytes[OUTPUT_SET_POS] = state
         self.send_cmd(CANCmd.SetOutput, bytes)
 
     def get_state(self) -> None:

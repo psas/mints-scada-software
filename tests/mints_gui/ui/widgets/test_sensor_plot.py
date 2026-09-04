@@ -9,8 +9,7 @@ from pyqtgraph.graphicsItems.PlotItem import PlotItem
 from pytestqt.qtbot import QtBot
 
 from mints_backend.datapacket import CAN_DATA_LEN, RESPONSE_MSG_ID, CANData, DataPacket
-from mints_backend.devices import Sensor
-from mints_backend.models import SensorKind
+from mints_backend.devices import Sensor, SensorKind
 from mints_gui.ui.widgets.sensor_plot import SensorPlot
 
 

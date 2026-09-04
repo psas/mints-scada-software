@@ -11,8 +11,7 @@ from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QPushButton
 
 from mints_backend.device_manager import DeviceManager
-from mints_backend.devices import Output, Sensor
-from mints_backend.models import OutputState, SensorKind
+from mints_backend.devices import Output, Sensor, SensorKind
 
 log = getLogger(__name__)
 

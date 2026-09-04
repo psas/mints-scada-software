@@ -12,7 +12,7 @@ from mints_backend.datapacket import (
     DataPacket,
 )
 from mints_backend.device_manager import DeviceManager
-from mints_backend.models import OutputState
+from mints_backend.devices import OutputState
 from mints_gui.ui.widgets.device_tree import (
     DeviceParameterTree,
     OutputButton,
