@@ -5,7 +5,7 @@ from pyqtgraph import PlotWidget
 from pyqtgraph.graphicsItems.PlotDataItem import PlotDataItem
 from pyqtgraph.graphicsItems.PlotItem import PlotItem
 
-from mints_backend.device_manager import UPDATE_PERIOD, Sensor
+from mints_backend.devices import UPDATE_PERIOD, Sensor
 
 
 class SensorPlot(PlotWidget):

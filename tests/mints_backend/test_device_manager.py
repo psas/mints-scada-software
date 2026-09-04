@@ -4,20 +4,10 @@ import can
 import pytest
 from pytestqt.qtbot import QtBot
 
-from mints_backend.datapacket import (
-    CAN_DATA_LEN,
-    RESPONSE_MSG_ID,
-    CANData,
-    DataPacket,
-)
-from mints_backend.device_manager import (
-    BoardCfgListModel,
-    Device,
-    DeviceManager,
-    Output,
-    Sensor,
-    SensorKind,
-)
+from mints_backend.datapacket import CAN_DATA_LEN, RESPONSE_MSG_ID, CANData, DataPacket
+from mints_backend.device_manager import BoardCfgListModel, DeviceManager
+from mints_backend.devices import Device, Output, Sensor
+from mints_backend.models import SensorKind
 
 
 @pytest.fixture()
