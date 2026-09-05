@@ -3,6 +3,7 @@ from logging import getLogger
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from mints_backend.device_manager import DeviceManager
+from mints_backend.script_runner import ScriptRunner
 from mints_gui.logging import SignalHandler
 from mints_gui.ui.device_page import DevicePage
 from mints_gui.ui.script_page import ScriptPage
@@ -19,18 +20,19 @@ class MainWindow(QMainWindow):
         self,
         log_signal: SignalHandler,
         device_manager: DeviceManager,
+        runner: ScriptRunner,
     ):
         super().__init__()
         log.debug("Initializing main window")
-        self.menu = MenuBar()
-        self.device_manager = device_manager
-        self.device_page = DevicePage(device_manager, log_signal, self.menu.add_to_menu)
-        self.script_page = ScriptPage(log_signal, self.menu.add_to_menu)
-        self.tabs = QTabWidget()
+        menu = MenuBar()
+        device_page = DevicePage(device_manager, log_signal, menu.add_to_menu)
+        script_page = ScriptPage(log_signal, runner, menu.add_to_menu)
 
-        self.tabs.addTab(self.device_page, "Devices")
-        self.tabs.addTab(self.script_page, "Scripting")
-        self.setCentralWidget(self.tabs)
-        self.setMenuBar(self.menu)
+        tabs = QTabWidget()
+        tabs.addTab(device_page, "Devices")
+        tabs.addTab(script_page, "Scripting")
+
+        self.setMenuBar(menu)
+        self.setCentralWidget(tabs)
         self.resize(self.default_width, self.default_height)
         self.setWindowTitle("MinTS")

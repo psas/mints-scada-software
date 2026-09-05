@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 import pyqtgraph as pg
 
 from mints_backend.device_manager import try_setup_device_manager
+from mints_backend.script_runner import ScriptRunner
 from mints_gui.logging import (
     SignalHandler,
     setup_logging,
@@ -25,11 +26,13 @@ parser.add_argument(
 def main():
     args = parser.parse_args()
     app = pg.mkQApp("MinTS")
+
     log_signal = SignalHandler()
     setup_logging(log_signal)
 
     device_manager = try_setup_device_manager(args.bus)
-    window = MainWindow(log_signal, device_manager)
+    runner = ScriptRunner()
+    window = MainWindow(log_signal, device_manager, runner)
 
     log.info("Welcome to MinTS!")
     window.show()
