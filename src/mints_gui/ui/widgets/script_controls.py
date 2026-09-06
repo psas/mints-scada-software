@@ -1,17 +1,19 @@
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QIcon, QTextBlock
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QStyle,
     QWidget,
 )
 
 from mints_backend.script_runner import ScriptRunner
+
+logger = logging.getLogger(__name__)
 
 
 class ScriptControls(QWidget):
@@ -48,7 +50,11 @@ class ScriptControls(QWidget):
         self.set_text("")
 
     def play(self):
-        self.runner.try_run(self.active_file)
+        if self.active_file.is_dir():
+            logger.info("Unable to run - No file open")
+            return
+        with Path.open(self.active_file, "r") as file:
+            self.runner.run(file.read(), self.active_file.name)
 
     def stop(self):
         self.runner.stop()
