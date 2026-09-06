@@ -12,7 +12,7 @@ def menubar(qtbot: QtBot):
 
 @pytest.fixture()
 def menuentry():
-    menuentry = MenuEntry("File", "Test entry", lambda: "Test Success", None)
+    menuentry = MenuEntry("File", "Test entry", lambda: "Test Success")
     yield menuentry
 
 

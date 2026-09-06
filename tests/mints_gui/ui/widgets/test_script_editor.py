@@ -3,12 +3,16 @@ from pathlib import Path
 import pytest
 from pytestqt.qtbot import QtBot
 
+from mints_backend.script_runner import ScriptRunner
 from mints_gui.ui.widgets.script_editor import ScriptEditor
 
 
 @pytest.fixture()
-def script_editor(qtbot: QtBot):
-    script_editor = ScriptEditor()
+def script_editor(qtbot: QtBot, script_runner: ScriptRunner):
+    def add_to_menu(*args):
+        pass
+
+    script_editor = ScriptEditor(script_runner, add_to_menu)
     qtbot.addWidget(script_editor)
     yield script_editor
 

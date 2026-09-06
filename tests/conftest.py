@@ -4,6 +4,7 @@ import pytest
 from config import config as CFG
 from mints_backend.device_manager import DeviceManager
 from mints_backend.models import BoardCfgListModel
+from mints_backend.script_runner import ScriptRunner
 
 
 @pytest.fixture()
@@ -76,3 +77,9 @@ def device_manager(board_configs: dict):
 @pytest.fixture()
 def registry(device_manager):
     yield device_manager.device_registry
+
+
+@pytest.fixture()
+def script_runner():
+    script_runner = ScriptRunner()
+    yield script_runner

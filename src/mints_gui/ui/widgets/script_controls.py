@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtCore import Slot
 from PySide6.QtGui import QIcon, QTextBlock
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -18,7 +19,7 @@ class ScriptControls(QWidget):
         super().__init__()
         layout = QHBoxLayout()
         self.runner = runner
-        self.active_file = ""
+        self.active_file = Path()
         info_box = InfoBox()
         play_btn = PlayButton()
         stop_btn = StopButton()
@@ -36,9 +37,15 @@ class ScriptControls(QWidget):
         self.setLayout(layout)
         self.setMaximumHeight(64)
 
+    @Slot(Path)
     def set_active_file(self, path: Path):
         self.active_file = path
         self.set_text(str(path.name))
+
+    @Slot()
+    def unset_active_file(self):
+        self.active_file = Path()
+        self.set_text("")
 
     def play(self):
         self.runner.try_run(self.active_file)

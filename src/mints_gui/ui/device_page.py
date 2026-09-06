@@ -41,7 +41,6 @@ class DevicePage(DockArea):
                 menu="View",
                 desc="Revert Devices to Default Layout",
                 callback=self.restore_default_page_layout,
-                shortcut=None,
             )
         )
 
