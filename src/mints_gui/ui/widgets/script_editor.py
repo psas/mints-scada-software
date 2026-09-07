@@ -5,7 +5,6 @@ from pathlib import Path
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QTextEdit
 
-from mints_backend.script_runner import ScriptRunner
 from mints_gui.ui.widgets.menubar import MenuEntry
 
 logger = logging.getLogger(__name__)
@@ -15,12 +14,19 @@ class ScriptEditor(QTextEdit):
     sig_file_saved = Signal(Path)
     sig_file_opened = Signal(Path)
     sig_file_new = Signal()
+    sig_file_changed = Signal(bool)
 
-    def __init__(self, runner: ScriptRunner, add_to_menu: Callable):
+    def __init__(self, runner_run: Callable, add_to_menu: Callable):
         super().__init__()
+        self._run = runner_run
         self.setUndoRedoEnabled(True)
         self.active_file: Path = Path()
         self.setup_menu_actions(add_to_menu)
+
+        self.textChanged.connect(self.check_for_file_modified)
+
+    def run_script(self):
+        self._run(self.toPlainText())
 
     @Slot(Path)
     def set_active_file(self, file_path: Path):
@@ -65,6 +71,11 @@ class ScriptEditor(QTextEdit):
             file.write(self.toPlainText())
         self.sig_file_saved.emit(file_path)
         logger.info("Saved %s", str(file_path))
+
+    def check_for_file_modified(self) -> None:
+        with Path.open(self.active_file) as file:
+            is_modified = file.read() != self.toPlainText()
+            self.sig_file_changed.emit(is_modified)
 
     def setup_menu_actions(self, add_to_menu: Callable):
         for entry in [

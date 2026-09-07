@@ -18,11 +18,8 @@ class ScriptRunner:
         self.process.readyReadStandardOutput.connect(self._on_output)
         self.process.finished.connect(self._on_finished)
 
-    def run(self, script: str, path: str) -> None:
-        if not script:
-            logger.info("No script to run")
-            return
-        logger.info(f"Running {path}")
+    def run(self, script: str) -> None:
+        logger.info("Running script")
         args = shlex.split(f"-c '{script}'")
         self.process.start(self.py_path, args)
 

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-MenuTypes = Literal["File", "Edit", "View"]
+MenuTypes = Literal["File", "Edit", "View", "Run"]
 
 
 class MenuBar(QMenuBar):
@@ -22,9 +22,11 @@ class MenuBar(QMenuBar):
         self.file_menu = QMenu("File")
         self.edit_menu = QMenu("Edit")
         self.view_menu = QMenu("View")
+        self.run_menu = QMenu("Run")
         self.addMenu(self.file_menu)
         self.addMenu(self.edit_menu)
         self.addMenu(self.view_menu)
+        self.addMenu(self.run_menu)
 
     def add_to_menu(self, entry: MenuEntry):
         shortcut = (
@@ -48,6 +50,12 @@ class MenuBar(QMenuBar):
                 )
             case "View":
                 self.view_menu.addAction(
+                    entry.desc,
+                    entry.callback,
+                    shortcut,
+                )
+            case "Run":
+                self.run_menu.addAction(
                     entry.desc,
                     entry.callback,
                     shortcut,
