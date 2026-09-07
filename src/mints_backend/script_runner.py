@@ -7,6 +7,8 @@ from PySide6.QtCore import QProcess
 
 logger = logging.getLogger(__name__)
 
+DSL_MARKER = "#! mints"
+
 
 class ScriptRunner:
     def __init__(self):
@@ -19,6 +21,10 @@ class ScriptRunner:
         self.process.finished.connect(self._on_finished)
 
     def run(self, script: str) -> None:
+        first_line = script.split("\n", 1)[0].rstrip()
+        if first_line != DSL_MARKER:
+            logger.error("Missing mints script marker: '%s'", DSL_MARKER)
+            return
         logger.info("Running script")
         args = shlex.split(f"-c '{script}'")
         self.process.start(self.py_path, args)

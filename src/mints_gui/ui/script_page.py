@@ -51,6 +51,7 @@ class ScriptWidget(QWidget):
         self.script_toolbar = ScriptToolbar(
             self.script_editor.run_script, runner.stop, add_to_menu
         )
+
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -60,13 +61,15 @@ class ScriptWidget(QWidget):
 
         self.script_editor.sig_file_opened.connect(self.on_file_select)
         self.script_editor.sig_file_saved.connect(self.on_file_select)
-        self.script_editor.sig_file_new.connect(self.script_toolbar.unset_active_file)
+        self.script_editor.sig_file_new.connect(self.script_toolbar.on_new_file)
         self.script_editor.sig_file_changed.connect(
             self.script_toolbar.info_box.on_file_changed
         )
         self.script_editor.sig_file_saved.connect(
             self.script_toolbar.info_box.on_file_saved
         )
+
+        runner.process.started.connect(self.script_toolbar.show_running_label)
         runner.process.finished.connect(self.script_toolbar.hide_running_label)
 
     def on_file_select(self, path: Path) -> None:

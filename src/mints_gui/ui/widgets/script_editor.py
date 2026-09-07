@@ -3,11 +3,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import QFileDialog, QTextEdit
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QTextEdit
 
 from mints_gui.ui.widgets.menubar import MenuEntry
 
 logger = logging.getLogger(__name__)
+
+NEW_FILE_TEXT = "#! mints\nfrom mints_backend.dsl import Mints\n\n\nmints = Mints()"
 
 
 class ScriptEditor(QTextEdit):
@@ -16,12 +18,14 @@ class ScriptEditor(QTextEdit):
     sig_file_new = Signal()
     sig_file_changed = Signal(bool)
 
-    def __init__(self, runner_run: Callable, add_to_menu: Callable):
+    def __init__(self, runner_run_fn: Callable, add_to_menu: Callable):
         super().__init__()
-        self._run = runner_run
+        self._run = runner_run_fn
         self.setUndoRedoEnabled(True)
         self.active_file: Path = Path()
         self.setup_menu_actions(add_to_menu)
+        self.setPlainText(NEW_FILE_TEXT)
+        self.file_modified = False
 
         self.textChanged.connect(self.check_for_file_modified)
 
@@ -35,8 +39,11 @@ class ScriptEditor(QTextEdit):
             self.setPlainText(file.read())
 
     def new_file(self):
+        if self.file_modified and not self.confirm_discard_changes():
+            return
+
         self.active_file = Path()
-        self.setPlainText("")
+        self.setPlainText(NEW_FILE_TEXT)
         self.sig_file_new.emit()
 
     def open_file(self):
@@ -73,9 +80,30 @@ class ScriptEditor(QTextEdit):
         logger.info("Saved %s", str(file_path))
 
     def check_for_file_modified(self) -> None:
-        with Path.open(self.active_file) as file:
-            is_modified = file.read() != self.toPlainText()
-            self.sig_file_changed.emit(is_modified)
+        if self.active_file.is_dir():
+            is_modified = self.toPlainText() != NEW_FILE_TEXT
+        else:
+            with Path.open(self.active_file) as file:
+                is_modified = self.toPlainText() != file.read()
+
+        self.sig_file_changed.emit(is_modified)
+        self.file_modified = is_modified
+
+    def confirm_discard_changes(self) -> bool:
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "The current file has unsaved changes. Do you want to save before continuing?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+
+        if reply == QMessageBox.StandardButton.Save:
+            self.save_file()
+            return True
+        return reply == QMessageBox.StandardButton.Discard
 
     def setup_menu_actions(self, add_to_menu: Callable):
         for entry in [

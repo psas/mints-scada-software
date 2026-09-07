@@ -33,6 +33,7 @@ class FileExplorerWidget(QTreeView):
         self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
 
         for col in range(1, self.file_model.columnCount()):
+            # Hide unneeded file details
             self.hideColumn(col)
 
         self.doubleClicked.connect(self.on_file_selected)

@@ -53,19 +53,22 @@ class ScriptToolbar(QWidget):
         self.info_box.set_filename(str(path.name))
 
     @Slot()
+    def on_new_file(self):
+        self.unset_active_file()
+        self.info_box.set_file_modified(False)
+
     def unset_active_file(self):
         self.active_file = Path()
         self.info_box.set_filename("")
 
     def play(self):
-        if self.active_file.is_dir():
-            logger.info("Unable to run - No file open")
-            return
-        self.controls.running_label.setText("Running")
         self.run_script()
 
     def stop(self):
         self.stop_running_script()
+
+    def show_running_label(self):
+        self.controls.running_label.setText("Running")
 
     def hide_running_label(self):
         self.controls.running_label.setText("")
@@ -99,7 +102,6 @@ class InfoBox(QWidget):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         self.changes_saved.setFixedWidth(TOOLBAR_SIDE_WIDTH)
-        self.changes_saved.hide()
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -112,10 +114,11 @@ class InfoBox(QWidget):
     def set_filename(self, filename: str) -> None:
         self.filename.setText(filename)
 
+    @Slot()
     def on_file_load(self):
-        self.changes_saved.show()
         self.set_file_modified(False)
 
+    @Slot()
     def on_file_saved(self):
         self.set_file_modified(False)
 
