@@ -17,6 +17,7 @@ class ScriptRunner:
             raise OSError("Unable to determine path to Python3 executable")
         self.py_path = exec
         self.process = QProcess()
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._on_output)
         self.process.finished.connect(self._on_finished)
 
