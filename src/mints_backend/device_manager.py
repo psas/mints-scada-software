@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import sys
-from collections import UserList
+from collections import UserDict
 from logging import getLogger
-from typing import NoReturn, SupportsIndex, overload
 
 import can
 from pydantic import ValidationError
@@ -22,9 +21,9 @@ log = getLogger(__name__)
 can.util.set_logging_level("WARN")
 
 
-def try_setup_device_manager(bus: str) -> DeviceManager:
+def try_setup_device_manager(chan: str | None = None) -> DeviceManager:
     try:
-        return DeviceManager(bus)
+        return DeviceManager(channel=chan)
     except ValidationError as e:
         err_details = e.errors()
         for err in err_details:
@@ -94,15 +93,24 @@ class DeviceManager:
         self.bus.shutdown()
 
 
-class DeviceRegistry(UserList):
-    def __contains__(self, item):
+class DeviceRegistry(UserDict):
+    def __contains__(self, item) -> bool:
         return item in self.data
 
-    def __len__(self):
+    def __getitem__(self, key: int) -> Sensor | Output:
+        return self.data[key]
+
+    def __setitem__(self, key: int, item: Sensor | Output) -> None:
+        self.data[key] = item
+
+    def __delitem__(self, key: int) -> None:
+        del self.data[key]
+
+    def __len__(self) -> int:
         return len(self.data)
 
     def __iter__(self):
-        return iter(self.data)
+        return iter(self.data.values())
 
     def __repr__(self):
         return f"DeviceRegistry({self.data})"
@@ -110,17 +118,22 @@ class DeviceRegistry(UserList):
     def register(self, dev: Device) -> None:
         if dev.id in self.ids:
             raise ValueError("Attempted to register device already in registry")
-        self.data.append(dev)
+        self.data[dev.id] = dev
 
     @property
     def ids(self) -> list[int]:
-        ids = []
-        for dev in self:
-            ids.append(dev.id)
-        return ids
+        return list(self.data.keys())
+
+    @property
+    def sensors(self) -> list[Sensor]:
+        return [dev for dev in self.data.values() if isinstance(dev, Sensor)]
+
+    @property
+    def outputs(self) -> list[Output]:
+        return [dev for dev in self.data.values() if isinstance(dev, Output)]
 
     def get_by_id(self, id: int) -> Device:
-        return next(iter(dev for dev in self.data if dev.id == id))
+        return self.data[id]
 
     def get_by_name(self, name: str) -> Device:
-        return next(iter(dev for dev in self.data if dev.name == name))
+        return next(iter(dev for dev in self.data.values() if dev.name == name))
