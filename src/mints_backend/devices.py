@@ -76,7 +76,7 @@ class Device(QObject):
 
     def remove_recvr(self, slot_fn: Callable):
         if slot_fn not in self.sig_val_recvrs:
-            logger.error(
+            logger.debug(
                 "Attempted to remove slot fn not connected to %s: %s",
                 self.name,
                 str(slot_fn),
@@ -120,7 +120,7 @@ class Sensor(Device):
 
     def stop_send_task(self) -> None:
         if self.send_task is None:
-            logger.error("Attempted to stop non-running send task for %s", self.name)
+            logger.debug("Attempted to stop non-running send task for %s", self.name)
             return
 
         self.send_task.stop()
