@@ -61,6 +61,7 @@ class Mints:
         self.csv_writer.writerow({name: val})
 
     def __exit__(self, *args) -> None:
+        # TODO: safety? close all valves?
         self.device_manager.teardown()
         if self.csv_file is None:
             return

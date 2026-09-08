@@ -51,6 +51,7 @@ class ScriptEditor(QTextEdit):
         self.sig_file_new.emit()
 
     def open_file(self):
+        # TODO: check for existing changes to buffer when no file opened before switching
         filename, _filter = QFileDialog.getOpenFileName(
             caption="Open File", dir=str(self.active_file.parent)
         )
