@@ -9,7 +9,9 @@ from mints_gui.ui.widgets.menubar import MenuEntry
 
 logger = logging.getLogger(__name__)
 
-NEW_FILE_TEXT = "#! mints\nfrom mints_backend.dsl import Mints\n\n\nmints = Mints()"
+NEW_FILE_TEXT = (
+    "#! mints\nfrom mints_backend.dsl import Mints\n\n\nwith Mints() as mints:"
+)
 
 
 class ScriptEditor(QTextEdit):
