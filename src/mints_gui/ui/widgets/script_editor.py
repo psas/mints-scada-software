@@ -2,6 +2,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+from PySide6 import QtGui
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QTextEdit
 
@@ -27,6 +28,7 @@ class ScriptEditor(QTextEdit):
         self.active_file: Path = Path()
         self.setup_menu_actions(add_to_menu)
         self.setPlainText(NEW_FILE_TEXT)
+        self.set_tab_width()
         self.file_modified = False
 
         self.textChanged.connect(self.check_for_file_modified)
@@ -106,6 +108,14 @@ class ScriptEditor(QTextEdit):
             self.save_file()
             return True
         return reply == QMessageBox.StandardButton.Discard
+
+    def set_tab_width(self):
+        """
+        Set indent size to 4 spaces
+        """
+        fm = QtGui.QFontMetrics(self.font())
+        tabWidth = fm.horizontalAdvance(" " * 4)
+        self.setTabStopDistance(tabWidth)
 
     def setup_menu_actions(self, add_to_menu: Callable):
         for entry in [
