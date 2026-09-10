@@ -132,8 +132,8 @@ class DeviceRegistry(UserDict):
     def outputs(self) -> list[Output]:
         return [dev for dev in self.data.values() if isinstance(dev, Output)]
 
-    def get_by_id(self, id: int) -> Device:
+    def get_by_id(self, id: int) -> Sensor | Output:
         return self.data[id]
 
-    def get_by_name(self, name: str) -> Device:
+    def get_by_name(self, name: str) -> Sensor | Output:
         return next(iter(dev for dev in self.data.values() if dev.name == name))
