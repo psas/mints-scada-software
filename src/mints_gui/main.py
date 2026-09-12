@@ -31,7 +31,7 @@ def main():
     setup_logging(log_signal)
 
     device_manager = try_setup_device_manager(args.bus)
-    runner = ScriptRunner()
+    runner = ScriptRunner(device_manager.emergency_stop)
     window = MainWindow(log_signal, device_manager, runner)
 
     log.info("Welcome to MinTS!")

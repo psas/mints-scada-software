@@ -2,6 +2,7 @@ import logging
 import shlex
 import shutil
 import sys
+from collections.abc import Callable
 
 from PySide6.QtCore import QProcess
 
@@ -11,7 +12,7 @@ DSL_MARKER = "#! mints"
 
 
 class ScriptRunner:
-    def __init__(self):
+    def __init__(self, emergency_stop: Callable):
         exec: str | None = shutil.which(sys.executable)
         if exec is None:
             raise OSError("Unable to determine path to Python3 executable")
@@ -20,6 +21,7 @@ class ScriptRunner:
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._on_output)
         self.process.finished.connect(self._on_finished)
+        self.emergency_stop = emergency_stop
 
     def run(self, script: str) -> None:
         first_line = script.split("\n", 1)[0].rstrip()
@@ -35,6 +37,7 @@ class ScriptRunner:
             logger.error("No process running to stop")
             return
         self.process.kill()
+        self.emergency_stop()
         logger.info("Stopped script execution")
 
     def _on_output(self):

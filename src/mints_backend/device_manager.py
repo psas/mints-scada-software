@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from config import boards as BOARDS
 from config import config as CFG
-from mints_backend.devices import Device, Output, Sensor
+from mints_backend.devices import Device, Output, OutputState, Sensor
 from mints_backend.models import (
     AdcChannelCfgModel,
     BoardCfgListModel,
@@ -91,6 +91,10 @@ class DeviceManager:
 
         self.bus.stop_all_periodic_tasks()
         self.bus.shutdown()
+
+    def emergency_stop(self):
+        for output in self.device_registry.outputs:
+            output.set_state(OutputState.Low)
 
 
 class DeviceRegistry(UserDict):
