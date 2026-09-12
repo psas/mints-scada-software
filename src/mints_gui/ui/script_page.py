@@ -17,7 +17,7 @@ class ScriptPage(DockArea):
         self, log_signal: SignalHandler, runner: ScriptRunner, add_to_menu: Callable
     ):
         super().__init__()
-        script_widget = ScriptWidget(runner, add_to_menu)
+        self.script_widget = ScriptWidget(runner, add_to_menu)
         log_widget = LogConsoleWidget()
         file_explorer = FileExplorerWidget(add_to_menu)
 
@@ -33,13 +33,13 @@ class ScriptPage(DockArea):
 
         script_dock = Dock("Script Editor", size=(1000, 1000))
         script_dock.hideTitleBar()
-        script_dock.addWidget(script_widget)
+        script_dock.addWidget(self.script_widget)
         self.addDock(script_dock, "right")
 
         log_signal.sig_output_log.connect(log_widget.appendPlainText)
 
-        file_explorer.sig_file_selected.connect(script_widget.on_file_select)
-        script_widget.script_editor.sig_file_opened.connect(
+        file_explorer.sig_file_selected.connect(self.script_widget.on_file_select)
+        self.script_widget.script_editor.sig_file_opened.connect(
             file_explorer.set_root_from_file
         )
 
