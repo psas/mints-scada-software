@@ -1,2 +1,0 @@
-[pytest]
-markers = ["loopback: Put the testing CAN bus into loopback mode"]

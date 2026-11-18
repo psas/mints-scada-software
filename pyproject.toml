@@ -30,3 +30,6 @@ build-backend = "uv_build"
 [tool.basedpyright]
 typeCheckingMode = "standard"
 reportAttributeAccessIssue = false
+
+[tool.pytest]
+markers = ["loopback: Put the testing CAN bus into loopback mode"]
