@@ -12,8 +12,6 @@ dependencies = [
     "pydantic>=2.13.4",
     "pyqtgraph>=0.14.0",
     "pyside6>=6.11.1",
-    "pytest>=9.1.1",
-    "pytest-qt>=4.5.0",
     "python-can>=4.6.1",
 ]
 
@@ -21,7 +19,12 @@ dependencies = [
 mints-gui = "mints_gui.main:main"
 
 [dependency-groups]
-lint = ["ruff>=0.16.0"]
+dev = [
+    "ruff>=0.16.0",
+    "basedpyright>=1.40.2",
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
