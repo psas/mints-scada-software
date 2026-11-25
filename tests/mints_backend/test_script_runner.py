@@ -64,3 +64,14 @@ def test_script_runner_stop_kills_running_process(script_runner: ScriptRunner, q
     qtbot.waitUntil(
         lambda: script_runner.process.state() == QProcess.NotRunning, timeout=2000
     )
+
+
+def test_script_runner_stop_calls_estop(script_runner: ScriptRunner, qtbot):
+    script = f"{DSL_MARKER}\nimport time\ntime.sleep(5)"
+    script_runner.run(script)
+    qtbot.waitUntil(
+        lambda: script_runner.process.state() == QProcess.Running, timeout=2000
+    )
+
+    script_runner.stop()
+    script_runner.emergency_stop.assert_called_once()  # pyright: ignore[reportFunctionMemberAccess]
