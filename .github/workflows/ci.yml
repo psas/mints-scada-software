@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  QT_QPA_PLATFORM: offscreen
+
 on:
   push:
   pull_request:
