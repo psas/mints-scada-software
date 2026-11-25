@@ -16,7 +16,7 @@ from mints_backend.datapacket import (
     DataPacket,
 )
 from mints_backend.device_manager import DeviceManager
-from mints_backend.devices import Device, Output, Sensor
+from mints_backend.devices import Device, Output
 
 device_manager = DeviceManager(CFG["can"]["channel"])
 outputs = {}
