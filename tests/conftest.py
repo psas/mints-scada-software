@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import can
 import pytest
 
@@ -81,5 +83,6 @@ def registry(device_manager):
 
 @pytest.fixture()
 def script_runner():
-    script_runner = ScriptRunner()
+    e_stop = Mock()
+    script_runner = ScriptRunner(emergency_stop=e_stop)
     yield script_runner
