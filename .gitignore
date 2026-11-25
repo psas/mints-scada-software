@@ -1,21 +1,18 @@
-# Virtualenv
-# http://iamzed.com/2009/05/07/a-primer-on-virtualenv/
-.Python
-[Bb]in
-[Ii]nclude
-[Ll]ib
-[Ll]ib64
-[Ll]ocal
-[Ss]cripts
-pyvenv.cfg
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# Virtual Env
 .venv
-pip-selfcheck.json
-__pycache__
 
-# VSCode file
-.vscode/
-activate
+# Linting / LSP
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Project Specific
 log/
+data/
 
-# PyCharm files
-.idea/
+# Lock files
+uv.lock
