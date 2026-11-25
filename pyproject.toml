@@ -41,4 +41,5 @@ typeCheckingMode = "standard"
 reportAttributeAccessIssue = false
 
 [tool.pytest]
+pythonpath = ["src"]
 markers = ["loopback: Put the testing CAN bus into loopback mode"]
