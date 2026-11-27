@@ -33,6 +33,7 @@ class ScriptRunner:
         self.process.start(self.py_path, args)
 
     def stop(self) -> None:
+        # TODO: Do we want to e-stop even with no proc running?
         if self.process.state() == QProcess.NotRunning:
             logger.error("No process running to stop")
             return

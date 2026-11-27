@@ -30,9 +30,16 @@ dev = [
 requires = ["uv_build>=0.12.0,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.ruff.lint]
+ignore = [
+    "EXE002", # We use the above gui-script, not a shebang
+]
+
+
 [tool.basedpyright]
 typeCheckingMode = "standard"
 reportAttributeAccessIssue = false
 
 [tool.pytest]
+pythonpath = ["src"]
 markers = ["loopback: Put the testing CAN bus into loopback mode"]
