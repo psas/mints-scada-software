@@ -36,9 +36,10 @@ jobs:
           pip install . --group dev
 
       - name: Lint with ruff
-        run: |
-          ruff check .
-          ruff format --check .
+        run: ruff check .
+
+      - name: Format with ruff
+        run: ruff format --check .
 
       - name: Type check with basedpyright
         run: basedpyright
